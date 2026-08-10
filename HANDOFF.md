@@ -73,6 +73,12 @@ Accepted + pushed: PROFILE-WAVE (`d1862d7`), INGEST-GAP-POLICY (`fcdc5f6`, Wed v
 0 gaps / 1880 holes ignored), BOOK-FILL-SEMANTICS (`1efc320`), side=None freeze
 (`92d4112`). All six checkpoint sections now exist → checkpoint pass unblocked.
 
+**MILESTONE (2026-08-10 evening): full Wed trade date — 21,401,139 events — replays
+cleanly through book+profile headless** (`ce727cf`). All real-data semantics frozen
+today (snapshot admission/load/Clear framing, non-mutating fills, side=None, batch
+gap policy) verified end-to-end. User-visible next: `./target/release/fft --replay
+/tmp/esu6-wed-v3.fftlog` focused; then the M3 gate with `--gate 60 --gate-out`.
+
 In flight next:
 - **FILL-SIDE-NONE** (Sol, fft-book): sideless auction fills per frozen §4.
 - **CHECKPOINT-PASS** (cursor-Grok, fft-engine bin — orchestrator-delegated track in
