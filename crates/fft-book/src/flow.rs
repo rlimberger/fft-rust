@@ -97,18 +97,18 @@ pub(crate) struct TradedAtInsideTicks {
 }
 
 impl TradedAtInsideTicks {
-    /// Aggressive sells hit the bid (cB); aggressive buys lift the ask (cA).
-    /// Each counter resets when its trade price changes.
-    pub fn on_trade(&mut self, price: i64, size: u32, aggressor: Side) {
-        match aggressor {
-            Side::Ask => {
+    /// A resting bid Fill is a sell into the bid (cB); a resting ask Fill is a
+    /// buy into the ask (cA). Each counter resets when execution price changes.
+    pub fn on_fill(&mut self, price: i64, size: u32, resting_side: Side) {
+        match resting_side {
+            Side::Bid => {
                 if self.bid_price != Some(price) {
                     self.bid_price = Some(price);
                     self.bid_vol = 0;
                 }
                 self.bid_vol = self.bid_vol.saturating_add(u64::from(size));
             }
-            Side::Bid => {
+            Side::Ask => {
                 if self.ask_price != Some(price) {
                     self.ask_price = Some(price);
                     self.ask_vol = 0;
@@ -153,15 +153,15 @@ mod tests {
     #[test]
     fn inside_traded_resets_on_price_change() {
         let mut t = TradedAtInsideTicks::default();
-        t.on_trade(100, 5, Side::Ask);
-        t.on_trade(100, 3, Side::Ask);
+        t.on_fill(100, 5, Side::Bid);
+        t.on_fill(100, 3, Side::Bid);
         assert_eq!((t.bid_price, t.bid_vol), (Some(100), 8));
-        t.on_trade(99, 2, Side::Ask);
+        t.on_fill(99, 2, Side::Bid);
         assert_eq!((t.bid_price, t.bid_vol), (Some(99), 2));
-        t.on_trade(101, 4, Side::Bid);
-        t.on_trade(101, 1, Side::Bid);
+        t.on_fill(101, 4, Side::Ask);
+        t.on_fill(101, 1, Side::Ask);
         assert_eq!((t.ask_price, t.ask_vol), (Some(101), 5));
-        t.on_trade(100, 9, Side::None);
+        t.on_fill(100, 9, Side::None);
         assert_eq!((t.bid_price, t.bid_vol), (Some(99), 2));
     }
 }

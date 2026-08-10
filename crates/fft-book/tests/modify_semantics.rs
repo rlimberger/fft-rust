@@ -87,12 +87,24 @@ fn modify_to_zero_cancels() {
 }
 
 #[test]
-fn partial_fill_keeps_rank_and_counts_traded() {
+fn fill_keeps_displayed_size_and_counts_traded() {
     let mut b = three_bids();
     b.apply(&fill(1, Side::Bid, 100, 4, T0 + 3));
     let q = qp(&b, 1);
+    assert_eq!((q.rank, q.size), (1, 10));
+    assert_eq!(b.level(Side::Bid, px(100)).total_size, 60);
+    assert_eq!(b.level(Side::Bid, px(100)).traded_5s, 4);
+    b.check_invariants();
+}
+
+#[test]
+fn partial_fill_companion_cancel_applies_venue_quantity() {
+    let mut b = three_bids();
+    b.apply(&fill(1, Side::Bid, 100, 4, T0 + 3));
+    b.apply(&cancel(1, Side::Bid, 100, 4, T0 + 4));
+    let q = qp(&b, 1);
     assert_eq!((q.rank, q.size), (1, 6));
     assert_eq!(b.level(Side::Bid, px(100)).total_size, 56);
-    assert_eq!(b.level(Side::Bid, px(100)).traded_5s, 4);
+    assert_eq!(b.level(Side::Bid, px(100)).cancelled_5s, 4);
     b.check_invariants();
 }

@@ -28,7 +28,7 @@ impl Book {
         })
     }
 
-    /// Grady cB/cA counters, fed by Trade events.
+    /// Grady cB/cA counters, fed solely by Fill events.
     pub fn traded_at_inside(&self) -> InsideTraded {
         InsideTraded {
             bid_price: self.tai.bid_price.map(|t| self.price_of(t)),
@@ -165,6 +165,11 @@ impl Book {
     /// Cancel/Modify/Fill events that referenced unknown order ids.
     pub fn unknown_ref_events(&self) -> u64 {
         self.unknown_refs
+    }
+
+    /// Fill executions whose price differed from the order's displayed price.
+    pub fn fills_off_display(&self) -> u64 {
+        self.refresh.fills_off_display
     }
 
     fn walk_level(
@@ -323,6 +328,39 @@ impl Book {
                 self.index.contains_key(id),
                 "fft-book invariant: refresh entry for dead order {id}"
             );
+        }
+        for (id, progress) in &self.refresh.fills {
+            let &slot = self
+                .index
+                .get(id)
+                .unwrap_or_else(|| panic!("fft-book invariant: Fill progress for dead order {id}"));
+            let order = &self.orders[slot as usize];
+            assert!(
+                progress.qty > 0,
+                "fft-book invariant: zero Fill progress for {id}"
+            );
+            assert!(
+                progress.epoch <= self.refresh.gap_epoch,
+                "fft-book invariant: Fill epoch {} beyond gap epoch {} for {id}",
+                progress.epoch,
+                self.refresh.gap_epoch
+            );
+            match progress.depleted_ts {
+                Some(ts) => {
+                    assert!(
+                        progress.qty >= u64::from(order.size),
+                        "fft-book invariant: depleted Fill progress below displayed size for {id}"
+                    );
+                    assert!(
+                        ts <= self.now,
+                        "fft-book invariant: depletion time beyond book time for {id}"
+                    );
+                }
+                None => assert!(
+                    progress.qty < u64::from(order.size),
+                    "fft-book invariant: partial Fill progress reached displayed size for {id}"
+                ),
+            }
         }
     }
 }

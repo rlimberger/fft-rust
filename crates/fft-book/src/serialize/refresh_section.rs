@@ -1,11 +1,11 @@
-//! REFRESH section v1: native-refresh classification state only.
+//! REFRESH section v2: native-refresh classification and Fill depletion state.
 
 use super::RestoreError;
 use super::codec::{Reader, w8, w16, w32, w64, wi64};
 use crate::PriceRefreshAgg;
 use crate::REFRESH_SECTION_VERSION;
 use crate::book::Book;
-use crate::refresh::{LiveRefresh, RefreshTracker, Tombstone};
+use crate::refresh::{FillProgress, LiveRefresh, RefreshTracker, Tombstone};
 use fft_core::Side;
 
 const MAX_REFRESH_ENTRIES: u32 = 10_000_000;
@@ -14,6 +14,7 @@ pub(super) fn serialize(book: &Book) -> Vec<u8> {
     let mut bytes = Vec::new();
     w16(&mut bytes, REFRESH_SECTION_VERSION);
     w32(&mut bytes, book.refresh.gap_epoch);
+    w64(&mut bytes, book.refresh.fills_off_display);
 
     let mut live: Vec<_> = book.refresh.live.iter().collect();
     live.sort_by_key(|(id, _)| **id);
@@ -44,6 +45,20 @@ pub(super) fn serialize(book: &Book) -> Vec<u8> {
         w64(&mut bytes, tombstone.hidden);
     }
 
+    let mut fills: Vec<_> = book.refresh.fills.iter().collect();
+    fills.sort_by_key(|(id, _)| **id);
+    w32(
+        &mut bytes,
+        u32::try_from(fills.len()).expect("fft-book: Fill progress count exceeds u32"),
+    );
+    for (id, progress) in fills {
+        w64(&mut bytes, *id);
+        w64(&mut bytes, progress.qty);
+        w8(&mut bytes, u8::from(progress.depleted_ts.is_some()));
+        w64(&mut bytes, progress.depleted_ts.unwrap_or(0));
+        w32(&mut bytes, progress.epoch);
+    }
+
     w32(
         &mut bytes,
         u32::try_from(book.refresh.per_price.len())
@@ -69,13 +84,45 @@ pub(super) fn restore(bytes: &[u8]) -> Result<RefreshTracker, RestoreError> {
     }
     let mut tracker = RefreshTracker {
         gap_epoch: reader.u32()?,
+        fills_off_display: reader.u64()?,
         ..RefreshTracker::default()
     };
     read_live(&mut reader, &mut tracker)?;
     read_tombstones(&mut reader, &mut tracker)?;
+    read_fills(&mut reader, &mut tracker)?;
     read_aggregates(&mut reader, &mut tracker)?;
     reader.finish()?;
     Ok(tracker)
+}
+
+fn read_fills(reader: &mut Reader<'_>, tracker: &mut RefreshTracker) -> Result<(), RestoreError> {
+    let count = reader.count_with_min(MAX_REFRESH_ENTRIES, 29)?;
+    let mut previous = None;
+    for _ in 0..count {
+        let id = reader.u64()?;
+        if id == 0 || previous.is_some_and(|value| id <= value) {
+            return Err(reader.corrupt("Fill progress ids not strictly ascending"));
+        }
+        previous = Some(id);
+        let qty = reader.u64()?;
+        if qty == 0 {
+            return Err(reader.corrupt("zero Fill progress quantity"));
+        }
+        let depleted = reader.boolean()?;
+        let raw_ts = reader.u64()?;
+        let depleted_ts = match (depleted, raw_ts) {
+            (false, 0) => None,
+            (false, _) => return Err(reader.corrupt("partial Fill has depletion time")),
+            (true, value) => Some(value),
+        };
+        let progress = FillProgress {
+            qty,
+            depleted_ts,
+            epoch: reader.u32()?,
+        };
+        tracker.fills.insert(id, progress);
+    }
+    Ok(())
 }
 
 fn read_live(reader: &mut Reader<'_>, tracker: &mut RefreshTracker) -> Result<(), RestoreError> {

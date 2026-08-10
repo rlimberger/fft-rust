@@ -15,13 +15,13 @@ fn flow_counters_accumulate_and_expire() {
     b.apply(&fill(1, Side::Bid, 100, 2, T0 + 3 * S));
     let v = b.level(Side::Bid, px(100));
     assert_eq!((v.added_5s, v.cancelled_5s, v.traded_5s), (12, 4, 2));
-    assert_eq!((v.total_size, v.order_count), (6, 2));
+    assert_eq!((v.total_size, v.order_count), (8, 2));
 
     // Advance event time past the window with unrelated activity.
     b.apply(&add(3, Side::Ask, 105, 1, T0 + 9 * S));
     let v = b.level(Side::Bid, px(100));
     assert_eq!((v.added_5s, v.cancelled_5s, v.traded_5s), (0, 0, 0));
-    assert_eq!((v.total_size, v.order_count), (6, 2));
+    assert_eq!((v.total_size, v.order_count), (8, 2));
     b.check_invariants();
 }
 
@@ -29,7 +29,7 @@ fn flow_counters_accumulate_and_expire() {
 fn flow_survives_on_emptied_level_until_stale() {
     let mut b = book();
     b.apply(&add(1, Side::Bid, 100, 5, T0));
-    b.apply(&cancel(1, T0 + 1));
+    b.apply(&cancel(1, Side::Bid, 100, 5, T0 + 1));
     // Level empty, but the pull is visible for 5 s.
     let v = b.level(Side::Bid, px(100));
     assert_eq!((v.order_count, v.cancelled_5s), (0, 5));
@@ -41,7 +41,7 @@ fn flow_survives_on_emptied_level_until_stale() {
 fn flow_survives_dense_window_recenter_until_expiry() {
     let mut b = book();
     b.apply(&add(1, Side::Bid, 100, 5, T0));
-    b.apply(&cancel(1, T0 + 1));
+    b.apply(&cancel(1, Side::Bid, 100, 5, T0 + 1));
 
     // With no resting best, this distant add recentres the dense window around
     // 1_000 and evicts the just-emptied level at 100 into the far map.
@@ -72,14 +72,21 @@ fn flow_survives_dense_window_recenter_until_expiry() {
 #[test]
 fn inside_traded_counters_reset_on_price_change() {
     let mut b = book();
-    b.apply(&trade(Side::Ask, 100, 5, T0)); // sell into the bid
-    b.apply(&trade(Side::Ask, 100, 3, T0 + 1));
-    b.apply(&trade(Side::Bid, 101, 4, T0 + 2)); // buy into the ask
+    b.apply(&add(1, Side::Bid, 100, 20, T0));
+    b.apply(&add(2, Side::Ask, 101, 20, T0 + 1));
+    b.apply(&add(3, Side::Bid, 99, 20, T0 + 2));
+    b.apply(&trade(Side::Ask, 100, 5, T0 + 3));
+    b.apply(&fill(1, Side::Bid, 100, 5, T0 + 3)); // sell into the bid
+    b.apply(&trade(Side::Ask, 100, 3, T0 + 4));
+    b.apply(&fill(1, Side::Bid, 100, 3, T0 + 4));
+    b.apply(&trade(Side::Bid, 101, 4, T0 + 5));
+    b.apply(&fill(2, Side::Ask, 101, 4, T0 + 5)); // buy into the ask
     let t = b.traded_at_inside();
     assert_eq!((t.bid_price, t.bid_vol), (Some(px(100)), 8));
     assert_eq!((t.ask_price, t.ask_vol), (Some(px(101)), 4));
 
-    b.apply(&trade(Side::Ask, 99, 2, T0 + 3)); // bid price moved: cB resets
+    b.apply(&trade(Side::Ask, 99, 2, T0 + 6));
+    b.apply(&fill(3, Side::Bid, 99, 2, T0 + 6)); // bid price moved: cB resets
     let t = b.traded_at_inside();
     assert_eq!((t.bid_price, t.bid_vol), (Some(px(99)), 2));
     assert_eq!((t.ask_price, t.ask_vol), (Some(px(101)), 4));

@@ -148,6 +148,7 @@ fn snapshot_load_does_not_create_flow_tape_or_refresh_evidence() {
     let mut book = book();
     book.apply(&add(1, Side::Bid, 100, 5, T0));
     book.apply(&trade(Side::Ask, 100, 2, T0 + 1));
+    book.apply(&fill(1, Side::Bid, 100, 2, T0 + 1));
     let flow_before = book.level(Side::Bid, px(100));
     let tape_before = book.last_trade();
     let inside_before = book.traded_at_inside();
@@ -187,6 +188,7 @@ fn same_id_tombstone_is_discarded_without_classification() {
     let mut book = book();
     book.apply(&add(7, Side::Ask, 105, 4, T0));
     book.apply(&fill(7, Side::Ask, 105, 4, T0 + 1));
+    book.apply(&cancel(7, Side::Ask, 105, 4, T0 + 2));
     book.apply(&snapshot(7, Side::Ask, 105, 6, T0 - 1, 1));
     assert_eq!(book.refresh_state(OrderId(7)), RefreshState::Unavailable);
     assert_eq!(
@@ -194,4 +196,25 @@ fn same_id_tombstone_is_discarded_without_classification() {
         PriceRefreshAgg::default()
     );
     book.check_invariants();
+}
+
+#[test]
+fn snapshot_order_fill_progress_survives_restore() {
+    let mut book = book();
+    book.apply(&snapshot(7, Side::Ask, 105, 4, T0 - 1, 1));
+    book.apply(&fill(7, Side::Ask, 105, 4, T0 + 1));
+
+    let restored = Book::restore(
+        &book.serialize_book(),
+        &book.serialize_flow(),
+        &book.serialize_refresh(),
+    )
+    .unwrap();
+    assert_eq!(restored.queue_position(OrderId(7)).unwrap().size, 4);
+    assert_eq!(
+        restored.refresh_state(OrderId(7)),
+        RefreshState::Unavailable
+    );
+    assert_eq!(restored.serialize_refresh(), book.serialize_refresh());
+    restored.check_invariants();
 }

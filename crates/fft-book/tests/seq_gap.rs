@@ -55,7 +55,7 @@ fn unsequenced_events_skip_accounting() {
 fn unknown_refs_are_counted_not_fatal() {
     let mut b = book();
     b.apply(&add(1, Side::Bid, 100, 5, T0));
-    b.apply(&cancel(42, T0 + 1));
+    b.apply(&cancel(42, Side::Bid, 100, 1, T0 + 1));
     b.apply(&modify(43, Side::Bid, 100, 5, T0 + 2));
     b.apply(&fill(44, Side::Bid, 100, 5, T0 + 3));
     assert_eq!(b.unknown_ref_events(), 3);
@@ -72,11 +72,13 @@ fn duplicate_add_panics() {
 }
 
 #[test]
-#[should_panic(expected = "overfill")]
-fn overfill_panics() {
+fn fill_at_or_above_displayed_size_does_not_mutate_depth() {
     let mut b = book();
     b.apply(&add(1, Side::Bid, 100, 5, T0));
     b.apply(&fill(1, Side::Bid, 100, 6, T0 + 1));
+    assert_eq!(b.queue_position(fft_core::OrderId(1)).unwrap().size, 5);
+    assert_eq!(b.level(Side::Bid, px(100)).total_size, 5);
+    b.check_invariants();
 }
 
 #[test]
@@ -94,6 +96,7 @@ fn clear_resets_depth_keeps_tape() {
     b.apply(&add(1, Side::Bid, 100, 5, T0));
     b.apply(&add(2, Side::Ask, 105, 5, T0 + 1));
     b.apply(&trade(Side::Bid, 105, 2, T0 + 2));
+    b.apply(&fill(2, Side::Ask, 105, 2, T0 + 2));
     b.apply(&clear(T0 + 3));
     assert_eq!(b.live_order_count(), 0);
     assert_eq!(b.populated_levels(), 0);

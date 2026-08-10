@@ -77,15 +77,6 @@ impl Shadow {
         }
     }
 
-    fn fill(&mut self, id: u64, qty: u32) {
-        let i = self.pos(id);
-        if qty >= self.0[i].size {
-            self.0.remove(i);
-        } else {
-            self.0[i].size -= qty;
-        }
-    }
-
     fn ahead(&self, id: u64) -> (u32, u64) {
         let i = self.pos(id);
         let o = self.0[i];
@@ -185,9 +176,9 @@ fn step(b: &mut Book, sh: &mut Shadow, next_id: &mut u64, ts: u64, op: Op) {
             if sh.0.is_empty() {
                 return;
             }
-            let id = sh.0[sel % sh.0.len()].id;
-            b.apply(&cancel(id, ts));
-            sh.cancel(id);
+            let o = sh.0[sel % sh.0.len()];
+            b.apply(&cancel(o.id, o.side, o.ticks, o.size, ts));
+            sh.cancel(o.id);
         }
         Op::ModifySize { sel, delta } => {
             if sh.0.is_empty() {
@@ -212,9 +203,14 @@ fn step(b: &mut Book, sh: &mut Shadow, next_id: &mut u64, ts: u64, op: Op) {
                 return;
             }
             let o = sh.0[sel % sh.0.len()];
-            let q = 1 + qty % o.size;
+            if o.size == 1 {
+                return;
+            }
+            let q = 1 + qty % (o.size - 1);
             b.apply(&fill(o.id, o.side, o.ticks, q, ts));
-            sh.fill(o.id, q);
+            compare(b, sh);
+            // The companion Modify is book truth and starts a fresh Fill cycle.
+            b.apply(&modify(o.id, o.side, o.ticks, o.size, ts));
         }
         Op::Trade { bid, off, size } => {
             let side = if bid { Side::Bid } else { Side::Ask };

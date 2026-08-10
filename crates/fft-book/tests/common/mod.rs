@@ -46,8 +46,8 @@ pub fn add(id: u64, side: Side, ticks: i64, size: u32, ts: u64) -> CanonicalEven
     ev(EventKind::Add, side, ticks, size, id, ts, 0)
 }
 
-pub fn cancel(id: u64, ts: u64) -> CanonicalEvent {
-    ev(EventKind::Cancel, Side::None, 0, 0, id, ts, 0)
+pub fn cancel(id: u64, side: Side, ticks: i64, size: u32, ts: u64) -> CanonicalEvent {
+    ev(EventKind::Cancel, side, ticks, size, id, ts, 0)
 }
 
 pub fn modify(id: u64, side: Side, ticks: i64, size: u32, ts: u64) -> CanonicalEvent {

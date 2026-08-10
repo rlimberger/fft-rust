@@ -108,7 +108,7 @@ impl Book {
         self.track_seq(ev);
         match ev.kind {
             EventKind::Add => self.do_add(ev, ts),
-            EventKind::Cancel => self.cancel_order(ev.order_id.0, ts),
+            EventKind::Cancel => self.do_cancel(ev, ts),
             EventKind::Modify => self.do_modify(ev, ts),
             EventKind::Trade => self.do_trade(ev),
             EventKind::Fill => self.do_fill(ev, ts),
@@ -248,8 +248,9 @@ impl Book {
         sb.note_add(price);
     }
 
-    fn cancel_order(&mut self, id: u64, ts: u64) {
-        let Some(slot) = self.index.remove(&id) else {
+    fn do_cancel(&mut self, ev: &CanonicalEvent, ts: u64) {
+        let id = ev.order_id.0;
+        let Some(&slot) = self.index.get(&id) else {
             // Cancel of a depleted id is the "no refresh after all" terminal.
             if !self.refresh.cancel_tombstone(id) {
                 self.unknown_refs += 1;
@@ -257,19 +258,62 @@ impl Book {
             return;
         };
         let o = self.orders[slot as usize].clone();
+        assert!(
+            ev.side == Side::None || ev.side == o.side,
+            "fft-book: Cancel side {:?} != resting side {:?} (id {id})",
+            ev.side,
+            o.side
+        );
+        let price = self.to_ticks(ev.price);
+        assert_eq!(
+            price, o.price,
+            "fft-book: Cancel price {price} != resting price {} (id {id})",
+            o.price
+        );
+        assert!(ev.size > 0, "fft-book: Cancel with size 0 (id {id})");
+        assert!(
+            ev.size <= o.size,
+            "fft-book: Cancel size {} > resting {} (id {id})",
+            ev.size,
+            o.size
+        );
         let sb = if o.side == Side::Bid {
             &mut self.bids
         } else {
             &mut self.asks
         };
+        if ev.size < o.size {
+            let level = sb
+                .level_mut(o.price)
+                .expect("fft-book invariant: level missing for live order");
+            level.total_size -= u64::from(ev.size);
+            level.flow.record_cancelled(ts, ev.size);
+            self.orders[slot as usize].size -= ev.size;
+            self.refresh.on_book_change(id);
+            return;
+        }
+
+        self.remove_live_order(slot, &o, Some(ts));
+    }
+
+    fn remove_live_order(&mut self, slot: u32, order: &Order, cancelled_ts: Option<u64>) {
+        let sb = if order.side == Side::Bid {
+            &mut self.bids
+        } else {
+            &mut self.asks
+        };
+        self.index.remove(&order.id);
         unlink(sb, &mut self.orders, slot);
-        sb.level_mut(o.price)
-            .expect("fft-book invariant: level missing for live order")
-            .flow
-            .record_cancelled(ts, o.size);
-        sb.note_remove(o.price);
+        if let Some(ts) = cancelled_ts {
+            sb.level_mut(order.price)
+                .expect("fft-book invariant: level missing for live order")
+                .flow
+                .record_cancelled(ts, order.size);
+        }
+        sb.note_remove(order.price);
         self.orders.remove(slot as usize);
-        self.refresh.on_cancel_live(id);
+        self.refresh
+            .on_cancel_live(order.id, order.side, order.price);
     }
 
     /// Exact CME modify semantics: same price + size-down mutates in place and
@@ -296,10 +340,6 @@ impl Book {
             }
             return;
         };
-        if ev.size == 0 {
-            self.cancel_order(id, ts);
-            return;
-        }
         let o = self.orders[slot as usize].clone();
         assert!(
             ev.side == Side::None || ev.side == o.side,
@@ -308,7 +348,21 @@ impl Book {
             o.side
         );
         let new_price = self.to_ticks(ev.price);
+        if ev.size == 0 {
+            assert_eq!(
+                new_price, o.price,
+                "fft-book: zero-size Modify price {new_price} != resting price {} (id {id})",
+                o.price
+            );
+            self.remove_live_order(slot, &o, Some(ts));
+            return;
+        }
         let new_size = ev.size;
+        if self.refresh.is_depleted(id) {
+            self.remove_live_order(slot, &o, None);
+            self.insert_order(id, o.side, new_price, new_size, ts);
+            return;
+        }
         let now = self.now;
         let sb = if o.side == Side::Bid {
             &mut self.bids
@@ -340,6 +394,7 @@ impl Book {
                     .flow
                     .record_added(ts, grow);
             }
+            self.refresh.on_book_change(id);
             return;
         }
 
@@ -358,12 +413,39 @@ impl Book {
         link_tail(sb, &mut self.orders, slot);
         sb.level_entry(new_price).flow.record_added(ts, new_size);
         sb.note_add(new_price);
+        self.refresh.on_book_change(id);
     }
 
-    /// Fill against the resting order `ev.order_id`. Partial fills keep queue
-    /// position; a full displayed fill removes the order and arms the
-    /// native-refresh tombstone.
+    /// Fill is the sole execution-derived input for tape, cB/cA, five-second
+    /// traded flow, and cumulative refresh depletion. It never mutates depth;
+    /// the companion Cancel/Modify carries all displayed-book truth.
     fn do_fill(&mut self, ev: &CanonicalEvent, ts: u64) {
+        let fill = ev.size;
+        assert!(
+            fill > 0,
+            "fft-book: Fill with size 0 (id {})",
+            ev.order_id.0
+        );
+        assert!(
+            ev.side == Side::Bid || ev.side == Side::Ask,
+            "fft-book: Fill without resting side: {ev:?}"
+        );
+        let price = self.to_ticks(ev.price);
+        let aggressor = if ev.side == Side::Bid {
+            Side::Ask
+        } else {
+            Side::Bid
+        };
+        self.last_trade = Some((price, fill, aggressor));
+        self.tai.on_fill(price, fill, ev.side);
+        let flow_side = if ev.side == Side::Bid {
+            &mut self.bids
+        } else {
+            &mut self.asks
+        };
+        flow_side.prepare_for(price, self.now);
+        flow_side.level_entry(price).flow.record_traded(ts, fill);
+
         let id = ev.order_id.0;
         let Some(&slot) = self.index.get(&id) else {
             self.unknown_refs += 1;
@@ -376,49 +458,15 @@ impl Book {
             ev.side,
             o.side
         );
-        let price = self.to_ticks(ev.price);
-        assert!(
-            price == o.price,
-            "fft-book: Fill price {price} != resting price {} (id {id})",
-            o.price
-        );
-        let fill = ev.size;
-        assert!(fill > 0, "fft-book: Fill with size 0 (id {id})");
-        assert!(
-            fill <= o.size,
-            "fft-book: overfill {fill} > resting {} (id {id})",
-            o.size
-        );
-        let sb = if o.side == Side::Bid {
-            &mut self.bids
-        } else {
-            &mut self.asks
-        };
-        sb.level_mut(o.price)
-            .expect("fft-book invariant: level missing for live order")
-            .flow
-            .record_traded(ts, fill);
-        if fill == o.size {
-            unlink(sb, &mut self.orders, slot);
-            sb.note_remove(o.price);
-            self.index.remove(&id);
-            self.orders.remove(slot as usize);
-            self.refresh.on_depleted(id, o.side, o.price, ts);
-        } else {
-            sb.level_mut(o.price)
-                .expect("fft-book invariant: level missing for live order")
-                .total_size -= u64::from(fill);
-            self.orders[slot as usize].size -= fill;
+        if price != o.price {
+            self.refresh.note_fill_off_display();
         }
+        self.refresh.on_fill(id, o.size, fill, ts);
     }
 
-    /// Trade prints update the tape state only; per-order depletion is driven
-    /// exclusively by Fill events (double-decrementing would corrupt the book).
-    fn do_trade(&mut self, ev: &CanonicalEvent) {
-        let price = self.to_ticks(ev.price);
-        self.last_trade = Some((price, ev.size, ev.side));
-        self.tai.on_trade(price, ev.size, ev.side);
-    }
+    /// Canonical Trade is retained for sequencing/coverage but deliberately
+    /// inert here: paired Fill is the single execution source, avoiding double count.
+    fn do_trade(&mut self, _ev: &CanonicalEvent) {}
 
     /// Full book reset. Tape state (last trade, cB/cA) and session-cumulative
     /// refresh aggregates describe history and survive.

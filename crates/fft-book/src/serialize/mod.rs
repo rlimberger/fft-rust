@@ -160,6 +160,39 @@ fn validate_cross_section(book: &Book) -> Result<(), RestoreError> {
             });
         }
     }
+    for (id, progress) in &book.refresh.fills {
+        let Some(&slot) = book.index.get(id) else {
+            return Err(RestoreError::Corrupt {
+                section: "REFRESH",
+                what: "Fill progress has no resting order",
+            });
+        };
+        if book.refresh.tombstones.contains_key(id) || progress.epoch > book.refresh.gap_epoch {
+            return Err(RestoreError::Corrupt {
+                section: "REFRESH",
+                what: "inconsistent Fill progress ownership",
+            });
+        }
+        let order = &book.orders[slot as usize];
+        if progress.depleted_ts.is_none() && progress.epoch != book.refresh.gap_epoch {
+            return Err(RestoreError::Corrupt {
+                section: "REFRESH",
+                what: "partial Fill progress crosses a gap",
+            });
+        }
+        if progress.depleted_ts.is_some() != (progress.qty >= u64::from(order.size)) {
+            return Err(RestoreError::Corrupt {
+                section: "REFRESH",
+                what: "Fill progress disagrees with displayed size",
+            });
+        }
+        if progress.depleted_ts.is_some_and(|ts| ts > book.now) {
+            return Err(RestoreError::Corrupt {
+                section: "REFRESH",
+                what: "Fill depletion time exceeds book time",
+            });
+        }
+    }
     for &(side, price) in book.refresh.per_price.keys() {
         if Side::from_u8(side).is_none() || price.checked_mul(book.tick).is_none() {
             return Err(RestoreError::Corrupt {

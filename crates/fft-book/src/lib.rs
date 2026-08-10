@@ -15,7 +15,8 @@
 //! - Exact queue-position queries for any resting order (PRD §4 claim 3).
 //! - The native-refresh (iceberg) state machine on the CME same-`order_id`
 //!   signature: per-order reload count, cumulative hidden volume, per-price
-//!   aggregates, and gap-aware *unavailable* classification (PRD §2.4, claim 4).
+//!   aggregates, cumulative non-mutating Fill depletion, and gap-aware
+//!   *unavailable* classification (PRD §2.4, claim 4).
 //! - Source-sequence and gap accounting (unexplained regressions panic).
 
 #![forbid(unsafe_code)]
@@ -50,7 +51,7 @@ pub const BOOK_SECTION_VERSION: u16 = 3;
 pub const FLOW_SECTION_VERSION: u16 = 1;
 
 /// Self-identifying REFRESH payload layout version.
-pub const REFRESH_SECTION_VERSION: u16 = 1;
+pub const REFRESH_SECTION_VERSION: u16 = 2;
 
 /// Native-refresh acceptance window, event-time ns: a fully-filled order id
 /// restored to positive displayed size more than this long after depletion is a
@@ -59,7 +60,7 @@ pub const REFRESH_SECTION_VERSION: u16 = 1;
 /// while bounding tombstone memory (expired candidates are GC'd).
 pub const REFRESH_WINDOW_NS: u64 = 1_000_000;
 
-/// Most recent trade print ([`fft_core::EventKind::Trade`]).
+/// Most recent execution print ([`fft_core::EventKind::Fill`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LastTrade {
     pub price: Price,

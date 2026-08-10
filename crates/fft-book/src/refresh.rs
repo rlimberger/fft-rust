@@ -1,8 +1,9 @@
 //! Native-refresh (iceberg) state machine — PRD §2.4, §4 claim 4.
 //!
 //! CME signature: the SAME order id restored to positive displayed size after
-//! its displayed size fully trades. Fully-filled orders leave a tombstone; a
-//! same-id/same-side/same-price placement within [`REFRESH_WINDOW_NS`] is a
+//! cumulative non-mutating Fill quantity reaches its displayed size. The
+//! companion Cancel/Modify is book truth; a removed order leaves a tombstone.
+//! A same-id/same-side/same-price placement within [`REFRESH_WINDOW_NS`] is a
 //! classified refresh **iff** no sequence gap separates depletion from restore
 //! (`epoch` check). Any gap makes reads Unavailable, never a false boolean.
 
@@ -21,8 +22,8 @@ pub(crate) struct LiveRefresh {
     pub unavailable: bool,
 }
 
-/// A fully-displayed-filled order awaiting either a same-id restore (native
-/// refresh), an explicit cancel (plain full fill), or window expiry.
+/// A fully-filled, companion-removed order awaiting a same-id restore, a
+/// second terminal Cancel, or window expiry.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Tombstone {
     pub side: Side,
@@ -35,15 +36,27 @@ pub(crate) struct Tombstone {
     pub hidden: u64,
 }
 
+/// Fill evidence for the current displayed tranche of a resting order.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FillProgress {
+    pub qty: u64,
+    /// First event time at which cumulative quantity reached displayed size.
+    pub depleted_ts: Option<u64>,
+    pub epoch: u32,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct RefreshTracker {
     pub live: HashMap<u64, LiveRefresh>,
     pub tombstones: HashMap<u64, Tombstone>,
+    pub fills: HashMap<u64, FillProgress>,
     /// Session-cumulative aggregates keyed by (side wire value, price ticks).
     pub per_price: BTreeMap<(u8, i64), PriceRefreshAgg>,
     /// Incremented on every sequence gap. Orders placed under an older epoch
     /// read Unavailable.
     pub gap_epoch: u32,
+    /// Fill executions whose price differed from their order's displayed price.
+    pub fills_off_display: u64,
 }
 
 impl RefreshTracker {
@@ -51,6 +64,7 @@ impl RefreshTracker {
     /// Preserve any observed lower-bound history, discard candidacy, and keep
     /// classification unavailable until later clean observed activity proves it.
     pub fn on_snapshot_loaded(&mut self, id: u64) {
+        self.fills.remove(&id);
         let (reloads, hidden) = self
             .tombstones
             .remove(&id)
@@ -69,6 +83,7 @@ impl RefreshTracker {
     /// An order id is being (re)placed in the book. Consumes a matching
     /// tombstone and classifies the restore.
     pub fn on_placed(&mut self, id: u64, side: Side, price: i64, size: u32, ts: u64) {
+        self.fills.remove(&id);
         let Some(t) = self.tombstones.remove(&id) else {
             return;
         };
@@ -107,35 +122,71 @@ impl RefreshTracker {
         }
     }
 
-    /// Displayed size of `id` fully traded and the order left the book.
-    pub fn on_depleted(&mut self, id: u64, side: Side, price: i64, ts: u64) {
+    /// Accumulate Fill evidence without changing displayed book state.
+    pub fn on_fill(&mut self, id: u64, displayed_size: u32, qty: u32, ts: u64) {
+        let progress = self.fills.entry(id).or_insert(FillProgress {
+            qty: 0,
+            depleted_ts: None,
+            epoch: self.gap_epoch,
+        });
+        progress.qty = progress
+            .qty
+            .checked_add(u64::from(qty))
+            .expect("fft-book: cumulative Fill quantity overflow");
+        if progress.depleted_ts.is_none() && progress.qty >= u64::from(displayed_size) {
+            progress.depleted_ts = Some(ts);
+        }
+    }
+
+    pub fn note_fill_off_display(&mut self) {
+        self.fills_off_display = self
+            .fills_off_display
+            .checked_add(1)
+            .expect("fft-book: off-display Fill counter overflow");
+    }
+
+    pub fn is_depleted(&self, id: u64) -> bool {
+        self.fills
+            .get(&id)
+            .is_some_and(|progress| progress.depleted_ts.is_some())
+    }
+
+    /// A non-depleting book change starts a new displayed-tranche accounting cycle.
+    pub fn on_book_change(&mut self, id: u64) {
+        self.fills.remove(&id);
+    }
+
+    /// The companion book event removed the live order. Full Fill evidence arms
+    /// a tombstone; partial evidence is consumed as an ordinary order death.
+    pub fn on_cancel_live(&mut self, id: u64, side: Side, price: i64) {
+        let depletion = self
+            .fills
+            .remove(&id)
+            .and_then(|progress| progress.depleted_ts.map(|ts| (ts, progress.epoch)));
         let (reloads, hidden) = self
             .live
             .remove(&id)
             .map(|e| (e.reloads, e.hidden))
             .unwrap_or((0, 0));
-        self.tombstones.insert(
-            id,
-            Tombstone {
-                side,
-                price,
-                depleted_ts: ts,
-                epoch: self.gap_epoch,
-                reloads,
-                hidden,
-            },
-        );
+        if let Some((depleted_ts, epoch)) = depletion {
+            self.tombstones.insert(
+                id,
+                Tombstone {
+                    side,
+                    price,
+                    depleted_ts,
+                    epoch,
+                    reloads,
+                    hidden,
+                },
+            );
+        }
     }
 
     /// Side recorded for a pending tombstone, if any (used to route a
     /// restore-by-Modify whose event carries no side).
     pub fn tombstone_side(&self, id: u64) -> Option<Side> {
         self.tombstones.get(&id).map(|t| t.side)
-    }
-
-    /// Live order cancelled: its refresh tracking ends with it.
-    pub fn on_cancel_live(&mut self, id: u64) {
-        self.live.remove(&id);
     }
 
     /// Explicit cancel of a depleted id: terminal, never a refresh.
@@ -145,7 +196,12 @@ impl RefreshTracker {
     }
 
     pub fn on_gap(&mut self) {
-        self.gap_epoch += 1;
+        self.gap_epoch = self
+            .gap_epoch
+            .checked_add(1)
+            .expect("fft-book: gap epoch overflow");
+        self.fills
+            .retain(|_, progress| progress.depleted_ts.is_some());
     }
 
     /// Book clear: all order-keyed state dies with the book; per-price session
@@ -153,6 +209,7 @@ impl RefreshTracker {
     pub fn on_clear(&mut self) {
         self.live.clear();
         self.tombstones.clear();
+        self.fills.clear();
     }
 
     /// Drop tombstones past the refresh window — their ids can no longer

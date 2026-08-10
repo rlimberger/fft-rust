@@ -40,7 +40,7 @@ fn busy_book() -> Book {
     book.apply(&sequenced(EventKind::Add, Side::Bid, 100, 3, 6, T0 + 5));
     book.apply(&sequenced(EventKind::Add, Side::Ask, 2000, 4, 7, T0 + 6));
     book.apply(&sequenced(EventKind::Add, Side::Bid, 998, 8, 8, T0 + 7));
-    book.apply(&sequenced(EventKind::Cancel, Side::None, 0, 0, 8, T0 + 8));
+    book.apply(&sequenced(EventKind::Cancel, Side::Bid, 998, 8, 8, T0 + 8));
     book.apply(&sequenced(EventKind::Fill, Side::Ask, 1001, 3, 4, T0 + 9));
     book.apply(&sequenced(EventKind::Trade, Side::Bid, 1001, 3, 0, T0 + 10));
     book.apply(&sequenced(EventKind::Trade, Side::Ask, 1000, 2, 0, T0 + 11));
@@ -56,14 +56,17 @@ fn busy_book() -> Book {
     book.apply(&gap(T0 + 14, 115, 220));
     book.apply(&sequenced(EventKind::Add, Side::Bid, 999, 6, 9, T0 + 15));
     book.apply(&sequenced(EventKind::Fill, Side::Bid, 999, 6, 9, T0 + 16));
+    book.apply(&sequenced(EventKind::Cancel, Side::Bid, 999, 6, 9, T0 + 17));
     book.apply(&sequenced(
         EventKind::Cancel,
-        Side::None,
-        0,
-        0,
+        Side::Bid,
+        998,
+        1,
         777,
-        T0 + 17,
+        T0 + 18,
     ));
+    book.apply(&sequenced(EventKind::Add, Side::Ask, 1002, 4, 11, T0 + 19));
+    book.apply(&sequenced(EventKind::Fill, Side::Ask, 1002, 4, 11, T0 + 20));
     book.check_invariants();
     book
 }
@@ -89,6 +92,7 @@ fn assert_books_equal(left: &Book, right: &Book) {
     assert_eq!(left.gaps_seen(), right.gaps_seen());
     assert_eq!(left.last_gap(), right.last_gap());
     assert_eq!(left.unknown_ref_events(), right.unknown_ref_events());
+    assert_eq!(left.fills_off_display(), right.fills_off_display());
     for side in [Side::Bid, Side::Ask] {
         let mut left_levels = Vec::new();
         left.for_each_level(side, |price, view| left_levels.push((price, view)));
@@ -134,12 +138,13 @@ fn restored_tail_matches_forward_with_snapshot_flow_refresh_and_gap() {
     let (book, flow, refresh) = sections(&forward);
     let mut restored = Book::restore(&book, &flow, &refresh).unwrap();
     let tail = [
-        modify(9, Side::Bid, 999, 12, T0 + 18),
-        add(20, Side::Bid, 1000, 4, T0 + 19),
-        fill(1, Side::Bid, 1000, 10, T0 + 20),
-        modify(5, Side::Ask, 1003, 9, T0 + 21),
-        cancel(3, T0 + 22),
-        trade(Side::Bid, 1001, 1, T0 + 23),
+        modify(11, Side::Ask, 1002, 6, T0 + 21),
+        modify(9, Side::Bid, 999, 12, T0 + 22),
+        add(20, Side::Bid, 1000, 4, T0 + 23),
+        fill(1, Side::Bid, 1000, 10, T0 + 24),
+        modify(5, Side::Ask, 1003, 9, T0 + 25),
+        cancel(3, Side::Bid, 999, 5, T0 + 26),
+        trade(Side::Bid, 1001, 1, T0 + 27),
     ];
     for event in &tail {
         forward.apply(event);
@@ -236,6 +241,71 @@ fn malformed_sections_return_typed_errors_without_panicking() {
     );
 }
 
+fn book_with_depleted_fill() -> Book {
+    let mut book = book();
+    book.apply(&add(1, Side::Bid, 100, 5, T0));
+    book.apply(&fill(1, Side::Bid, 100, 5, T0 + 1));
+    book
+}
+
+#[test]
+fn malformed_refresh_v2_fill_progress_is_rejected() {
+    let (book, flow, refresh) = sections(&book_with_depleted_fill());
+
+    let mut zero_qty = refresh.clone();
+    zero_qty[34..42].copy_from_slice(&0u64.to_le_bytes());
+    assert_eq!(
+        Book::restore(&book, &flow, &zero_qty).unwrap_err(),
+        RestoreError::Corrupt {
+            section: "REFRESH",
+            what: "zero Fill progress quantity",
+        }
+    );
+
+    let mut unknown_id = refresh.clone();
+    unknown_id[26..34].copy_from_slice(&2u64.to_le_bytes());
+    assert_eq!(
+        Book::restore(&book, &flow, &unknown_id).unwrap_err(),
+        RestoreError::Corrupt {
+            section: "REFRESH",
+            what: "Fill progress has no resting order",
+        }
+    );
+
+    let mut future_epoch = refresh.clone();
+    future_epoch[51..55].copy_from_slice(&1u32.to_le_bytes());
+    assert_eq!(
+        Book::restore(&book, &flow, &future_epoch).unwrap_err(),
+        RestoreError::Corrupt {
+            section: "REFRESH",
+            what: "inconsistent Fill progress ownership",
+        }
+    );
+
+    let mut partial_with_time = refresh;
+    partial_with_time[42] = 0;
+    assert_eq!(
+        Book::restore(&book, &flow, &partial_with_time).unwrap_err(),
+        RestoreError::Corrupt {
+            section: "REFRESH",
+            what: "partial Fill has depletion time",
+        }
+    );
+}
+
+#[test]
+fn off_display_fill_counter_roundtrips_in_refresh_v2() {
+    let mut live = book();
+    live.apply(&add(1, Side::Bid, 100, 5, T0));
+    live.apply(&fill(1, Side::Bid, 101, 2, T0 + 1));
+    assert_eq!(live.fills_off_display(), 1);
+
+    let (book, flow, refresh) = sections(&live);
+    let restored = Book::restore(&book, &flow, &refresh).unwrap();
+    assert_eq!(restored.fills_off_display(), 1);
+    assert_eq!(restored.serialize_refresh(), refresh);
+}
+
 #[test]
 fn every_single_byte_mutation_is_caught_without_unwinding() {
     let (book, flow, refresh) = sections(&busy_book());
@@ -261,12 +331,14 @@ fn tombstone_book(reverse: bool) -> Book {
     let mut book = book();
     book.apply(&add(1, Side::Bid, 100, 5, T0));
     book.apply(&add(2, Side::Bid, 100, 7, T0));
+    book.apply(&fill(1, Side::Bid, 100, 5, T0 + 1));
+    book.apply(&fill(2, Side::Bid, 100, 7, T0 + 2));
     if reverse {
-        book.apply(&fill(2, Side::Bid, 100, 7, T0 + 2));
-        book.apply(&fill(1, Side::Bid, 100, 5, T0 + 1));
+        book.apply(&cancel(1, Side::Bid, 100, 5, T0 + 3));
+        book.apply(&cancel(2, Side::Bid, 100, 7, T0 + 4));
     } else {
-        book.apply(&fill(1, Side::Bid, 100, 5, T0 + 1));
-        book.apply(&fill(2, Side::Bid, 100, 7, T0 + 2));
+        book.apply(&cancel(2, Side::Bid, 100, 7, T0 + 4));
+        book.apply(&cancel(1, Side::Bid, 100, 5, T0 + 3));
     }
     book
 }
@@ -285,7 +357,7 @@ fn flow_omits_untouched_and_stale_levels_but_keeps_fresh_empty() {
     let empty_len = book().serialize_flow().len();
     let mut book = book();
     book.apply(&add(1, Side::Bid, 100, 5, T0));
-    book.apply(&cancel(1, T0 + 1));
+    book.apply(&cancel(1, Side::Bid, 100, 5, T0 + 1));
     assert!(book.serialize_flow().len() > empty_len);
 
     book.apply(&ev(EventKind::Status, Side::None, 0, 0, 0, T0 + 6 * S, 0));
