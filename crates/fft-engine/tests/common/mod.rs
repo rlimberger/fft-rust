@@ -85,6 +85,41 @@ fn trade(aggressor: Side, ticks: i64, size: u32, ts: u64, seq: u32) -> Canonical
     }
 }
 
+/// Event-only log (no CHECKPOINT frames) with `ts_step_ns` between consecutive events.
+/// Used as the ingest-shaped input for the offline checkpoint pass.
+pub fn write_event_only_log(path: &Path, event_count: usize, ts_step_ns: u64) {
+    let meta = es_meta();
+    let mut writer = LogWriter::create(path, &meta).expect("create log");
+    let mut batch = Vec::with_capacity(event_count.min(512));
+    for i in 0..event_count {
+        let seq = (i as u32) + 1;
+        let ts = SESSION_OPEN_NS + (i as u64) * ts_step_ns;
+        let event = if i % 5 == 4 {
+            trade(
+                if i % 2 == 0 { Side::Bid } else { Side::Ask },
+                20_000 + (i as i64 % 7) - 3,
+                1 + (i as u32 % 5),
+                ts,
+                seq,
+            )
+        } else {
+            let side = if i % 2 == 0 { Side::Bid } else { Side::Ask };
+            let ticks = if side == Side::Bid {
+                20_000 - 1 - (i as i64 % 40)
+            } else {
+                20_000 + 1 + (i as i64 % 40)
+            };
+            add(u64::from(seq), side, ticks, 1 + (i as u32 % 10), ts, seq)
+        };
+        batch.push(event);
+        if batch.len() == 512 || i + 1 == event_count {
+            writer.append_events(&batch).expect("append");
+            batch.clear();
+        }
+    }
+    writer.close().expect("close");
+}
+
 pub fn write_checkpointed_log(path: &Path, event_count: usize, checkpoint_every: usize) {
     let meta = es_meta();
     let mut writer = LogWriter::create(path, &meta).expect("create log");

@@ -4,10 +4,14 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod checkpoint;
 mod command;
 mod service;
 mod snapshot;
 
+pub use checkpoint::{
+    CHECKPOINT_EVENT_CADENCE_NS, CheckpointError, CheckpointSummary, write_checkpointed_copy,
+};
 pub use command::{EngineCmd, LiveConfig, Source};
 pub use service::{
     EngineConfig, EngineExit, EngineHandle, EngineService, EngineStateError, Watermarks,
