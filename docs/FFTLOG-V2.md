@@ -94,7 +94,13 @@ Fixed 32-byte records after decompression:
   execution price may legally differ from the displayed price (opening auction,
   market-with-protection). Consumers use Fill for the tape, cB/cA, and native-refresh
   depletion accounting only; a displayed-vs-execution price difference is **counted
-  loudly, never a panic and never a book mutation**.
+  loudly, never a panic and never a book mutation**. `side` may be **None** on
+  Trade/Fill records (opening auction: no aggressor — observed on the first event of
+  the Wed session, 17:00:00.000000000). A consumer never panics on a sideless notice:
+  the book resolves the resting side by order-id lookup when the order is known; an
+  unknown id with no side is unknown-ref accounting (tape recorded with aggressor
+  None, no cB/cA attribution, counted loudly). The profile already treats sideless
+  trades as volume/TPO-only.
 - **Batch gap policy (frozen 2026-08-10):** Databento batch files are symbol-filtered
   (the sample job is `ES.FUT` parent), so **forward channel-seq holes are expected
   filtering artifacts, never gaps** — completeness authority for batch data is the
