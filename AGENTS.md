@@ -32,6 +32,10 @@ Linux/Wayland first. No order entry.
 
 - The main session **orchestrates**; work fans out to parallel subagents with **surgically
   precise briefs** (exact paths, interfaces, output format, explicit non-goals).
+- **External CLI workers always run Grok 4.5 at high effort** (standing order, René
+  2026-08-10): `grok -m grok-4.5 --effort high …` and
+  `cursor-agent --model cursor-grok-4.5-high …`. Never launch a worker on a default/auto
+  model.
 - Quality-critical artifacts (docs, architecture, synthesis) are authored by the
   orchestrator, not pasted from a subagent.
 - Don't rush. When genuinely stuck or facing a product decision, **ask René** — don't guess.
