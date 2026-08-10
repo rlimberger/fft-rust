@@ -69,11 +69,16 @@ External workforce (2026-08-10): cursor-Grok (busy: INGEST-GAP-POLICY), GPT 5.6 
 (idle → BOOK-FILL-SEMANTICS), xai-Grok 4.5 (idle → PROFILE-WAVE). Orchestrator
 subagents: profile investigation done; UI-GATE-EVIDENCE in flight.
 
+Accepted + pushed: PROFILE-WAVE (`d1862d7`), INGEST-GAP-POLICY (`fcdc5f6`, Wed v3 =
+0 gaps / 1880 holes ignored), BOOK-FILL-SEMANTICS (`1efc320`), side=None freeze
+(`92d4112`). All six checkpoint sections now exist → checkpoint pass unblocked.
+
 In flight next:
-- **INGEST-GAP-POLICY** (cursor-Grok, fft-ingest): batch gap policy; re-ingest Wed v3.
-- **BOOK-FILL-SEMANTICS** (Sol, fft-book): Fill per frozen FFTLOG-V2 §4.
-- **PROFILE-WAVE** (xai-Grok, fft-profile): claims A/B/C fixes + SESSION(6) split +
-  snapshot-flag guard, per orchestrator brief.
+- **FILL-SIDE-NONE** (Sol, fft-book): sideless auction fills per frozen §4.
+- **CHECKPOINT-PASS** (cursor-Grok, fft-engine bin — orchestrator-delegated track in
+  the orchestrator's crate): offline checkpointed-copy writer per ENGINE.md §4(2).
+- **LOG-POLISH + PERF-CI** (xai-Grok, fft-log + perf workflow): was_live/is_live
+  semantics, reader.rs split, perf.yml --gate-out wiring.
 - **UI-GATE-EVIDENCE**: ACCEPTED — coverage exit line + --gate-out JSON evidence
   (git sha+dirty, refresh/deadline, p50/p95/p99/max, coverage; FAIL on any drop).
   Two engine-side follow-ups it exposed (orchestrator's crate): (a) an engine-thread
