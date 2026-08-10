@@ -47,7 +47,7 @@ impl PaneState {
         }
     }
 
-    /// Provisional M4 binding: 1/2/4 affects only the hovered pane.
+    /// PRD §5 hover routing: 1/2/4 affects only the hovered pane.
     pub fn set_hovered_scale(&mut self, scale: u8) -> bool {
         validate_scale(scale);
         let target = match self.hovered {
@@ -59,6 +59,20 @@ impl PaneState {
             return false;
         }
         *target = scale;
+        true
+    }
+
+    /// PRD §5 `t`: copy the hovered pane's tick scale onto the other pane.
+    pub fn sync_scale_from_hovered(&mut self) -> bool {
+        let (source, target) = match self.hovered {
+            Some(Pane::MarketProfile) => (self.mp_scale, &mut self.dom_scale),
+            Some(Pane::Dom) => (self.dom_scale, &mut self.mp_scale),
+            None => return false,
+        };
+        if *target == source {
+            return false;
+        }
+        *target = source;
         true
     }
 
@@ -183,6 +197,21 @@ mod tests {
         state.set_hovered(Pane::Dom, true);
         assert!(state.set_hovered_scale(2));
         assert_eq!((state.mp_scale, state.dom_scale), (4, 2));
+    }
+
+    #[test]
+    fn t_syncs_other_pane_to_hovered_scale() {
+        let mut state = PaneState::default();
+        assert!(!state.sync_scale_from_hovered(), "no hover is a no-op");
+        state.set_hovered(Pane::MarketProfile, true);
+        assert!(state.set_hovered_scale(4));
+        assert!(state.sync_scale_from_hovered());
+        assert_eq!((state.mp_scale, state.dom_scale), (4, 4));
+        assert!(!state.sync_scale_from_hovered(), "already equal is a no-op");
+        state.set_hovered(Pane::Dom, true);
+        assert!(state.set_hovered_scale(2));
+        assert!(state.sync_scale_from_hovered());
+        assert_eq!((state.mp_scale, state.dom_scale), (2, 2));
     }
 
     #[test]

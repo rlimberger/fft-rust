@@ -196,6 +196,7 @@ impl Render for Shell {
                         "1" => (true, panes.set_hovered_scale(1)),
                         "2" => (true, panes.set_hovered_scale(2)),
                         "4" => (true, panes.set_hovered_scale(4)),
+                        "t" => (true, panes.sync_scale_from_hovered()),
                         "c" => (true, panes.recenter()),
                         _ => (false, false),
                     }
