@@ -1,17 +1,22 @@
 //! Daytradr DOM ladder as one custom GPUI `Element` — quads + shaped text, no div-per-cell.
 
+use std::cell::RefCell;
+use std::ops::Range;
+use std::rc::Rc;
 use std::sync::Arc;
 
-use fft_engine::{DomPriceRow, DomRenderState, RenderSnapshot};
+use fft_engine::RenderSnapshot;
 use gpui::{
     App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement, LayoutId,
-    Pixels, Point, ShapedLine, SharedString, Style, TextAlign, TextRun, Window, fill, hsla, point,
-    px, relative, rgb, size,
+    Pixels, Point, ShapedLine, Style, TextAlign, Window, fill, hsla, point, px, relative, rgb,
+    size,
 };
 
+use crate::dom_view::{AggregatedDom, DomView, DomViewRow};
+use crate::glyph_cache::GlyphCache;
 use crate::layout::{
     COL_LABELS, HEADER_H, ROW_H, column_rects, depth_block_width, format_price, format_size,
-    is_inside_market, max_visible_rows, row_top_y, visible_row_window,
+    is_inside_market, max_visible_rows, row_top_y,
 };
 
 const BG: u32 = 0x101010;
@@ -25,11 +30,21 @@ const GRID: u32 = 0x222222;
 /// Single-element DOM ladder driven by one coherent [`RenderSnapshot`].
 pub struct DomLadder {
     snapshot: Arc<RenderSnapshot>,
+    view: DomView,
+    glyph_cache: Rc<RefCell<GlyphCache>>,
 }
 
 impl DomLadder {
-    pub fn new(snapshot: Arc<RenderSnapshot>) -> Self {
-        Self { snapshot }
+    pub fn new(
+        snapshot: Arc<RenderSnapshot>,
+        view: DomView,
+        glyph_cache: Rc<RefCell<GlyphCache>>,
+    ) -> Self {
+        Self {
+            snapshot,
+            view,
+            glyph_cache,
+        }
     }
 }
 
@@ -51,6 +66,8 @@ struct PreparedText {
 /// Prepaint cache for shaped glyph runs (associated type on [`Element`]; must be public).
 pub struct Prepaint {
     texts: Vec<PreparedText>,
+    dom: AggregatedDom,
+    row_range: Range<usize>,
 }
 
 fn text_color() -> gpui::Hsla {
@@ -61,44 +78,7 @@ fn muted_color() -> gpui::Hsla {
     hsla(0.0, 0.0, 0.55, 1.0)
 }
 
-fn shape(
-    window: &mut Window,
-    text: impl Into<SharedString>,
-    color: gpui::Hsla,
-    font_size: Pixels,
-) -> ShapedLine {
-    let text = text.into();
-    let style = window.text_style();
-    let run = TextRun {
-        len: text.len(),
-        font: style.font(),
-        color,
-        background_color: None,
-        underline: None,
-        strikethrough: None,
-    };
-    window
-        .text_system()
-        .shape_line(text, font_size, &[run], None)
-}
-
-fn center_row_index(dom: &DomRenderState) -> Option<usize> {
-    if dom.rows.is_empty() {
-        return None;
-    }
-    let target = match (dom.best_bid, dom.best_ask) {
-        (Some(b), Some(a)) => (b.0 + a.0) / 2,
-        (Some(b), None) => b.0,
-        (None, Some(a)) => a.0,
-        (None, None) => return Some(dom.rows.len() / 2),
-    };
-    match dom.rows.binary_search_by_key(&target, |r| r.price.0) {
-        Ok(i) => Some(i),
-        Err(i) => Some(i.min(dom.rows.len() - 1)),
-    }
-}
-
-fn max_side_sizes(rows: &[DomPriceRow]) -> (u64, u64, u64) {
+fn max_side_sizes(rows: &[DomViewRow]) -> (u64, u64, u64) {
     let mut max_bid = 0u64;
     let mut max_ask = 0u64;
     let mut max_vol = 0u64;
@@ -144,7 +124,7 @@ impl Element for DomLadder {
         window: &mut Window,
         _cx: &mut App,
     ) -> Self::PrepaintState {
-        let dom = &self.snapshot.dom;
+        let dom = self.view.aggregate(&self.snapshot.dom);
         let font_size = px(12.);
         let origin_x = f32::from(bounds.origin.x);
         let origin_y = f32::from(bounds.origin.y);
@@ -153,11 +133,12 @@ impl Element for DomLadder {
         let cols = column_rects(origin_x, width);
         let body_h = (height - HEADER_H).max(0.0);
         let max_rows = max_visible_rows(body_h);
-        let (start, end) = visible_row_window(dom.rows.len(), center_row_index(dom), max_rows);
-        let mut texts = Vec::with_capacity(6 + (end - start) * 6);
+        let row_range = self.view.window_range(&dom, max_rows);
+        let mut texts = Vec::with_capacity(6 + row_range.len() * 6);
+        let mut glyph_cache = self.glyph_cache.borrow_mut();
 
         for (i, label) in COL_LABELS.iter().enumerate() {
-            let line = shape(window, *label, muted_color(), font_size);
+            let line = glyph_cache.get_or_shape(window, *label, muted_color(), font_size);
             let col = cols[i];
             texts.push(PreparedText {
                 line,
@@ -168,7 +149,7 @@ impl Element for DomLadder {
         }
 
         // Descending price: highest at top.
-        let slice = &dom.rows[start..end];
+        let slice = &dom.rows[row_range.clone()];
         for (from_top, row) in slice.iter().rev().enumerate() {
             let y = row_top_y(origin_y, from_top) + 2.0;
             let cells = [
@@ -184,7 +165,7 @@ impl Element for DomLadder {
                     continue;
                 }
                 let col = cols[ci];
-                let line = shape(window, text, text_color(), font_size);
+                let line = glyph_cache.get_or_shape(window, text, text_color(), font_size);
                 texts.push(PreparedText {
                     line,
                     origin: point(px(col.x + 4.0), px(y)),
@@ -194,7 +175,12 @@ impl Element for DomLadder {
             }
         }
 
-        Prepaint { texts }
+        drop(glyph_cache);
+        Prepaint {
+            texts,
+            dom,
+            row_range,
+        }
     }
 
     fn paint(
@@ -212,19 +198,15 @@ impl Element for DomLadder {
         let header = Bounds::new(bounds.origin, size(bounds.size.width, px(HEADER_H)));
         window.paint_quad(fill(header, rgb(HEADER_BG)));
 
-        let dom = &self.snapshot.dom;
+        let dom = &prepaint.dom;
         let origin_x = f32::from(bounds.origin.x);
         let origin_y = f32::from(bounds.origin.y);
         let width = f32::from(bounds.size.width);
-        let height = f32::from(bounds.size.height);
         let cols = column_rects(origin_x, width);
-        let body_h = (height - HEADER_H).max(0.0);
-        let max_rows = max_visible_rows(body_h);
-        let (start, end) = visible_row_window(dom.rows.len(), center_row_index(dom), max_rows);
-        let slice = &dom.rows[start..end];
+        let slice = &dom.rows[prepaint.row_range.clone()];
         let (max_bid, max_ask, max_vol) = max_side_sizes(slice);
-        let best_bid = dom.best_bid.map(|p| p.0);
-        let best_ask = dom.best_ask.map(|p| p.0);
+        let best_bid = dom.best_bid.map(|price| price.0);
+        let best_ask = dom.best_ask.map(|price| price.0);
 
         for (from_top, row) in slice.iter().rev().enumerate() {
             let y = row_top_y(origin_y, from_top);

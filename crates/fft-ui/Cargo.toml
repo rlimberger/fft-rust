@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+fft-core = { path = "../fft-core" }
 fft-engine = { path = "../fft-engine" }
 gpui.workspace = true
 gpui_platform.workspace = true

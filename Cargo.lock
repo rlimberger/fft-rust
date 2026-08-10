@@ -1908,6 +1908,7 @@ dependencies = [
 name = "fft-ui"
 version = "0.1.0"
 dependencies = [
+ "fft-core",
  "fft-engine",
  "gpui",
  "gpui_platform",
