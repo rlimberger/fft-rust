@@ -12,6 +12,25 @@ first); recenter key `c`; models always pinned, never default/auto.
 
 ## Wave 5 board (2026-08-10 late night — READ THIS FIRST, next orchestrator)
 
+**Standing directive (René, this session): gate/replay sessions run anchored at the PRD
+§6 sim-live head — Wed 2026-07-29 09:50 America/New_York.** (René wrote "wed 7-28"; the
+sample week's Wednesday is the 29th and PRD §6 pins 07-29 — interpreted as the PRD
+anchor.) Mechanism landed:
+- `fft --replay-at <ts>` (`3d8e6f9`): ns-UTC or `YYYY-MM-DDTHH:MM:SSZ`; anchor = UTC
+  `2026-07-29T13:50:00Z`. Shell sends SetSource → Seek(gen 1) → Play; future UI scrub
+  seek counters must start ≥ 2. The anchor lands verbatim in the evidence `gate` field.
+- Engine batch-order defect found by the first anchored run and fixed (`9dd8c4d`): a
+  `[Seek, Play]` batch executed the coalesced seek *after* the loop, and the seek's
+  pause swallowed the Play — anchored runs seeked then sat at 0 events. Batch position
+  now is meaning (Play-after-Seek resumes from the anchor; Pause-after-Seek stays
+  paused). Two protocol tests.
+- Anchored gate evidence committed: `2026-08-10-m4-two-pane-gate-anchored.json` —
+  PASS, 3601/3601, 0 missed, max 17.084 ms, **coverage 47,634 events (~10× the log-open
+  trickle)** at RTH load through checkpoint-restore + 60 s forward flow.
+- Canonical anchored gate command:
+  `./target/release/fft --gate 60 --replay /tmp/esu6-wed-v3-ckpt.fftlog
+  --replay-at 2026-07-29T13:50:00Z --gate-out perf-runner/results/<date>-<gate>.json`
+
 State at session close (all listed work committed + pushed; workspace fmt/clippy/test green):
 - **M3 + M4 frame gates PASS with real evidence.**
   `perf-runner/results/2026-08-10-m3-frame-gate.json` (single-pane gate file the board
