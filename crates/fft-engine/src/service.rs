@@ -233,6 +233,11 @@ impl Runtime {
         backlog: &mut Vec<EngineCmd>,
     ) -> bool {
         let mut selected_seek: Option<(u64, u64)> = None;
+        // Batch order matters: `[Seek, Play]` means "seek, then play from there", but the
+        // coalesced seek only executes after this loop — so a Play seen *after* the seek
+        // is remembered and re-applied once the seek lands (otherwise execute_seek's
+        // pause would silently swallow it).
+        let mut play_after_seek = false;
         for command in commands {
             match command {
                 EngineCmd::SetSource(Source::Replay { path }) => {
@@ -264,9 +269,13 @@ impl Runtime {
                 EngineCmd::Play => {
                     assert!(self.source.is_some(), "fft-engine Play without a source");
                     self.playing = true;
+                    play_after_seek = selected_seek.is_some();
                     self.reset_pacing();
                 }
-                EngineCmd::Pause => self.playing = false,
+                EngineCmd::Pause => {
+                    self.playing = false;
+                    play_after_seek = false;
+                }
                 EngineCmd::SetSpeed(speed) => {
                     assert!(
                         speed.is_finite() && speed > 0.0,
@@ -293,6 +302,9 @@ impl Runtime {
                     if selected_seek.is_none_or(|(_, selected)| generation > selected) {
                         selected_seek = Some((ts, generation));
                     }
+                    // Seek pauses *at its position in the batch order*: a Play that
+                    // follows in the same batch resumes after the seek executes below.
+                    self.playing = false;
                 }
                 EngineCmd::GoLive => {
                     panic!("fft-engine GoLive requires an active live source")
@@ -302,6 +314,12 @@ impl Runtime {
         }
         if let Some((ts, generation)) = selected_seek {
             self.execute_seek(ts, generation, rx, backlog);
+            // `[.., Seek, Play]` batch order: resume from the seek target. Skipped when
+            // the seek was superseded — the newer seek (now in the backlog) decides.
+            if play_after_seek && generation == self.latest_seek {
+                self.playing = true;
+                self.reset_pacing();
+            }
         }
         false
     }

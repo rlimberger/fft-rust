@@ -299,6 +299,85 @@ fn set_source_resets_seek_generations() {
 }
 
 #[test]
+fn seek_then_play_in_one_batch_resumes_from_the_anchor() {
+    let tmp = temp_path("anchored-start");
+    write_checkpointed_log(tmp.path(), 300, 100);
+    let wakes = Arc::new(AtomicU64::new(0));
+    let handle = spawn_engine(wakes);
+
+    // The `--replay-at` shell sequence: SetSource → Seek → Play, one burst. Batch
+    // order must mean "seek, then play from there" — the coalesced seek executing
+    // after the drain loop must not swallow the Play that followed it.
+    handle
+        .send(EngineCmd::SetSource(Source::Replay {
+            path: tmp.path().to_path_buf(),
+        }))
+        .unwrap();
+    handle
+        .send(EngineCmd::Seek {
+            ts: SESSION_OPEN_NS + 150 * 1_000_000,
+            generation: 1,
+        })
+        .unwrap();
+    handle.send(EngineCmd::SetSpeed(1_000_000.0)).unwrap();
+    handle.send(EngineCmd::Play).unwrap();
+
+    // The seek's own publication (seek_generation 1) is transient: forward flow
+    // resumes immediately and publishes with generation 0, so observe durable
+    // facts instead — flow reaching the end of the log past the anchor.
+    wait_until(Duration::from_secs(5), || {
+        handle.snapshots().load().applied_seq == 300
+    });
+
+    let exit = handle.shutdown().expect("join");
+    assert_eq!(exit.seeks_executed, 1);
+    // Coverage counts only forward flow after the anchor — strictly fewer than
+    // the whole log, proving Play resumed from the seek, not from frame zero.
+    assert!(
+        exit.coverage.events_applied > 0 && exit.coverage.events_applied < 300,
+        "forward flow resumed from the anchor, applied {} events",
+        exit.coverage.events_applied
+    );
+    assert_eq!(exit.watermarks.applied_seq, 300);
+}
+
+#[test]
+fn pause_after_seek_in_one_batch_stays_paused() {
+    let tmp = temp_path("seek-pause");
+    write_checkpointed_log(tmp.path(), 300, 100);
+    let wakes = Arc::new(AtomicU64::new(0));
+    let handle = spawn_engine(wakes);
+
+    handle
+        .send(EngineCmd::SetSource(Source::Replay {
+            path: tmp.path().to_path_buf(),
+        }))
+        .unwrap();
+    handle.send(EngineCmd::SetSpeed(1_000_000.0)).unwrap();
+    handle.send(EngineCmd::Play).unwrap();
+    handle
+        .send(EngineCmd::Seek {
+            ts: SESSION_OPEN_NS + 150 * 1_000_000,
+            generation: 1,
+        })
+        .unwrap();
+    handle.send(EngineCmd::Pause).unwrap();
+
+    let anchored = wait_for_seek(&handle, 1);
+    // Pause followed the seek in batch order: no forward flow after it lands.
+    std::thread::sleep(Duration::from_millis(50));
+    let now = handle.snapshots().load();
+    assert_eq!(
+        now.applied_seq, anchored.applied_seq,
+        "engine stayed paused"
+    );
+    assert_eq!(now.coverage.events_applied, 0, "no forward events applied");
+
+    let exit = handle.shutdown().expect("join");
+    assert_eq!(exit.seeks_executed, 1);
+}
+
+#[test]
 fn seek_then_backward_seek_resets_watermarks() {
     let tmp = temp_path("seek-back");
     write_checkpointed_log(tmp.path(), 200, 50);
