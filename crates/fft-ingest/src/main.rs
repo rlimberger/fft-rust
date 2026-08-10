@@ -236,11 +236,12 @@ fn cmd_write(args: &[String]) -> Result<(), IngestError> {
     let config = parse_write_args(args)?;
     let stats = write_fftlog(&config)?;
     println!(
-        "wrote {} events ({} frames, {} snapshots, {} gaps) -> {} \
+        "wrote {} events ({} frames, {} snapshots kept, {} snapshots dropped, {} gaps) -> {} \
          instrument_id {} trade_date {}",
         stats.events_written,
         stats.frames,
         stats.snapshots_kept,
+        stats.snapshots_dropped,
         stats.gaps_kept,
         config.output.display(),
         config.instrument_id,

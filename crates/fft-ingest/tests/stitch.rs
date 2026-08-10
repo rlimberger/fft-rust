@@ -1,5 +1,5 @@
-//! Multi-file stitch: channel-sequence continuity across ordered inputs, and Gap
-//! trade-date bucketing when the discontinuity sits on a CT session boundary.
+//! Multi-file stitch: channel-sequence continuity, §4 snapshot admission, and Gap
+//! trade-date bucketing across the CT session open.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -42,7 +42,7 @@ fn meta() -> Metadata {
         .build()
 }
 
-fn mbo(seq: u32, ts: u64) -> MboMsg {
+fn mbo_live(seq: u32, ts: u64) -> MboMsg {
     MboMsg {
         hd: RecordHeader::new::<MboMsg>(rtype::MBO, 1, INSTRUMENT_ID, ts),
         order_id: 1_000 + u64::from(seq),
@@ -58,15 +58,31 @@ fn mbo(seq: u32, ts: u64) -> MboMsg {
     }
 }
 
-fn write_dbn(path: &Path, sequences: &[(u32, u64)]) {
+fn mbo_snap(seq: u32, ts: u64) -> MboMsg {
+    let mut m = mbo_live(seq, ts);
+    m.flags = dbn::FlagSet::empty().set_snapshot();
+    // Snapshot order ids distinct from live, and non-channel seqs by construction.
+    m.order_id = 9_000_000 + u64::from(seq);
+    m
+}
+
+fn write_dbn_records(path: &Path, records: &[MboMsg]) {
     let _ = std::fs::remove_file(path);
     let file = std::fs::File::create(path).expect("create dbn");
     let mut enc = Encoder::with_zstd(file, &meta()).expect("encoder");
-    for &(seq, ts) in sequences {
-        enc.encode_record(&mbo(seq, ts)).expect("encode mbo");
+    for rec in records {
+        enc.encode_record(rec).expect("encode mbo");
     }
     enc.flush().expect("flush");
     drop(enc);
+}
+
+fn write_dbn(path: &Path, sequences: &[(u32, u64)]) {
+    let recs: Vec<_> = sequences
+        .iter()
+        .map(|&(seq, ts)| mbo_live(seq, ts))
+        .collect();
+    write_dbn_records(path, &recs);
 }
 
 fn write_cfg(out: PathBuf, inputs: Vec<PathBuf>) -> WriteConfig {
@@ -89,6 +105,10 @@ fn read_events(path: &Path) -> Vec<fft_core::CanonicalEvent> {
         .events(0..reader.frame_count())
         .collect::<Result<_, _>>()
         .expect("decode events")
+}
+
+fn snap_flag(ev: &fft_core::CanonicalEvent) -> bool {
+    ev.flags & u16::from(dbn::flags::SNAPSHOT) != 0
 }
 
 #[test]
@@ -177,6 +197,128 @@ fn gap_buckets_by_observing_ts_across_session_open() {
     assert_eq!(events[0].ts, Ts(open + 1));
     assert_eq!(events[1].kind, EventKind::Add);
     assert_eq!(events[1].seq.0, 60);
+
+    let _ = std::fs::remove_file(&a);
+    let _ = std::fs::remove_file(&b);
+    let _ = std::fs::remove_file(&out);
+}
+
+/// §4 snapshot admission: keep a file's SNAPSHOT block iff its first non-snapshot
+/// event buckets to the target trade date. Stale prior-day block is dropped; the
+/// admitted block is kept; boundary gap from live seq continuity still fires; snapshot
+/// seqs never synthesize phantom Gaps.
+#[test]
+fn snapshot_admission_keeps_target_day_block_drops_stale() {
+    let open = session_open(date(2026, 7, 29)).0;
+    // Stale snap ts (well before open) and live ts for Mon / Wed.
+    let stale_snap_ts = open - 86_400_000_000_000; // ~1 day before open
+    let mon_live_ts = open - 1;
+    let wed_live_ts = open + 1_000_000_000;
+
+    let a = temp_path("a-snap.dbn.zst");
+    let b = temp_path("b-snap.dbn.zst");
+    let out = temp_path("snap-admit.fftlog");
+    let _ = std::fs::remove_file(&out);
+
+    // File A (stale day): 2 snapshot records with wild non-channel seqs, then Mon live.
+    write_dbn_records(
+        &a,
+        &[
+            mbo_snap(50_000, stale_snap_ts),
+            mbo_snap(1, stale_snap_ts + 1), // discontinuous snap seq — must not gap
+            mbo_live(100, mon_live_ts),
+        ],
+    );
+    // File B (target day): 3 snapshots + Wed live with a real channel jump from 100 → 200.
+    write_dbn_records(
+        &b,
+        &[
+            mbo_snap(99_999, stale_snap_ts),
+            mbo_snap(7, stale_snap_ts + 2),
+            mbo_snap(7, stale_snap_ts + 3),
+            mbo_live(200, wed_live_ts),
+        ],
+    );
+
+    let stats = write_fftlog(&write_cfg(out.clone(), vec![a.clone(), b.clone()])).expect("write");
+    assert_eq!(
+        stats.snapshots_dropped, 2,
+        "file A snapshot block must be dropped"
+    );
+    assert_eq!(
+        stats.snapshots_kept, 3,
+        "file B snapshot block must be admitted"
+    );
+    assert_eq!(
+        stats.gaps_kept, 1,
+        "live boundary discontinuity still emits one Gap"
+    );
+    // 3 snaps (B) + 1 Gap + 1 Wed live (Mon live dropped by trade-date filter).
+    assert_eq!(stats.events_written, 5);
+
+    let events = read_events(&out);
+    let snaps: Vec<_> = events.iter().filter(|e| snap_flag(e)).collect();
+    assert_eq!(snaps.len(), 3);
+    assert!(snaps.iter().all(|e| e.seq.0 == 99_999 || e.seq.0 == 7));
+
+    let gaps: Vec<_> = events.iter().filter(|e| e.kind == EventKind::Gap).collect();
+    assert_eq!(gaps.len(), 1);
+    assert_eq!(
+        gaps[0].gap_seqs(),
+        (101, 200),
+        "gap must be live-channel 100→200, not a phantom from snapshot seqs"
+    );
+
+    // No extra gaps from snapshot seq discontinuities.
+    assert_eq!(
+        events.iter().filter(|e| e.kind == EventKind::Gap).count(),
+        1
+    );
+
+    let _ = std::fs::remove_file(&a);
+    let _ = std::fs::remove_file(&b);
+    let _ = std::fs::remove_file(&out);
+}
+
+/// Snapshot records bypass GapDetector entirely: wild snap seqs between continuous
+/// live channel seqs produce zero Gaps.
+#[test]
+fn snapshot_seqs_never_synthesize_gaps() {
+    let a = temp_path("snap-gap-a.dbn.zst");
+    let b = temp_path("snap-gap-b.dbn.zst");
+    let out = temp_path("snap-gap.fftlog");
+    let _ = std::fs::remove_file(&out);
+
+    write_dbn_records(
+        &a,
+        &[
+            mbo_snap(999_999, WED_SESSION_TS),
+            mbo_live(10, WED_SESSION_TS + 1),
+            mbo_live(11, WED_SESSION_TS + 2),
+        ],
+    );
+    write_dbn_records(
+        &b,
+        &[
+            mbo_snap(1, WED_SESSION_TS + 3),
+            mbo_snap(500_000, WED_SESSION_TS + 4),
+            mbo_live(12, WED_SESSION_TS + 5),
+            mbo_live(12, WED_SESSION_TS + 6), // same packet
+        ],
+    );
+
+    let stats = write_fftlog(&write_cfg(out.clone(), vec![a.clone(), b.clone()])).expect("write");
+    assert_eq!(
+        stats.gaps_kept, 0,
+        "snapshot seqs must not feed the gap detector"
+    );
+    assert_eq!(stats.snapshots_kept, 3);
+    assert_eq!(stats.snapshots_dropped, 0);
+    // 3 snaps + 4 live
+    assert_eq!(stats.events_written, 7);
+
+    let events = read_events(&out);
+    assert!(events.iter().all(|e| e.kind != EventKind::Gap));
 
     let _ = std::fs::remove_file(&a);
     let _ = std::fs::remove_file(&b);

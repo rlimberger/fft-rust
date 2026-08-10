@@ -1,15 +1,14 @@
-//! Golden DBN → fftlog v2 → LogReader roundtrip.
+//! Golden DBN decode + write-path behaviour under §4 snapshot admission.
 //! Paths resolve from `CARGO_MANIFEST_DIR` (docs/FIXTURES.md).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use fft_ingest::decode::canonical_line;
+use fft_ingest::decode::{canonical_line, open_zstd_file};
 use fft_ingest::write::{
     ES_HELP_DISPLAY_FACTOR, ES_HELP_TICK, ES_HELP_UOM_QTY, WriteConfig, decode_filtered,
     write_fftlog,
 };
-use fft_log::LogReader;
 use jiff::civil::date;
 
 fn fixtures_ingest() -> PathBuf {
@@ -29,66 +28,60 @@ fn temp_fftlog(name: &str) -> PathBuf {
 /// instrument in the Wed day-file slice), not ESU6 42140870.
 const GOLDEN_INSTRUMENT_ID: u32 = 10_252;
 
+/// Raw decode of the golden head still matches the committed expect vector (admission
+/// is a write-path concern; the expect pins the DBN→canonical map).
 #[test]
-fn wed_head_write_roundtrip_matches_decoder_and_expect() {
+fn wed_head_raw_decode_matches_expect() {
     let dbn = fixtures_ingest().join("glbx-mdp3-20260729-head.dbn.zst");
     let expect_path = fixtures_ingest().join("glbx-mdp3-20260729-head.expect");
     assert!(dbn.is_file(), "missing {}", dbn.display());
 
+    let expect = std::fs::read_to_string(&expect_path).expect("read expect");
+    let expect_lines: Vec<&str> = expect.lines().collect();
+    assert_eq!(expect_lines.len(), 50);
+
+    let mut decoder = open_zstd_file(&dbn).expect("open golden DBN");
+    let mut got = Vec::with_capacity(50);
+    while got.len() < 50 {
+        let ev = decoder
+            .next_event()
+            .expect("decode")
+            .unwrap_or_else(|| panic!("fixture ended after {} events, wanted 50", got.len()));
+        got.push(canonical_line(&ev));
+    }
+    assert_eq!(got, expect_lines);
+}
+
+/// Truncated pure-snapshot head has no non-snapshot event, so §4 admission cannot
+/// establish a trade-date decision and drops the block — write refuses empty output.
+#[test]
+fn pure_snapshot_head_is_not_admitted_without_live_anchor() {
+    let dbn = fixtures_ingest().join("glbx-mdp3-20260729-head.dbn.zst");
     let trade_date = date(2026, 7, 29);
-    let decoded =
-        decode_filtered(&dbn, GOLDEN_INSTRUMENT_ID, trade_date).expect("decode filtered golden");
+    let decoded = decode_filtered(&dbn, GOLDEN_INSTRUMENT_ID, trade_date).expect("decode filtered");
     assert!(
-        decoded.len() >= 50,
-        "golden filter produced {} events, need ≥ 50",
+        decoded.is_empty(),
+        "snapshot-only truncated head must not admit without a non-snapshot anchor; got {}",
         decoded.len()
     );
 
-    let out = temp_fftlog("wed-head");
+    let out = temp_fftlog("wed-head-empty");
     let _ = std::fs::remove_file(&out);
     let cfg = WriteConfig {
         output: out.clone(),
-        inputs: vec![dbn.clone()],
+        inputs: vec![dbn],
         instrument_id: GOLDEN_INSTRUMENT_ID,
-        symbol: Some("GOLDEN-10252".into()), // fixture head has no ESU6 mapping for 10252
+        symbol: Some("GOLDEN-10252".into()),
         trade_date,
         min_price_increment: fft_core::Price(ES_HELP_TICK),
         unit_of_measure_qty: ES_HELP_UOM_QTY,
         display_factor: ES_HELP_DISPLAY_FACTOR,
         batch_size: 32,
     };
-    let stats = write_fftlog(&cfg).expect("write fftlog");
-    assert_eq!(stats.events_written, decoded.len() as u64);
-
-    let (reader, report) = LogReader::open(&out).expect("open fftlog");
-    assert!(
-        report.recovery.is_none(),
-        "clean close must not report LIVE recovery: {:?}",
-        report.warnings
-    );
-    assert_eq!(reader.meta().instrument_id, GOLDEN_INSTRUMENT_ID);
-    assert_eq!(reader.meta().symbol, "GOLDEN-10252");
-    assert_eq!(reader.meta().min_price_increment.0, ES_HELP_TICK);
-    assert_eq!(reader.meta().unit_of_measure_qty, ES_HELP_UOM_QTY);
-
-    let from_log: Vec<_> = reader
-        .events(0..reader.frame_count())
-        .collect::<Result<_, _>>()
-        .expect("decode log events");
-    assert_eq!(from_log.len(), decoded.len());
-    for (i, (got, want)) in from_log.iter().zip(decoded.iter()).enumerate() {
-        assert_eq!(got, &want.event, "event {i} diverged");
-    }
-
-    let expect = std::fs::read_to_string(&expect_path).expect("read expect");
-    let expect_lines: Vec<&str> = expect.lines().collect();
-    assert_eq!(expect_lines.len(), 50);
-    let got_lines: Vec<String> = decoded.iter().take(50).map(canonical_line).collect();
-    assert_eq!(
-        got_lines, expect_lines,
-        "filtered decode diverged from golden expect"
-    );
-
+    let err = write_fftlog(&cfg).expect_err("must refuse empty write after admission drop");
+    let msg = err.to_string();
+    assert!(msg.contains("no events"), "{msg}");
+    assert!(!out.exists(), "must not leave a partial file");
     let _ = std::fs::remove_file(&out);
 }
 

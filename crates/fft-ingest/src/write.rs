@@ -52,6 +52,10 @@ pub struct WriteStats {
     pub frames: u64,
     pub gaps_kept: u64,
     pub snapshots_kept: u64,
+    /// SNAPSHOT-flagged records for the instrument that were dropped because the file's
+    /// first non-snapshot event did not bucket to the target trade date
+    /// (`docs/FFTLOG-V2.md` §4 snapshot admission).
+    pub snapshots_dropped: u64,
 }
 
 /// Resolve `instrument_id` → raw symbol from DBN metadata mappings.
@@ -84,11 +88,9 @@ fn is_snapshot(ev: &DecodedEvent) -> bool {
     ev.event.kind != EventKind::Gap && ev.event.flags & u16::from(dbn::flags::SNAPSHOT) != 0
 }
 
-/// Keep channel gaps and the selected instrument's events. SNAPSHOT records for that
-/// instrument are kept regardless of trade-date bucket (day-file book replay uses a
-/// snapshot-creation `ts_event`, not session time). Live events and gaps must bucket to
-/// `trade_date`.
-fn keep_event(
+/// Live (non-snapshot, non-gap) events for `instrument_id` must bucket to `trade_date`.
+/// Gaps are channel-wide and keep when their observing ts buckets to `trade_date`.
+fn keep_live_or_gap(
     ev: &DecodedEvent,
     instrument_id: u32,
     trade_date: Date,
@@ -97,8 +99,112 @@ fn keep_event(
     match ev.event.kind {
         EventKind::Gap => bucketer.bucket(ev.event.ts) == trade_date,
         _ if ev.instrument_id != instrument_id => false,
-        _ if is_snapshot(ev) => true,
         _ => bucketer.bucket(ev.event.ts) == trade_date,
+    }
+}
+
+/// Per-file snapshot admission (`docs/FFTLOG-V2.md` §4): a file's SNAPSHOT block for the
+/// selected instrument is admitted iff the file's **first non-snapshot** event (any
+/// instrument, or a synthesized Gap which can only appear after a non-snapshot observe)
+/// buckets to `trade_date`. Pending snapshots are held until that decision; stale blocks
+/// are dropped and counted.
+struct FileAdmission {
+    trade_date: Date,
+    instrument_id: u32,
+    /// `None` until the first non-snapshot record in this file is seen.
+    admit_snapshots: Option<bool>,
+    pending_snapshots: Vec<DecodedEvent>,
+}
+
+impl FileAdmission {
+    fn new(instrument_id: u32, trade_date: Date) -> Self {
+        Self {
+            trade_date,
+            instrument_id,
+            admit_snapshots: None,
+            pending_snapshots: Vec::new(),
+        }
+    }
+
+    fn decide(&mut self, ts: fft_core::Ts, bucketer: &mut TradeDateBucketer) -> bool {
+        let admit = bucketer.bucket(ts) == self.trade_date;
+        self.admit_snapshots = Some(admit);
+        admit
+    }
+
+    /// Flush buffered snapshots after the admission decision is known.
+    fn flush_pending(&mut self, out: &mut impl FnMut(DecodedEvent), stats: &mut WriteStats) {
+        let admit = self
+            .admit_snapshots
+            .expect("flush_pending without decision");
+        let pending = std::mem::take(&mut self.pending_snapshots);
+        if admit {
+            for ev in pending {
+                stats.snapshots_kept += 1;
+                out(ev);
+            }
+        } else {
+            stats.snapshots_dropped += pending.len() as u64;
+        }
+    }
+
+    /// End-of-file: any still-pending snapshots mean the file had no non-snapshot event
+    /// to establish admission — drop them (vacuous reject) and count.
+    fn finish(&mut self, stats: &mut WriteStats) {
+        if !self.pending_snapshots.is_empty() {
+            stats.snapshots_dropped += self.pending_snapshots.len() as u64;
+            self.pending_snapshots.clear();
+        }
+    }
+}
+
+/// Consume one decoded event under §4 admission + live trade-date filter. Calls `out`
+/// for each event that should be written.
+fn admit_event(
+    ev: DecodedEvent,
+    admission: &mut FileAdmission,
+    bucketer: &mut TradeDateBucketer,
+    stats: &mut WriteStats,
+    out: &mut impl FnMut(DecodedEvent),
+) {
+    // Gap ⇒ decoder already observed a non-snapshot; decide from the gap's ts (the
+    // observing record's ts) before applying the keep filter.
+    if ev.event.kind == EventKind::Gap {
+        if admission.admit_snapshots.is_none() {
+            admission.decide(ev.event.ts, bucketer);
+            admission.flush_pending(out, stats);
+        }
+        if keep_live_or_gap(&ev, admission.instrument_id, admission.trade_date, bucketer) {
+            stats.gaps_kept += 1;
+            out(ev);
+        }
+        return;
+    }
+
+    if is_snapshot(&ev) {
+        if ev.instrument_id != admission.instrument_id {
+            return;
+        }
+        match admission.admit_snapshots {
+            None => admission.pending_snapshots.push(ev),
+            Some(true) => {
+                stats.snapshots_kept += 1;
+                out(ev);
+            }
+            Some(false) => {
+                stats.snapshots_dropped += 1;
+            }
+        }
+        return;
+    }
+
+    // First non-snapshot live record in this file establishes snapshot admission.
+    if admission.admit_snapshots.is_none() {
+        admission.decide(ev.event.ts, bucketer);
+        admission.flush_pending(out, stats);
+    }
+    if keep_live_or_gap(&ev, admission.instrument_id, admission.trade_date, bucketer) {
+        out(ev);
     }
 }
 
@@ -154,25 +260,25 @@ pub fn write_fftlog(config: &WriteConfig) -> Result<WriteStats, IngestError> {
         frames: 0,
         gaps_kept: 0,
         snapshots_kept: 0,
+        snapshots_dropped: 0,
     };
 
     for path in &config.inputs {
         let mut decoder = open_zstd_file(path)?;
         decoder.set_gap_detector(std::mem::take(&mut gaps));
+        let mut admission = FileAdmission::new(config.instrument_id, config.trade_date);
         while let Some(ev) = decoder.next_event()? {
-            if !keep_event(&ev, config.instrument_id, config.trade_date, &mut bucketer) {
-                continue;
-            }
-            if ev.event.kind == EventKind::Gap {
-                stats.gaps_kept += 1;
-            } else if is_snapshot(&ev) {
-                stats.snapshots_kept += 1;
-            }
-            batch.push(ev.event);
-            if batch.len() >= config.batch_size {
-                flush_batch(&mut writer, &mut batch, &mut stats)?;
+            admit_event(ev, &mut admission, &mut bucketer, &mut stats, &mut |kept| {
+                batch.push(kept.event);
+            });
+            while batch.len() >= config.batch_size {
+                let frame: Vec<CanonicalEvent> = batch.drain(..config.batch_size).collect();
+                writer.append_events(&frame)?;
+                stats.events_written += frame.len() as u64;
+                stats.frames += 1;
             }
         }
+        admission.finish(&mut stats);
         gaps = decoder.into_gap_detector();
     }
     if !batch.is_empty() {
@@ -355,7 +461,7 @@ fn parse_date(s: &str) -> Result<Date, IngestError> {
     Date::new(y, m, d).map_err(|err| IngestError::Cli(format!("invalid --trade-date {s}: {err}")))
 }
 
-/// Decode path with the same filter as [`write_fftlog`] — used by roundtrip tests.
+/// Decode path with the same §4 admission + filter as [`write_fftlog`] — used by tests.
 pub fn decode_filtered(
     path: &Path,
     instrument_id: u32,
@@ -363,12 +469,21 @@ pub fn decode_filtered(
 ) -> Result<Vec<DecodedEvent>, IngestError> {
     let mut decoder = open_zstd_file(path)?;
     let mut bucketer = TradeDateBucketer::default();
+    let mut admission = FileAdmission::new(instrument_id, trade_date);
+    let mut stats = WriteStats {
+        events_written: 0,
+        frames: 0,
+        gaps_kept: 0,
+        snapshots_kept: 0,
+        snapshots_dropped: 0,
+    };
     let mut out = Vec::new();
     while let Some(ev) = decoder.next_event()? {
-        if keep_event(&ev, instrument_id, trade_date, &mut bucketer) {
-            out.push(ev);
-        }
+        admit_event(ev, &mut admission, &mut bucketer, &mut stats, &mut |kept| {
+            out.push(kept);
+        });
     }
+    admission.finish(&mut stats);
     Ok(out)
 }
 
