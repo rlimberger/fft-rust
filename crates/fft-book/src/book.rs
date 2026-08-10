@@ -1,0 +1,371 @@
+//! The book proper: canonical-event application with exact CME semantics.
+
+use crate::flow::TradedAtInsideTicks;
+use crate::level::{NIL, Order};
+use crate::refresh::RefreshTracker;
+use crate::side::{SideBook, link_tail, unlink};
+use fft_core::{CanonicalEvent, EventKind, Price, Side};
+use slab::Slab;
+use std::collections::HashMap;
+
+/// Events between dead-level / expired-tombstone sweeps.
+pub(crate) const GC_INTERVAL: u32 = 4096;
+
+/// L3 MBO book for one instrument. See the crate docs for the full contract.
+#[derive(Debug)]
+pub struct Book {
+    /// Tick size in 1e-9 price units; all internal prices are ticks.
+    pub(crate) tick: i64,
+    pub(crate) bids: SideBook,
+    pub(crate) asks: SideBook,
+    pub(crate) orders: Slab<Order>,
+    /// order id → slab slot.
+    pub(crate) index: HashMap<u64, u32>,
+    pub(crate) refresh: RefreshTracker,
+    pub(crate) tai: TradedAtInsideTicks,
+    /// (price ticks, size, aggressor).
+    pub(crate) last_trade: Option<(i64, u32, Side)>,
+    /// Latest event time seen, ns.
+    pub(crate) now: u64,
+    pub(crate) since_gc: u32,
+    /// Last applied source sequence (`None` until sequenced, and after a gap
+    /// until re-anchored).
+    pub(crate) last_seq: Option<u64>,
+    /// A Gap event was applied and no sequenced event has followed yet.
+    pub(crate) gap_pending: bool,
+    /// `(expected, observed)` of the most recent Gap event.
+    pub(crate) last_gap: Option<(u64, u64)>,
+    /// Cancel/Modify/Fill events referencing unknown order ids (normal after a
+    /// mid-stream join, a Clear, or a gap; the engine asserts 0 on full logs).
+    pub(crate) unknown_refs: u64,
+}
+
+impl Book {
+    /// `min_price_increment` in 1e-9 units (`InstrumentMeta::min_price_increment`).
+    pub fn new(min_price_increment: Price) -> Self {
+        assert!(
+            min_price_increment.0 > 0,
+            "fft-book: non-positive tick size {}",
+            min_price_increment.0
+        );
+        Self::empty(min_price_increment.0)
+    }
+
+    pub(crate) fn empty(tick: i64) -> Self {
+        Self {
+            tick,
+            bids: SideBook::new(true),
+            asks: SideBook::new(false),
+            orders: Slab::new(),
+            index: HashMap::new(),
+            refresh: RefreshTracker::default(),
+            tai: TradedAtInsideTicks::default(),
+            last_trade: None,
+            now: 0,
+            since_gc: 0,
+            last_seq: None,
+            gap_pending: false,
+            last_gap: None,
+            unknown_refs: 0,
+        }
+    }
+
+    pub(crate) fn to_ticks(&self, p: Price) -> i64 {
+        assert!(
+            p.0 % self.tick == 0,
+            "fft-book: price {} not aligned to tick {}",
+            p.0,
+            self.tick
+        );
+        p.0 / self.tick
+    }
+
+    pub(crate) fn price_of(&self, t: i64) -> Price {
+        Price(t * self.tick)
+    }
+
+    /// Apply one canonical event. Panics (fail loudly) on malformed events,
+    /// feed-contract violations, and unexplained sequence regressions.
+    pub fn apply(&mut self, ev: &CanonicalEvent) {
+        let ts = ev.ts.0;
+        if ts > self.now {
+            self.now = ts;
+        }
+        self.track_seq(ev);
+        match ev.kind {
+            EventKind::Add => self.do_add(ev, ts),
+            EventKind::Cancel => self.cancel_order(ev.order_id.0, ts),
+            EventKind::Modify => self.do_modify(ev, ts),
+            EventKind::Trade => self.do_trade(ev),
+            EventKind::Fill => self.do_fill(ev, ts),
+            EventKind::Clear => self.do_clear(),
+            EventKind::Status => {}
+            EventKind::Gap => self.do_gap(ev),
+        }
+        self.since_gc += 1;
+        if self.since_gc >= GC_INTERVAL {
+            self.since_gc = 0;
+            let now = self.now;
+            self.bids.gc(now);
+            self.asks.gc(now);
+            self.refresh.gc(now);
+        }
+    }
+
+    /// Sequence accounting. `seq == 0` marks unsequenced events (synthetic
+    /// fixtures). Forward skips are legitimate — the source channel carries
+    /// other instruments — but a regression without an interposed Gap event is
+    /// an unexplained discontinuity and panics.
+    fn track_seq(&mut self, ev: &CanonicalEvent) {
+        if ev.kind == EventKind::Gap {
+            return;
+        }
+        let seq = u64::from(ev.seq.0);
+        if seq == 0 {
+            return;
+        }
+        if let Some(last) = self.last_seq {
+            assert!(
+                seq >= last,
+                "fft-book: seq regression {last} -> {seq} without an interposed Gap event \
+                 ({:?} ts {})",
+                ev.kind,
+                ev.ts.0
+            );
+        }
+        self.last_seq = Some(seq);
+        self.gap_pending = false;
+    }
+
+    fn do_add(&mut self, ev: &CanonicalEvent, ts: u64) {
+        assert!(
+            ev.side == Side::Bid || ev.side == Side::Ask,
+            "fft-book: Add without side: {ev:?}"
+        );
+        assert!(ev.size > 0, "fft-book: Add with size 0: {ev:?}");
+        assert!(
+            !self.index.contains_key(&ev.order_id.0),
+            "fft-book: duplicate Add for live order {}: {ev:?}",
+            ev.order_id.0
+        );
+        let price = self.to_ticks(ev.price);
+        self.insert_order(ev.order_id.0, ev.side, price, ev.size, ts);
+    }
+
+    /// Shared placement path for Add and iceberg restores: routes through the
+    /// refresh tracker, then links at the back of the level FIFO.
+    fn insert_order(&mut self, id: u64, side: Side, price: i64, size: u32, ts: u64) {
+        self.refresh.on_placed(id, side, price, size, ts);
+        let o = Order {
+            id,
+            price,
+            side,
+            size,
+            ts,
+            epoch: self.refresh.gap_epoch,
+            prev: NIL,
+            next: NIL,
+        };
+        let slot = u32::try_from(self.orders.insert(o)).expect("fft-book: order slot exceeds u32");
+        self.index.insert(id, slot);
+        let sb = if side == Side::Bid {
+            &mut self.bids
+        } else {
+            &mut self.asks
+        };
+        sb.prepare_for(price);
+        link_tail(sb, &mut self.orders, slot);
+        sb.level_entry(price).flow.record_added(ts, size);
+        sb.note_add(price);
+    }
+
+    fn cancel_order(&mut self, id: u64, ts: u64) {
+        let Some(slot) = self.index.remove(&id) else {
+            // Cancel of a depleted id is the "no refresh after all" terminal.
+            if !self.refresh.cancel_tombstone(id) {
+                self.unknown_refs += 1;
+            }
+            return;
+        };
+        let o = self.orders[slot as usize].clone();
+        let sb = if o.side == Side::Bid {
+            &mut self.bids
+        } else {
+            &mut self.asks
+        };
+        unlink(sb, &mut self.orders, slot);
+        sb.level_mut(o.price)
+            .expect("fft-book invariant: level missing for live order")
+            .flow
+            .record_cancelled(ts, o.size);
+        sb.note_remove(o.price);
+        self.orders.remove(slot as usize);
+        self.refresh.on_cancel_live(id);
+    }
+
+    /// Exact CME modify semantics: same price + size-down mutates in place and
+    /// keeps queue position; size-up or price change relinks at the back of the
+    /// target level. A Modify for a depleted (tombstoned) id is the CME iceberg
+    /// restore path and re-enters the book through `insert_order`.
+    fn do_modify(&mut self, ev: &CanonicalEvent, ts: u64) {
+        let id = ev.order_id.0;
+        let Some(&slot) = self.index.get(&id) else {
+            if self.refresh.tombstone_side(id).is_some() {
+                if ev.size == 0 {
+                    self.refresh.cancel_tombstone(id);
+                    return;
+                }
+                let side = if ev.side == Side::None {
+                    self.refresh.tombstone_side(id).unwrap()
+                } else {
+                    ev.side
+                };
+                let price = self.to_ticks(ev.price);
+                self.insert_order(id, side, price, ev.size, ts);
+            } else {
+                self.unknown_refs += 1;
+            }
+            return;
+        };
+        if ev.size == 0 {
+            self.cancel_order(id, ts);
+            return;
+        }
+        let o = self.orders[slot as usize].clone();
+        assert!(
+            ev.side == Side::None || ev.side == o.side,
+            "fft-book: Modify side {:?} != resting side {:?} (id {id})",
+            ev.side,
+            o.side
+        );
+        let new_price = self.to_ticks(ev.price);
+        let new_size = ev.size;
+        let sb = if o.side == Side::Bid {
+            &mut self.bids
+        } else {
+            &mut self.asks
+        };
+
+        if new_price == o.price {
+            if new_size <= o.size {
+                let shrink = o.size - new_size;
+                let l = sb
+                    .level_mut(o.price)
+                    .expect("fft-book invariant: level missing for live order");
+                l.total_size -= u64::from(shrink);
+                if shrink > 0 {
+                    l.flow.record_cancelled(ts, shrink);
+                }
+                self.orders[slot as usize].size = new_size;
+            } else {
+                let grow = new_size - o.size;
+                unlink(sb, &mut self.orders, slot);
+                let ord = &mut self.orders[slot as usize];
+                ord.size = new_size;
+                ord.ts = ts;
+                link_tail(sb, &mut self.orders, slot);
+                sb.level_mut(o.price)
+                    .expect("fft-book invariant: level missing for live order")
+                    .flow
+                    .record_added(ts, grow);
+            }
+            return;
+        }
+
+        unlink(sb, &mut self.orders, slot);
+        sb.level_mut(o.price)
+            .expect("fft-book invariant: level missing for live order")
+            .flow
+            .record_cancelled(ts, o.size);
+        sb.note_remove(o.price);
+        sb.prepare_for(new_price);
+        let ord = &mut self.orders[slot as usize];
+        ord.price = new_price;
+        ord.size = new_size;
+        ord.ts = ts;
+        link_tail(sb, &mut self.orders, slot);
+        sb.level_entry(new_price).flow.record_added(ts, new_size);
+        sb.note_add(new_price);
+    }
+
+    /// Fill against the resting order `ev.order_id`. Partial fills keep queue
+    /// position; a full displayed fill removes the order and arms the
+    /// native-refresh tombstone.
+    fn do_fill(&mut self, ev: &CanonicalEvent, ts: u64) {
+        let id = ev.order_id.0;
+        let Some(&slot) = self.index.get(&id) else {
+            self.unknown_refs += 1;
+            return;
+        };
+        let o = self.orders[slot as usize].clone();
+        assert!(
+            ev.side == Side::None || ev.side == o.side,
+            "fft-book: Fill side {:?} != resting side {:?} (id {id})",
+            ev.side,
+            o.side
+        );
+        let price = self.to_ticks(ev.price);
+        assert!(
+            price == o.price,
+            "fft-book: Fill price {price} != resting price {} (id {id})",
+            o.price
+        );
+        let fill = ev.size;
+        assert!(fill > 0, "fft-book: Fill with size 0 (id {id})");
+        assert!(
+            fill <= o.size,
+            "fft-book: overfill {fill} > resting {} (id {id})",
+            o.size
+        );
+        let sb = if o.side == Side::Bid {
+            &mut self.bids
+        } else {
+            &mut self.asks
+        };
+        sb.level_mut(o.price)
+            .expect("fft-book invariant: level missing for live order")
+            .flow
+            .record_traded(ts, fill);
+        if fill == o.size {
+            unlink(sb, &mut self.orders, slot);
+            sb.note_remove(o.price);
+            self.index.remove(&id);
+            self.orders.remove(slot as usize);
+            self.refresh.on_depleted(id, o.side, o.price, ts);
+        } else {
+            sb.level_mut(o.price)
+                .expect("fft-book invariant: level missing for live order")
+                .total_size -= u64::from(fill);
+            self.orders[slot as usize].size -= fill;
+        }
+    }
+
+    /// Trade prints update the tape state only; per-order depletion is driven
+    /// exclusively by Fill events (double-decrementing would corrupt the book).
+    fn do_trade(&mut self, ev: &CanonicalEvent) {
+        let price = self.to_ticks(ev.price);
+        self.last_trade = Some((price, ev.size, ev.side));
+        self.tai.on_trade(price, ev.size, ev.side);
+    }
+
+    /// Full book reset. Tape state (last trade, cB/cA) and session-cumulative
+    /// refresh aggregates describe history and survive.
+    fn do_clear(&mut self) {
+        self.bids = SideBook::new(true);
+        self.asks = SideBook::new(false);
+        self.orders.clear();
+        self.index.clear();
+        self.refresh.on_clear();
+    }
+
+    /// A source sequence gap: every in-flight classification becomes
+    /// Unavailable (epoch bump) and sequence accounting re-anchors on the next
+    /// sequenced event.
+    fn do_gap(&mut self, ev: &CanonicalEvent) {
+        let (expected, observed) = ev.gap_seqs();
+        self.last_gap = Some((expected, observed));
+        self.gap_pending = true;
+        self.last_seq = None;
+        self.refresh.on_gap();
+    }
+}

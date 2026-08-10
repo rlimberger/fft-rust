@@ -1,0 +1,4 @@
+# GitHub Actions runner install + local state (downloaded by provision.sh apply).
+# manifest.json is intentionally NOT ignored — it is committed per docs/PERF-RUNNER.md.
+actions-runner/
+*.tar.gz

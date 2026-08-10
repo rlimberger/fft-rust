@@ -1,0 +1,311 @@
+//! Read-side surface: level views, queue-position and refresh queries, gap
+//! state accessors, and the invariant checker.
+
+use crate::book::Book;
+use crate::level::{Level, NIL, view_of};
+use crate::{InsideTraded, LastTrade, LevelView, PriceRefreshAgg, QueuePosition, RefreshState};
+use fft_core::{OrderId, Price, Side, Ts};
+use std::collections::HashMap;
+
+impl Book {
+    pub fn tick_size(&self) -> Price {
+        Price(self.tick)
+    }
+
+    pub fn best_bid(&self) -> Option<Price> {
+        self.bids.best.map(|t| self.price_of(t))
+    }
+
+    pub fn best_ask(&self) -> Option<Price> {
+        self.asks.best.map(|t| self.price_of(t))
+    }
+
+    pub fn last_trade(&self) -> Option<LastTrade> {
+        self.last_trade.map(|(t, size, aggressor)| LastTrade {
+            price: self.price_of(t),
+            size,
+            aggressor,
+        })
+    }
+
+    /// Grady cB/cA counters, fed by Trade events.
+    pub fn traded_at_inside(&self) -> InsideTraded {
+        InsideTraded {
+            bid_price: self.tai.bid_price.map(|t| self.price_of(t)),
+            bid_vol: self.tai.bid_vol,
+            ask_price: self.tai.ask_price.map(|t| self.price_of(t)),
+            ask_vol: self.tai.ask_vol,
+        }
+    }
+
+    fn side_book(&self, side: Side) -> &crate::side::SideBook {
+        match side {
+            Side::Bid => &self.bids,
+            Side::Ask => &self.asks,
+            Side::None => panic!("fft-book: query with Side::None"),
+        }
+    }
+
+    /// View of one price level (zeros if untracked).
+    pub fn level(&self, side: Side, price: Price) -> LevelView {
+        let t = self.to_ticks(price);
+        match self.side_book(side).level_ref(t) {
+            Some(l) => view_of(l, self.now),
+            None => LevelView::default(),
+        }
+    }
+
+    /// Visit populated levels best-first.
+    pub fn for_each_level(&self, side: Side, mut f: impl FnMut(Price, LevelView)) {
+        let now = self.now;
+        self.side_book(side).try_for_each_populated(|t, l| {
+            f(self.price_of(t), view_of(l, now));
+            true
+        });
+    }
+
+    /// Visit the resting orders of one level strictly head-to-tail FIFO.
+    pub fn for_each_order_at(&self, side: Side, price: Price, mut f: impl FnMut(OrderId, u32)) {
+        let t = self.to_ticks(price);
+        let Some(level) = self.side_book(side).level_ref(t) else {
+            return;
+        };
+        let mut cur = level.head;
+        while cur != NIL {
+            let o = &self.orders[cur as usize];
+            f(OrderId(o.id), o.size);
+            cur = o.next;
+        }
+    }
+
+    /// Exact queue standing of a resting order: contracts ahead, orders ahead,
+    /// FIFO rank at its price level (PRD §4 claim 3).
+    pub fn queue_position(&self, id: OrderId) -> Option<QueuePosition> {
+        let &slot = self.index.get(&id.0)?;
+        let target = &self.orders[slot as usize];
+        let level = self
+            .side_book(target.side)
+            .level_ref(target.price)
+            .expect("fft-book invariant: level missing for live order");
+        let mut orders_ahead = 0u32;
+        let mut contracts_ahead = 0u64;
+        let mut cur = level.head;
+        while cur != NIL && cur != slot {
+            let o = &self.orders[cur as usize];
+            orders_ahead += 1;
+            contracts_ahead += u64::from(o.size);
+            cur = o.next;
+        }
+        assert_eq!(
+            cur, slot,
+            "fft-book invariant: order {} not on its level list",
+            id.0
+        );
+        Some(QueuePosition {
+            side: target.side,
+            price: self.price_of(target.price),
+            size: target.size,
+            orders_ahead,
+            contracts_ahead,
+            rank: orders_ahead + 1,
+        })
+    }
+
+    /// Native-refresh classification of a resting order (PRD §4 claim 4).
+    pub fn refresh_state(&self, id: OrderId) -> RefreshState {
+        let Some(&slot) = self.index.get(&id.0) else {
+            return RefreshState::NotResting;
+        };
+        self.refresh
+            .state_for(id.0, self.orders[slot as usize].epoch)
+    }
+
+    /// Session-cumulative refresh aggregate at one price on one side.
+    pub fn refresh_at(&self, side: Side, price: Price) -> PriceRefreshAgg {
+        assert!(
+            side == Side::Bid || side == Side::Ask,
+            "fft-book: refresh_at with Side::None"
+        );
+        self.refresh.agg_at(side, self.to_ticks(price))
+    }
+
+    pub fn live_order_count(&self) -> usize {
+        self.index.len()
+    }
+
+    pub fn populated_levels(&self) -> usize {
+        self.bids.populated + self.asks.populated
+    }
+
+    pub fn last_event_ts(&self) -> Ts {
+        Ts(self.now)
+    }
+
+    /// Last applied source sequence (`None` until sequenced, and after a gap
+    /// until re-anchored).
+    pub fn last_seq(&self) -> Option<u64> {
+        self.last_seq
+    }
+
+    /// A Gap event was applied and no sequenced event has followed yet.
+    pub fn gap_pending(&self) -> bool {
+        self.gap_pending
+    }
+
+    /// Number of sequence gaps applied so far.
+    pub fn gaps_seen(&self) -> u32 {
+        self.refresh.gap_epoch
+    }
+
+    /// `(expected, observed)` of the most recent Gap event.
+    pub fn last_gap(&self) -> Option<(u64, u64)> {
+        self.last_gap
+    }
+
+    /// Cancel/Modify/Fill events that referenced unknown order ids.
+    pub fn unknown_ref_events(&self) -> u64 {
+        self.unknown_refs
+    }
+
+    fn walk_level(
+        &self,
+        side: Side,
+        price: i64,
+        level: &Level,
+        seen: &mut HashMap<u64, (Side, i64)>,
+    ) {
+        let mut total = 0u64;
+        let mut count = 0u32;
+        let mut cur = level.head;
+        let mut prev = NIL;
+        while cur != NIL {
+            let o = &self.orders[cur as usize];
+            assert!(
+                o.price == price,
+                "fft-book invariant: order {} price {} on level {price}",
+                o.id,
+                o.price
+            );
+            assert!(
+                o.side == side,
+                "fft-book invariant: order {} on wrong side {side:?}",
+                o.id
+            );
+            assert!(
+                o.size > 0,
+                "fft-book invariant: live order {} with size 0",
+                o.id
+            );
+            assert!(
+                o.prev == prev,
+                "fft-book invariant: broken prev link at order {}",
+                o.id
+            );
+            assert!(
+                self.index.get(&o.id) == Some(&cur),
+                "fft-book invariant: order {} not indexed to its slot",
+                o.id
+            );
+            assert!(
+                seen.insert(o.id, (side, price)).is_none(),
+                "fft-book invariant: order {} linked twice",
+                o.id
+            );
+            assert!(
+                o.epoch <= self.refresh.gap_epoch,
+                "fft-book invariant: order {} epoch {} beyond gap epoch {}",
+                o.id,
+                o.epoch,
+                self.refresh.gap_epoch
+            );
+            total += u64::from(o.size);
+            count += 1;
+            prev = cur;
+            cur = o.next;
+            assert!(
+                count as usize <= self.index.len(),
+                "fft-book invariant: cyclic FIFO list at {side:?} {price}"
+            );
+        }
+        assert!(
+            prev == level.tail,
+            "fft-book invariant: stale tail pointer at {side:?} {price}"
+        );
+        assert!(
+            total == level.total_size,
+            "fft-book invariant: total_size {} != walked {total} at {side:?} {price}",
+            level.total_size
+        );
+        assert!(
+            count == level.order_count,
+            "fft-book invariant: order_count {} != walked {count} at {side:?} {price}",
+            level.order_count
+        );
+    }
+
+    /// Full structural audit. Panics with context on any violation — an
+    /// invariant failure is a bug, never a log line.
+    pub fn check_invariants(&self) {
+        let mut seen: HashMap<u64, (Side, i64)> = HashMap::with_capacity(self.index.len());
+        for side in [Side::Bid, Side::Ask] {
+            let sb = self.side_book(side);
+            let mut populated = 0usize;
+            let mut prev_price: Option<i64> = None;
+            sb.try_for_each_populated(|price, level| {
+                populated += 1;
+                if let Some(pp) = prev_price {
+                    assert!(
+                        sb.better(pp, price),
+                        "fft-book invariant: levels not best-first ({side:?}: {pp} then {price})"
+                    );
+                }
+                prev_price = Some(price);
+                self.walk_level(side, price, level, &mut seen);
+                true
+            });
+            assert!(
+                populated == sb.populated,
+                "fft-book invariant: populated counter {} != walked {populated} on {side:?}",
+                sb.populated
+            );
+            assert!(
+                sb.best == sb.scan_best(),
+                "fft-book invariant: cached best {:?} != scanned {:?} on {side:?}",
+                sb.best,
+                sb.scan_best()
+            );
+            for &p in sb.far.keys() {
+                assert!(
+                    p < sb.base_tick || p >= sb.hi_bound(),
+                    "fft-book invariant: far level {p} inside window [{}, {}) on {side:?}",
+                    sb.base_tick,
+                    sb.hi_bound()
+                );
+            }
+        }
+        assert!(
+            seen.len() == self.index.len(),
+            "fft-book invariant: {} linked orders != {} indexed",
+            seen.len(),
+            self.index.len()
+        );
+        if let (Some(bb), Some(ba)) = (self.bids.best, self.asks.best) {
+            assert!(
+                bb < ba,
+                "fft-book invariant: crossed book (bid {bb} >= ask {ba})"
+            );
+        }
+        for id in self.refresh.tombstones.keys() {
+            assert!(
+                !self.index.contains_key(id),
+                "fft-book invariant: tombstoned order {id} still live"
+            );
+        }
+        for id in self.refresh.live.keys() {
+            assert!(
+                self.index.contains_key(id),
+                "fft-book invariant: refresh entry for dead order {id}"
+            );
+        }
+    }
+}

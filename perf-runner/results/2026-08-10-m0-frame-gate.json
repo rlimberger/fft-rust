@@ -1,0 +1,28 @@
+{
+  "gate": "M0 frame gate — blank GPUI window, 60 s, zero missed deadlines",
+  "date": "2026-08-10T10:11:00Z",
+  "manifest": "perf-runner/manifest.json",
+  "binary": "fft --gate 60 --trace",
+  "gpui_rev": "492acd6c815cbe8c7366d54e6092341340afa6c7",
+  "conditions": "manual run, quiet desktop, window keyboard-focused (GPUI throttles unfocused windows to ~30 fps — TECH-STACK §2 known constraint)",
+  "result": {
+    "refresh_interval_ms": 16.654,
+    "deadline_ms": 24.981,
+    "frames": 3601,
+    "missed": 0,
+    "p50_ms": 16.777,
+    "p99_ms": 17.302,
+    "max_ms": 17.556
+  },
+  "trace_distribution": {
+    "gaps": 3601,
+    "mean_ms": 16.666,
+    "p50_ms": 16.671,
+    "p99_ms": 16.942,
+    "p999_ms": 17.084,
+    "max_ms": 17.556,
+    "over_deadline": 0
+  },
+  "verdict": "PASS",
+  "notes": "Prior failing run (frames=2725, missed=564, gaps at exact 2-3 vsync periods) root-caused to GPUI's intentional ~30 fps redraw cap for non-keyboard-focused windows (gpui/src/window.rs:1626-1663 at the pinned rev), not app or compositor performance. Same binary passes cleanly when focused."
+}

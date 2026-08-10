@@ -1,0 +1,22 @@
+name: Perf
+
+# Manual-dispatch only until the M0 gate is green on this runner; from M1 the perf
+# gates run per-merge and are merge-blocking (IMPLEMENTATION-PLAN rules of engagement).
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  frame-gate:
+    # Dedicated perf runner (pinned CPU governor, GPU/driver, compositor — TECH-STACK §7).
+    runs-on: [self-hosted, fft-perf]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build release
+        run: cargo build -p fft-ui --release
+      - name: Preflight — governor, isolation, display, thermal (docs/PERF-RUNNER.md)
+        run: ./perf-runner/provision.sh preflight
+      - name: M0 frame gate — 60 s, zero missed deadlines
+        run: ./target/release/fft --gate 60

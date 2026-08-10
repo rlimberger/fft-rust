@@ -1,0 +1,33 @@
+{
+  "hostname": "omarchy",
+  "date": "2026-08-10T09:36:26Z",
+  "cpu": {
+    "model": "AMD Ryzen 7 8745HS w/ Radeon 780M Graphics",
+    "cores_logical": 16,
+    "cores_physical": 8,
+    "smt": "on",
+    "governor": "performance"
+  },
+  "gpu": {
+    "vendor": "amd",
+    "model": "VGA compatible controller: Advanced Micro Devices, Inc. [AMD/ATI] HawkPoint1 (rev b3)",
+    "driver": "amdgpu (kernel) + mesa 1:26.1.6-1"
+  },
+  "kernel": "7.1.6-arch1-1",
+  "hyprland": "Hyprland 0.56.2 built from branch v0.56.2 at commit efb50993780079460b0cbed1363e2166a2de1d9f clean ([gha] Nix: update inputs).",
+  "monitors": [
+    {
+      "name": "DP-2",
+      "description": "ASUSTek COMPUTER INC PA27JCV T5LMSB009716",
+      "width": 5120,
+      "height": 2880,
+      "refreshRate": 60.00000,
+      "scale": 2
+    }
+  ],
+  "rust": {
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)"
+  },
+  "thermal_threshold_c": 55
+}

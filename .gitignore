@@ -1,0 +1,18 @@
+# Build output
+/target
+
+# Fixture policy (docs/FIXTURES.md): large market data stays out of ordinary Git —
+# acquisition is documented and hash-verified instead. data/ holds the raw DBN week,
+# legacy-format session logs, and unrelated breadth/Schwab artifacts.
+/data/
+
+# Generated replay logs anywhere in the workspace — EXCEPT the small committed
+# test fixtures (docs/FIXTURES.md: deterministic, ≤ 1 MiB each).
+*.fftlog
+!/fixtures/**/*.fftlog
+
+# GitHub Actions runner install: binaries plus live credentials (.credentials,
+# .credentials_rsaparams). Provisioning is reproduced by provision.sh, never by Git.
+/perf-runner/actions-runner/
+
+.DS_Store

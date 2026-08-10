@@ -1,0 +1,19 @@
+[package]
+name = "fft-log"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+fft-core = { path = "../fft-core" }
+zstd = "0.13"
+memmap2 = "0.9"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+
+[dev-dependencies]
+criterion.workspace = true
+proptest = "1"
+
+[[bench]]
+name = "roundtrip"
+harness = false

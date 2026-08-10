@@ -1,0 +1,21 @@
+[package]
+name = "fft-engine"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+arc-swap = "1"
+fft-book = { path = "../fft-book" }
+fft-core = { path = "../fft-core" }
+fft-profile = { path = "../fft-profile" }
+fft-replay = { path = "../fft-replay" }
+
+[dev-dependencies]
+criterion.workspace = true
+fft-log = { path = "../fft-log" }
+tempfile = "3"
+
+[[bench]]
+name = "snapshot"
+harness = false

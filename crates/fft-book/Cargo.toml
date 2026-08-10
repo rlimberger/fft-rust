@@ -1,0 +1,12 @@
+[package]
+name = "fft-book"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+fft-core = { path = "../fft-core" }
+slab = "0.4"
+
+[dev-dependencies]
+proptest = "1"
