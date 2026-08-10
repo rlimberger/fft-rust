@@ -1,57 +1,40 @@
-//! PROFILE (id 3) and CVD (id 4) checkpoint section payloads
-//! (`docs/FFTLOG-V2.md` §5). This crate owns both byte layouts and versions;
-//! `fft-log` wraps them in section headers and checksums.
+//! PROFILE (id 3), CVD (id 4), and SESSION (id 6) checkpoint section payloads
+//! (`docs/FFTLOG-V2.md` §5, `docs/ENGINE.md` §4). This crate owns the byte layouts
+//! and versions; `fft-log` wraps them in section headers and checksums.
+//!
+//! Each payload is self-identifying: first two bytes = section version (mirrors
+//! fft-book). PROFILE keeps arrays/geometry; SESSION carries period cursors,
+//! gap markers, loud counters, and explicit boundary timestamps.
 //!
 //! Determinism: fixed field order, sessions ascending by trade date, arrays
 //! price-ascending trimmed to the traded range, no map iteration anywhere.
-//! `serialize → restore → serialize` is byte-identical. Restore reconstructs
-//! complete state directly — never via synthetic events.
-//!
-//! PROFILE section v1 (all integers little-endian):
-//! ```text
-//! i64 tick                    // price units per tick (min_price_increment)
-//! u32 session_count           // ascending CT trade date
-//! per session:
-//!   u32 trade_date            // CT days since Unix epoch
-//!   u32 current_eth_period    // developing period, ETH-anchored
-//!   u8  period_gap            // 1 = developing-period PV is gap-marked
-//!   i64 base_tick             // session low in ticks (0 when len == 0)
-//!   u32 len                   // traded span in ticks, high−low+1 (0 = no trades)
-//!   if len > 0:
-//!     i64 open_tick, i64 poc_tick, u64 poc_volume
-//!     u8 has_ib, i64 ib_low_tick, i64 ib_high_tick   // zeros when has_ib == 0
-//!     u64 total_volume
-//!     u64×len eth_periods, u64×len rth_periods, u64×len volume,
-//!     u64×len period_volume, u64×len buy_volume, u64×len sell_volume
-//! ```
-//!
-//! CVD section v1:
-//! ```text
-//! u32 session_count           // must mirror the PROFILE section
-//! per session:
-//!   u32 trade_date
-//!   u64 buy_volume, u64 sell_volume, i64 high, i64 low
-//!   u32 candle_count          // candle i = ETH-anchored period i
-//!   (i64 open, i64 high, i64 low, i64 close) × candle_count
-//!   per touch counter, cB then cA:
-//!     u8 has_price, i64 price (raw 1e-9; 0 when absent), u64 volume, u8 gap
-//! ```
+//! `serialize → restore → serialize` is byte-identical.
 
 use crate::cvd::{Cvd, CvdCandle, TouchCounter};
 use crate::profile::MultiProfile;
 use crate::session::{MAX_SPAN_TICKS, SessionProfile};
 use crate::tpo::SessionClock;
-use fft_core::Price;
+use fft_core::{Price, Ts};
 
 pub const PROFILE_SECTION_ID: u16 = 3;
 pub const PROFILE_SECTION_VERSION: u16 = 1;
 pub const CVD_SECTION_ID: u16 = 4;
 pub const CVD_SECTION_VERSION: u16 = 1;
+pub const SESSION_SECTION_ID: u16 = 6;
+pub const SESSION_SECTION_VERSION: u16 = 1;
 
 /// Sanity ceiling on sessions per checkpoint (a fixture week is 5).
 const MAX_SESSIONS: u32 = 4096;
 /// Candles are indexed by ETH period; a session has ≤ 46, bitsets cap at 64.
 const MAX_CANDLES: u32 = 64;
+
+/// `(PROFILE, CVD, SESSION)` section payloads for one checkpoint.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ProfileSections {
+    pub profile: Vec<u8>,
+    pub cvd: Vec<u8>,
+    pub session: Vec<u8>,
+}
 
 /// Loud restore failure: version mismatch or malformed section bytes.
 #[derive(Debug, PartialEq, Eq)]
@@ -86,32 +69,24 @@ impl std::fmt::Display for RestoreError {
 impl std::error::Error for RestoreError {}
 
 impl MultiProfile {
-    /// `(PROFILE, CVD)` section payloads for the current checkpoint.
-    pub fn serialize(&self) -> (Vec<u8>, Vec<u8>) {
-        (profile_section(self), cvd_section(self))
+    /// PROFILE + CVD + SESSION section payloads (ENGINE.md §4).
+    pub fn serialize(&self) -> ProfileSections {
+        ProfileSections {
+            profile: profile_section(self),
+            cvd: cvd_section(self),
+            session: session_section(self),
+        }
     }
 
-    /// Reconstruct complete state from section payloads (versions from the
-    /// §5 section headers). Never replays events.
+    /// Reconstruct complete state from the three section payloads. Each
+    /// payload's first two bytes are its section version. Never replays events.
     pub fn restore(
-        profile_version: u16,
         profile: &[u8],
-        cvd_version: u16,
         cvd: &[u8],
+        session: &[u8],
     ) -> Result<MultiProfile, RestoreError> {
-        if profile_version != PROFILE_SECTION_VERSION {
-            return Err(RestoreError::UnsupportedVersion {
-                section: "PROFILE",
-                version: profile_version,
-            });
-        }
-        if cvd_version != CVD_SECTION_VERSION {
-            return Err(RestoreError::UnsupportedVersion {
-                section: "CVD",
-                version: cvd_version,
-            });
-        }
         let mut out = restore_profile_section(profile)?;
+        restore_session_into(session, &mut out)?;
         restore_cvd_into(cvd, &mut out)?;
         Ok(out)
     }
@@ -119,6 +94,7 @@ impl MultiProfile {
 
 fn profile_section(p: &MultiProfile) -> Vec<u8> {
     let mut b = Vec::new();
+    put_u16(&mut b, PROFILE_SECTION_VERSION);
     put_i64(&mut b, p.tick.0);
     put_u32(
         &mut b,
@@ -126,8 +102,6 @@ fn profile_section(p: &MultiProfile) -> Vec<u8> {
     );
     for s in &p.sessions {
         put_u32(&mut b, s.trade_date());
-        put_u32(&mut b, s.current_eth_period);
-        b.push(u8::from(s.period_gap));
         match (s.low_tick, s.high_tick) {
             (Some(low), Some(high)) => {
                 let lo = usize::try_from(low - s.base_tick).expect("low within arrays");
@@ -174,6 +148,7 @@ fn profile_section(p: &MultiProfile) -> Vec<u8> {
 
 fn cvd_section(p: &MultiProfile) -> Vec<u8> {
     let mut b = Vec::new();
+    put_u16(&mut b, CVD_SECTION_VERSION);
     put_u32(
         &mut b,
         u32::try_from(p.sessions.len()).expect("session count fits u32"),
@@ -205,8 +180,38 @@ fn cvd_section(p: &MultiProfile) -> Vec<u8> {
     b
 }
 
+fn session_section(p: &MultiProfile) -> Vec<u8> {
+    let mut b = Vec::new();
+    put_u16(&mut b, SESSION_SECTION_VERSION);
+    put_u32(
+        &mut b,
+        u32::try_from(p.sessions.len()).expect("session count fits u32"),
+    );
+    for s in &p.sessions {
+        let c = s.clock();
+        put_u32(&mut b, s.trade_date());
+        put_u32(&mut b, s.current_eth_period);
+        b.push(u8::from(s.period_gap));
+        put_u64(&mut b, s.post_close_events);
+        put_u64(&mut b, s.backward_ts_events);
+        // Explicit boundaries — never rebuild from trade_date alone at restore.
+        put_u64(&mut b, c.session_open().0);
+        put_u64(&mut b, c.rth_open().0);
+        put_u64(&mut b, c.rth_close().0);
+        put_u64(&mut b, c.session_end().0);
+    }
+    b
+}
+
 fn restore_profile_section(bytes: &[u8]) -> Result<MultiProfile, RestoreError> {
     let mut c = Cursor::new(bytes, "PROFILE");
+    let version = c.u16()?;
+    if version != PROFILE_SECTION_VERSION {
+        return Err(RestoreError::UnsupportedVersion {
+            section: "PROFILE",
+            version,
+        });
+    }
     let tick = c.i64()?;
     if tick <= 0 {
         return Err(c.corrupt("non-positive tick"));
@@ -223,16 +228,13 @@ fn restore_profile_section(bytes: &[u8]) -> Result<MultiProfile, RestoreError> {
             return Err(c.corrupt("trade dates not strictly ascending"));
         }
         prev_date = Some(trade_date);
-        let current_eth_period = c.u32()?;
-        let period_gap = c.bool()?;
+        // Clock placeholder: SESSION section overwrites with explicit boundaries.
+        let mut s = SessionProfile::new(SessionClock::for_trade_date(trade_date), Price(tick));
         let base_tick = c.i64()?;
         let len = c.u32()?;
         if i64::from(len) > MAX_SPAN_TICKS {
             return Err(c.corrupt("price span exceeds ceiling"));
         }
-        let mut s = SessionProfile::new(SessionClock::for_trade_date(trade_date), Price(tick));
-        s.current_eth_period = current_eth_period;
-        s.period_gap = period_gap;
         if len > 0 {
             let n = len as usize;
             let high_tick = base_tick + i64::from(len) - 1;
@@ -279,8 +281,56 @@ fn restore_profile_section(bytes: &[u8]) -> Result<MultiProfile, RestoreError> {
     })
 }
 
+fn restore_session_into(bytes: &[u8], p: &mut MultiProfile) -> Result<(), RestoreError> {
+    let mut c = Cursor::new(bytes, "SESSION");
+    let version = c.u16()?;
+    if version != SESSION_SECTION_VERSION {
+        return Err(RestoreError::UnsupportedVersion {
+            section: "SESSION",
+            version,
+        });
+    }
+    let count = c.u32()?;
+    if count as usize != p.sessions.len() {
+        return Err(c.corrupt("session count disagrees with PROFILE section"));
+    }
+    for s in &mut p.sessions {
+        let trade_date = c.u32()?;
+        if trade_date != s.trade_date() {
+            return Err(c.corrupt("trade date disagrees with PROFILE section"));
+        }
+        s.current_eth_period = c.u32()?;
+        s.period_gap = c.bool()?;
+        s.post_close_events = c.u64()?;
+        s.backward_ts_events = c.u64()?;
+        let session_open = Ts(c.u64()?);
+        let rth_open = Ts(c.u64()?);
+        let rth_close = Ts(c.u64()?);
+        let session_end = Ts(c.u64()?);
+        // Rebuild clock from trade_date for eth_end derivation, then verify
+        // explicit boundaries match — clock is the authority for lettering math.
+        let clock = SessionClock::for_trade_date(trade_date);
+        if clock.session_open() != session_open
+            || clock.rth_open() != rth_open
+            || clock.rth_close() != rth_close
+            || clock.session_end() != session_end
+        {
+            return Err(c.corrupt("session boundary timestamps disagree with trade_date"));
+        }
+        s.clock = clock;
+    }
+    c.finish()
+}
+
 fn restore_cvd_into(bytes: &[u8], p: &mut MultiProfile) -> Result<(), RestoreError> {
     let mut c = Cursor::new(bytes, "CVD");
+    let version = c.u16()?;
+    if version != CVD_SECTION_VERSION {
+        return Err(RestoreError::UnsupportedVersion {
+            section: "CVD",
+            version,
+        });
+    }
     let count = c.u32()?;
     if count as usize != p.sessions.len() {
         return Err(c.corrupt("session count disagrees with PROFILE section"));
@@ -332,6 +382,10 @@ fn restore_cvd_into(bytes: &[u8], p: &mut MultiProfile) -> Result<(), RestoreErr
     c.finish()
 }
 
+fn put_u16(b: &mut Vec<u8>, v: u16) {
+    b.extend_from_slice(&v.to_le_bytes());
+}
+
 fn put_u32(b: &mut Vec<u8>, v: u32) {
     b.extend_from_slice(&v.to_le_bytes());
 }
@@ -377,6 +431,12 @@ impl<'a> Cursor<'a> {
             1 => Ok(true),
             _ => Err(self.corrupt("flag byte not 0/1")),
         }
+    }
+
+    fn u16(&mut self) -> Result<u16, RestoreError> {
+        Ok(u16::from_le_bytes(
+            self.take(2)?.try_into().expect("2 bytes"),
+        ))
     }
 
     fn u32(&mut self) -> Result<u32, RestoreError> {

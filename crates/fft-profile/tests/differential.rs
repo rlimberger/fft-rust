@@ -6,7 +6,7 @@ mod common;
 
 use common::*;
 use fft_core::{CanonicalEvent, Price, Side};
-use fft_profile::{CVD_SECTION_VERSION, MultiProfile, PROFILE_SECTION_VERSION};
+use fft_profile::MultiProfile;
 use proptest::prelude::*;
 
 /// `(dt_seconds, tick_offset, size, kind)` → event stream inside the Wed
@@ -67,12 +67,11 @@ proptest! {
 
         // Checkpoint mid-stream, restore, then apply only the tail.
         let head = apply_all(&events[..split]);
-        let (pb, cb) = head.serialize();
-        let mut resumed = MultiProfile::restore(
-            PROFILE_SECTION_VERSION, &pb, CVD_SECTION_VERSION, &cb,
-        ).expect("restore own serialization");
+        let secs = head.serialize();
+        let mut resumed = MultiProfile::restore(&secs.profile, &secs.cvd, &secs.session)
+            .expect("restore own serialization");
         // serialize(restore(x)) must already be byte-identical.
-        prop_assert_eq!((pb, cb), resumed.serialize());
+        prop_assert_eq!(secs, resumed.serialize());
         for ev in &events[split..] {
             resumed.apply(ev);
         }

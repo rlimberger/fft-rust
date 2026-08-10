@@ -7,6 +7,7 @@ use fft_core::{CanonicalEvent, InstrumentMeta};
 use fft_log::{KIND_CHECKPOINT, LogReader, OpenReport, Section};
 use fft_profile::{
     CVD_SECTION_ID, CVD_SECTION_VERSION, MultiProfile, PROFILE_SECTION_ID, PROFILE_SECTION_VERSION,
+    SESSION_SECTION_ID, SESSION_SECTION_VERSION,
 };
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -297,6 +298,7 @@ fn restore_sections(sections: &[Section]) -> Result<(Book, MultiProfile)> {
     let profile = required(sections, PROFILE_SECTION_ID, "PROFILE")?;
     let cvd = required(sections, CVD_SECTION_ID, "CVD")?;
     let refresh = required(sections, REFRESH_SECTION_ID, "REFRESH")?;
+    let session = required(sections, SESSION_SECTION_ID, "SESSION")?;
     if profile.version != PROFILE_SECTION_VERSION {
         return Err(ReplayError::SectionVersion {
             section: "PROFILE",
@@ -318,8 +320,15 @@ fn restore_sections(sections: &[Section]) -> Result<(Book, MultiProfile)> {
             expected: REFRESH_SECTION_VERSION,
         });
     }
+    if session.version != SESSION_SECTION_VERSION {
+        return Err(ReplayError::SectionVersion {
+            section: "SESSION",
+            found: session.version,
+            expected: SESSION_SECTION_VERSION,
+        });
+    }
     Ok((
         Book::restore(&book.bytes, &flow.bytes, &refresh.bytes)?,
-        MultiProfile::restore(profile.version, &profile.bytes, cvd.version, &cvd.bytes)?,
+        MultiProfile::restore(&profile.bytes, &cvd.bytes, &session.bytes)?,
     ))
 }

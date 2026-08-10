@@ -10,6 +10,7 @@ use fft_core::{CanonicalEvent, EventKind, InstrumentMeta, OrderId, Price, Seq, S
 use fft_log::{LogWriter, SectionRef};
 use fft_profile::{
     CVD_SECTION_ID, CVD_SECTION_VERSION, MultiProfile, PROFILE_SECTION_ID, PROFILE_SECTION_VERSION,
+    SESSION_SECTION_ID, SESSION_SECTION_VERSION,
 };
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -141,7 +142,7 @@ pub fn write_state_checkpoint(writer: &mut LogWriter, book: &Book, profile: &Mul
     let book_bytes = book.serialize_book();
     let flow_bytes = book.serialize_flow();
     let refresh_bytes = book.serialize_refresh();
-    let (profile_bytes, cvd_bytes) = profile.serialize();
+    let secs = profile.serialize();
     writer
         .write_checkpoint([
             SectionRef {
@@ -160,19 +161,25 @@ pub fn write_state_checkpoint(writer: &mut LogWriter, book: &Book, profile: &Mul
                 id: PROFILE_SECTION_ID,
                 version: PROFILE_SECTION_VERSION,
                 flags: 0,
-                bytes: &profile_bytes,
+                bytes: &secs.profile,
             },
             SectionRef {
                 id: CVD_SECTION_ID,
                 version: CVD_SECTION_VERSION,
                 flags: 0,
-                bytes: &cvd_bytes,
+                bytes: &secs.cvd,
             },
             SectionRef {
                 id: REFRESH_SECTION_ID,
                 version: REFRESH_SECTION_VERSION,
                 flags: 0,
                 bytes: &refresh_bytes,
+            },
+            SectionRef {
+                id: SESSION_SECTION_ID,
+                version: SESSION_SECTION_VERSION,
+                flags: 0,
+                bytes: &secs.session,
             },
         ])
         .expect("write checkpoint");

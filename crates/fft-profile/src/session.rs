@@ -1,7 +1,12 @@
 //! One session's Market Profile: dense per-price arrays plus derived stats.
+//!
+//! PROFILE-WAVE (2026-08-10): admission [17:00 D-1, 17:00 D); RTH letters A..M
+//! stop at 15:00; period cursor advances from any in-session event ts before
+//! kind handling; cross-period-backward attributes to the current period;
+//! snapshot-flagged events are ignored (Add-only assert).
 
 use crate::cvd::Cvd;
-use crate::tpo::SessionClock;
+use crate::tpo::{RTH_PERIOD_COUNT, SessionClock};
 use crate::value_area;
 use fft_core::{CanonicalEvent, EventKind, Price, Side, Ts};
 
@@ -11,9 +16,11 @@ const GROW_PAD: usize = 64;
 /// corrupt input (ES trades a few thousand ticks per session), so exceeding it
 /// is a loud panic, not a silent drop (deliberate change from legacy).
 pub(crate) const MAX_SPAN_TICKS: i64 = 1_000_000;
-/// Period bitsets are `u64`; a 23-hour session has 46 periods, so every valid
-/// index fits. Exceeding this means the clock produced garbage.
+/// Period bitsets are `u64`; a 23-hour ETH lettering window has 46 periods, so
+/// every valid index fits. Exceeding this means the clock produced garbage.
 const MAX_PERIOD_BIT: u32 = 63;
+/// Databento `flags::SNAPSHOT` (dbn 0.65.0). Local so fft-profile owns the check.
+const DATABENTO_SNAPSHOT_FLAG: u16 = 1 << 5;
 
 /// Per-price render row. `eth_periods` letters run continuously from the
 /// Globex open (bit 0 = ETH A) across the whole session; `rth_periods`
@@ -63,6 +70,10 @@ pub struct SessionProfile {
     /// True when a feed gap landed in the developing period: its PV
     /// accumulation is incomplete. Clears at the next period roll.
     pub(crate) period_gap: bool,
+    /// Events in `[eth_end, session_end)` (volume-only window).
+    pub(crate) post_close_events: u64,
+    /// Cross-period-backward timestamps (attributed to the current period).
+    pub(crate) backward_ts_events: u64,
     pub(crate) cvd: Cvd,
 }
 
@@ -93,6 +104,8 @@ impl PartialEq for SessionProfile {
             && self.ib_high_tick == other.ib_high_tick
             && self.current_eth_period == other.current_eth_period
             && self.period_gap == other.period_gap
+            && self.post_close_events == other.post_close_events
+            && self.backward_ts_events == other.backward_ts_events
             && self.cvd == other.cvd
             && trimmed(self, &self.eth_periods) == trimmed(other, &other.eth_periods)
             && trimmed(self, &self.rth_periods) == trimmed(other, &other.rth_periods)
@@ -129,44 +142,90 @@ impl SessionProfile {
             ib_high_tick: None,
             current_eth_period: 0,
             period_gap: false,
+            post_close_events: 0,
+            backward_ts_events: 0,
             cvd: Cvd::default(),
         }
     }
 
-    /// Apply one canonical event. Trades accumulate; a Gap marks the in-flight
-    /// counters (cB/cA, developing-period volume) as gap state; every other
-    /// kind is book/engine business and is ignored here. `Fill` is the
-    /// resting-side notice of a `Trade` — counting both would double-count.
+    /// Apply one canonical event. Snapshot-flagged records are ignored (must be
+    /// Add). Trades accumulate; a Gap marks the developing period's PV after the
+    /// period cursor advances; every other kind advances the cursor only.
     pub fn apply(&mut self, ev: &CanonicalEvent) {
+        if ev.flags & DATABENTO_SNAPSHOT_FLAG != 0 {
+            assert_eq!(
+                ev.kind,
+                EventKind::Add,
+                "fft-profile: snapshot-flagged event must be Add, got {:?}: {ev:?}",
+                ev.kind
+            );
+            return;
+        }
+
+        let ts = ev.ts;
+        assert!(
+            self.clock.admits(ts),
+            "ts {ts:?} outside session admission [open, end) for trade date {}",
+            self.trade_date()
+        );
+
+        if self.clock.is_post_close(ts) {
+            self.post_close_events += 1;
+            match ev.kind {
+                EventKind::Trade => self.on_trade_post_close(ev.price, ev.size, ev.side, ts),
+                EventKind::Gap => {
+                    // Volume-only window: no PV marker, no TPO. CVD touch honesty
+                    // still tracks the gap for pane markers.
+                    self.cvd.mark_gap();
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // Event-time period cursor BEFORE kind handling (PROFILE-WAVE §3).
+        self.advance_period(ts);
+
         match ev.kind {
-            EventKind::Trade => self.on_trade(ev.price, ev.size, ev.side, ev.ts),
-            EventKind::Gap => self.on_gap(),
+            EventKind::Trade => self.on_trade(ev.price, ev.size, ev.side, ts),
+            EventKind::Gap => {
+                self.period_gap = true;
+                self.cvd.mark_gap();
+            }
             _ => {}
         }
     }
 
-    /// `aggressor` = trade `side` per the Databento MBO convention (`Bid` =
-    /// buy aggressor). A sideless trade counts volume and TPO but carries no
-    /// delta or touch-counter information.
-    fn on_trade(&mut self, price: Price, size: u32, aggressor: Side, ts: Ts) {
-        assert!(size > 0, "zero-size trade at {ts:?}");
-        let t = self.to_tick(price);
+    /// Advance the developing ETH period from `ts`. Cross-period-backward
+    /// increments `backward_ts_events` and keeps the current period.
+    fn advance_period(&mut self, ts: Ts) {
         let eth_p = self.clock.eth_period(ts);
-        assert!(
-            eth_p >= self.current_eth_period,
-            "trade time went backwards: period {eth_p} after {}",
-            self.current_eth_period
-        );
         if eth_p > self.current_eth_period {
             self.period_volume.fill(0);
             self.period_gap = false;
             self.current_eth_period = eth_p;
+        } else if eth_p < self.current_eth_period {
+            self.backward_ts_events += 1;
         }
-        let rth_p = self.clock.rth_period(ts);
+    }
+
+    /// `aggressor` = trade `side` per the Databento MBO convention (`Bid` =
+    /// buy aggressor). Attribution uses the **current** period after
+    /// [`advance_period`] (handles cross-period-backward). A sideless trade
+    /// counts volume and TPO but carries no delta or touch-counter information.
+    fn on_trade(&mut self, price: Price, size: u32, aggressor: Side, ts: Ts) {
+        assert!(size > 0, "zero-size trade at {ts:?}");
+        let t = self.to_tick(price);
+        let eth_p = self.current_eth_period;
+        assert!(eth_p <= MAX_PERIOD_BIT, "period {eth_p} exceeds bitset");
+
+        // RTH letter from the developing period (not raw ts — backward-safe).
+        let rth_p = eth_p
+            .checked_sub(self.clock.rth_offset_periods())
+            .filter(|&r| r < RTH_PERIOD_COUNT);
 
         let idx = self.ensure(t);
         let sz = u64::from(size);
-        assert!(eth_p <= MAX_PERIOD_BIT, "period {eth_p} exceeds bitset");
         self.eth_periods[idx] |= 1 << eth_p;
         if let Some(r) = rth_p {
             assert!(r <= MAX_PERIOD_BIT, "RTH period {r} exceeds bitset");
@@ -198,9 +257,29 @@ impl SessionProfile {
         self.cvd.on_trade(price, sz, aggressor, eth_p);
     }
 
-    fn on_gap(&mut self) {
-        self.period_gap = true;
-        self.cvd.mark_gap();
+    /// Post-ETH volume-only window: session volume / spectrum / range, no TPO, no PV.
+    fn on_trade_post_close(&mut self, price: Price, size: u32, aggressor: Side, ts: Ts) {
+        assert!(size > 0, "zero-size trade at {ts:?}");
+        let t = self.to_tick(price);
+        let idx = self.ensure(t);
+        let sz = u64::from(size);
+        self.volume[idx] += sz;
+        match aggressor {
+            Side::Bid => self.buy_volume[idx] += sz,
+            Side::Ask => self.sell_volume[idx] += sz,
+            Side::None => {}
+        }
+        self.total_volume += sz;
+        self.low_tick = Some(self.low_tick.map_or(t, |l| l.min(t)));
+        self.high_tick = Some(self.high_tick.map_or(t, |h| h.max(t)));
+        if self.open_tick.is_none() {
+            self.open_tick = Some(t);
+        }
+        if self.volume[idx] > self.poc_volume {
+            self.poc_volume = self.volume[idx];
+            self.poc_tick = Some(t);
+        }
+        // No period_volume, no eth/rth letter bits, no CVD period candles.
     }
 
     pub fn clock(&self) -> &SessionClock {
@@ -292,16 +371,27 @@ impl SessionProfile {
         self.current_eth_period
     }
 
-    /// RTH-anchored index of the developing period; `None` before RTH.
+    /// RTH-anchored index of the developing period; `None` outside RTH A..M.
     pub fn current_rth_period(&self) -> Option<u32> {
         self.current_eth_period
             .checked_sub(self.clock.rth_offset_periods())
+            .filter(|&r| r < RTH_PERIOD_COUNT)
     }
 
     /// True when a feed gap landed in the developing period, so PV columns
     /// for it are incomplete. Session volume/TPO already accumulated stays.
     pub fn period_gap(&self) -> bool {
         self.period_gap
+    }
+
+    /// Events accepted in the post-ETH volume-only window `[16:00, 17:00)` CT.
+    pub fn post_close_events(&self) -> u64 {
+        self.post_close_events
+    }
+
+    /// Cross-period-backward timestamps attributed to the current period.
+    pub fn backward_ts_events(&self) -> u64 {
+        self.backward_ts_events
     }
 
     /// CVD candles, session delta components, and cB/cA touch counters.

@@ -117,9 +117,78 @@ fn gap_marks_in_flight_counters_and_keeps_accumulated_state() {
     // cA never reset → still marked.
     assert!(p.cvd().current_ask().is_gap());
 
-    // Period roll clears the PV gap marker.
+    // PROFILE-WAVE: period roll on a Trade still clears the PV gap marker when the
+    // gap landed in the *previous* period (cursor advances then clears).
     p.apply(&trade(20_000, 1, Side::Bid, SESSION_OPEN_NS + PERIOD_NS));
     assert!(!p.period_gap());
+}
+
+/// PROFILE-WAVE §3: a Gap whose ts enters a new period rolls first, then marks
+/// the NEW period — the marker must not be lost on the next same-period trade.
+#[test]
+fn gap_rolls_into_new_period_before_marking() {
+    let mut p = empty_profile();
+    p.apply(&trade(20_000, 1, Side::Bid, SESSION_OPEN_NS));
+    assert_eq!(p.current_eth_period(), 0);
+    assert!(!p.period_gap());
+
+    // Gap stamped at the start of period 1: cursor advances, then marks period 1.
+    p.apply(&gap(SESSION_OPEN_NS + PERIOD_NS));
+    assert_eq!(p.current_eth_period(), 1);
+    assert!(
+        p.period_gap(),
+        "gap must mark the NEW period after the roll"
+    );
+
+    // Same-period trade must not clear the marker.
+    p.apply(&trade(
+        20_000,
+        1,
+        Side::Bid,
+        SESSION_OPEN_NS + PERIOD_NS + 1,
+    ));
+    assert_eq!(p.current_eth_period(), 1);
+    assert!(p.period_gap(), "same-period trade keeps the gap marker");
+}
+
+/// PROFILE-WAVE §4: cross-period-backward ts attributes to the current period.
+#[test]
+fn backward_ts_attributes_to_current_period() {
+    let mut p = empty_profile();
+    p.apply(&trade(20_000, 1, Side::Bid, SESSION_OPEN_NS + PERIOD_NS)); // period 1
+    assert_eq!(p.current_eth_period(), 1);
+    assert_eq!(p.backward_ts_events(), 0);
+
+    // Trade stamped in period 0 while cursor is at 1.
+    p.apply(&trade(20_001, 2, Side::Ask, SESSION_OPEN_NS));
+    assert_eq!(p.current_eth_period(), 1, "cursor does not rewind");
+    assert_eq!(p.backward_ts_events(), 1);
+    // Attribution: volume on 20_001 under ETH period 1 bit, not period 0.
+    let r = p.row(price(20_001));
+    assert_eq!(r.eth_periods, 1 << 1);
+    assert_eq!(r.volume, 2);
+}
+
+/// PROFILE-WAVE §5: snapshot-flagged non-Add panics; snapshot Add is ignored.
+#[test]
+#[should_panic(expected = "snapshot-flagged event must be Add")]
+fn snapshot_non_add_panics() {
+    let mut p = empty_profile();
+    let mut ev = trade(20_000, 1, Side::Bid, SESSION_OPEN_NS);
+    ev.flags = 1 << 5;
+    p.apply(&ev);
+}
+
+#[test]
+fn snapshot_add_is_ignored_by_profile() {
+    let mut p = empty_profile();
+    let mut ev = trade(20_000, 1, Side::Bid, SESSION_OPEN_NS);
+    // Force kind Add + SNAPSHOT so book would load it; profile must ignore.
+    ev.kind = fft_core::EventKind::Add;
+    ev.flags = 1 << 5;
+    p.apply(&ev);
+    assert_eq!(p.total_volume(), 0);
+    assert_eq!(p.row(price(20_000)).volume, 0);
 }
 
 #[test]

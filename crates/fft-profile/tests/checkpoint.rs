@@ -1,14 +1,12 @@
 //! Checkpoint discipline: serialize → restore → serialize byte-identity,
 //! equality of every queryable stat, and loud rejection of bad sections.
+//! PROFILE-WAVE: three-section PROFILE/CVD/SESSION payloads.
 
 mod common;
 
 use common::*;
 use fft_core::{Price, Side};
-use fft_profile::{
-    CVD_SECTION_VERSION, MultiProfile, PERIOD_NS, PROFILE_SECTION_VERSION, RestoreError,
-    SessionClock,
-};
+use fft_profile::{MultiProfile, PERIOD_NS, RestoreError, SessionClock};
 
 /// Two-session week slice: Mon 2026-07-27 (frozen) + Wed 2026-07-29
 /// (developing, with an in-flight gap marker).
@@ -36,30 +34,29 @@ fn fixture() -> MultiProfile {
 #[test]
 fn serialize_restore_serialize_is_byte_identical() {
     let original = fixture();
-    let (profile1, cvd1) = original.serialize();
-    let restored = MultiProfile::restore(
-        PROFILE_SECTION_VERSION,
-        &profile1,
-        CVD_SECTION_VERSION,
-        &cvd1,
-    )
-    .expect("restore");
-    let (profile2, cvd2) = restored.serialize();
+    let s1 = original.serialize();
+    let restored = MultiProfile::restore(&s1.profile, &s1.cvd, &s1.session).expect("restore");
+    let s2 = restored.serialize();
     assert_eq!(
-        profile1, profile2,
+        s1.profile, s2.profile,
         "PROFILE section must round-trip byte-identically"
     );
-    assert_eq!(cvd1, cvd2, "CVD section must round-trip byte-identically");
-    // Complete-state equality, not just byte equality.
+    assert_eq!(
+        s1.cvd, s2.cvd,
+        "CVD section must round-trip byte-identically"
+    );
+    assert_eq!(
+        s1.session, s2.session,
+        "SESSION section must round-trip byte-identically"
+    );
     assert_eq!(original, restored);
 }
 
 #[test]
 fn every_queryable_stat_survives_restore() {
     let original = fixture();
-    let (pb, cb) = original.serialize();
-    let restored =
-        MultiProfile::restore(PROFILE_SECTION_VERSION, &pb, CVD_SECTION_VERSION, &cb).unwrap();
+    let s = original.serialize();
+    let restored = MultiProfile::restore(&s.profile, &s.cvd, &s.session).unwrap();
 
     assert_eq!(restored.tick(), original.tick());
     assert_eq!(restored.sessions().len(), original.sessions().len());
@@ -75,7 +72,10 @@ fn every_queryable_stat_survives_restore() {
         assert_eq!(a.current_eth_period(), b.current_eth_period());
         assert_eq!(a.current_rth_period(), b.current_rth_period());
         assert_eq!(a.period_gap(), b.period_gap());
+        assert_eq!(a.post_close_events(), b.post_close_events());
+        assert_eq!(a.backward_ts_events(), b.backward_ts_events());
         assert_eq!(a.cvd(), b.cvd());
+        assert_eq!(a.clock(), b.clock());
         let (lo, hi) = a.range().expect("fixture sessions trade");
         let mut t = lo.0;
         while t <= hi.0 {
@@ -83,7 +83,6 @@ fn every_queryable_stat_survives_restore() {
             t += TICK;
         }
     }
-    // The developing gap markers made the trip.
     let cur = restored.current().unwrap();
     assert!(cur.period_gap());
     assert!(cur.cvd().current_bid().is_gap());
@@ -92,54 +91,87 @@ fn every_queryable_stat_survives_restore() {
 #[test]
 fn empty_and_untraded_sessions_round_trip() {
     let mut p = MultiProfile::new(Price(TICK));
-    let (pb, cb) = p.serialize();
-    let r = MultiProfile::restore(PROFILE_SECTION_VERSION, &pb, CVD_SECTION_VERSION, &cb).unwrap();
+    let s = p.serialize();
+    let r = MultiProfile::restore(&s.profile, &s.cvd, &s.session).unwrap();
     assert_eq!(p, r);
 
     p.begin_session(TRADE_DATE);
     p.apply(&gap(SESSION_OPEN_NS)); // gap before any trade
-    let (pb, cb) = p.serialize();
-    let r = MultiProfile::restore(PROFILE_SECTION_VERSION, &pb, CVD_SECTION_VERSION, &cb).unwrap();
+    let s = p.serialize();
+    let r = MultiProfile::restore(&s.profile, &s.cvd, &s.session).unwrap();
     assert_eq!(p, r);
     assert!(r.current().unwrap().period_gap());
 }
 
 #[test]
 fn unknown_versions_are_rejected_loudly() {
-    let (pb, cb) = fixture().serialize();
+    let s = fixture().serialize();
+    let mut bad_profile = s.profile.clone();
+    bad_profile[..2].copy_from_slice(&2u16.to_le_bytes());
     assert_eq!(
-        MultiProfile::restore(2, &pb, CVD_SECTION_VERSION, &cb),
+        MultiProfile::restore(&bad_profile, &s.cvd, &s.session),
         Err(RestoreError::UnsupportedVersion {
             section: "PROFILE",
             version: 2
         })
     );
+    let mut bad_cvd = s.cvd.clone();
+    bad_cvd[..2].copy_from_slice(&9u16.to_le_bytes());
     assert_eq!(
-        MultiProfile::restore(PROFILE_SECTION_VERSION, &pb, 9, &cb),
+        MultiProfile::restore(&s.profile, &bad_cvd, &s.session),
         Err(RestoreError::UnsupportedVersion {
             section: "CVD",
             version: 9
+        })
+    );
+    let mut bad_session = s.session.clone();
+    bad_session[..2].copy_from_slice(&3u16.to_le_bytes());
+    assert_eq!(
+        MultiProfile::restore(&s.profile, &s.cvd, &bad_session),
+        Err(RestoreError::UnsupportedVersion {
+            section: "SESSION",
+            version: 3
         })
     );
 }
 
 #[test]
 fn truncated_and_oversized_sections_are_rejected_loudly() {
-    let (pb, cb) = fixture().serialize();
+    let s = fixture().serialize();
 
-    let truncated = &pb[..pb.len() - 1];
+    let truncated = &s.profile[..s.profile.len() - 1];
     assert_eq!(
-        MultiProfile::restore(PROFILE_SECTION_VERSION, truncated, CVD_SECTION_VERSION, &cb),
+        MultiProfile::restore(truncated, &s.cvd, &s.session),
         Err(RestoreError::Truncated { section: "PROFILE" })
     );
 
-    let mut trailing = cb.clone();
+    let mut trailing = s.cvd.clone();
     trailing.push(0);
     assert_eq!(
-        MultiProfile::restore(PROFILE_SECTION_VERSION, &pb, CVD_SECTION_VERSION, &trailing),
+        MultiProfile::restore(&s.profile, &trailing, &s.session),
         Err(RestoreError::Corrupt {
             section: "CVD",
             what: "trailing bytes"
         })
+    );
+}
+
+/// PROFILE-WAVE: single-byte corruption of SESSION is loud.
+#[test]
+fn session_single_byte_corruption_is_loud() {
+    let s = fixture().serialize();
+    let mut corrupt = s.session.clone();
+    let flip = corrupt.len() / 2;
+    corrupt[flip] ^= 0xff;
+    let err = MultiProfile::restore(&s.profile, &s.cvd, &corrupt).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            RestoreError::Corrupt {
+                section: "SESSION",
+                ..
+            } | RestoreError::Truncated { section: "SESSION" }
+        ),
+        "got {err}"
     );
 }

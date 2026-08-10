@@ -76,8 +76,8 @@ impl Default for EngineConfig {
 pub struct EngineExit {
     /// Final deterministic BOOK bytes, when a source was loaded.
     pub book_bytes: Option<Vec<u8>>,
-    /// Final deterministic `(PROFILE, CVD)` bytes.
-    pub profile_bytes: Option<(Vec<u8>, Vec<u8>)>,
+    /// Final deterministic PROFILE/CVD/SESSION section payloads.
+    pub profile_bytes: Option<fft_profile::ProfileSections>,
     /// Final integrity watermarks.
     pub watermarks: Watermarks,
     /// Number of snapshots published.

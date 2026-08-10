@@ -11,6 +11,7 @@ use fft_core::Side;
 use fft_log::SectionRef;
 use fft_profile::{
     CVD_SECTION_ID, CVD_SECTION_VERSION, MultiProfile, PROFILE_SECTION_ID, PROFILE_SECTION_VERSION,
+    SESSION_SECTION_ID, SESSION_SECTION_VERSION,
 };
 use fft_replay::{ReplayError, ReplaySource};
 
@@ -138,7 +139,7 @@ fn write_single_checkpoint(path: &std::path::Path, omit: Option<u16>, bad_book_i
     }
     let flow_bytes = book.serialize_flow();
     let refresh_bytes = book.serialize_refresh();
-    let (profile_bytes, cvd_bytes) = profile.serialize();
+    let secs = profile.serialize();
     let mut sections = vec![
         SectionRef {
             id: BOOK_SECTION_ID,
@@ -156,19 +157,25 @@ fn write_single_checkpoint(path: &std::path::Path, omit: Option<u16>, bad_book_i
             id: PROFILE_SECTION_ID,
             version: PROFILE_SECTION_VERSION,
             flags: 0,
-            bytes: &profile_bytes,
+            bytes: &secs.profile,
         },
         SectionRef {
             id: CVD_SECTION_ID,
             version: CVD_SECTION_VERSION,
             flags: 0,
-            bytes: &cvd_bytes,
+            bytes: &secs.cvd,
         },
         SectionRef {
             id: REFRESH_SECTION_ID,
             version: REFRESH_SECTION_VERSION,
             flags: 0,
             bytes: &refresh_bytes,
+        },
+        SectionRef {
+            id: SESSION_SECTION_ID,
+            version: SESSION_SECTION_VERSION,
+            flags: 0,
+            bytes: &secs.session,
         },
     ];
     sections.retain(|section| Some(section.id) != omit);
@@ -180,7 +187,11 @@ fn write_single_checkpoint(path: &std::path::Path, omit: Option<u16>, bad_book_i
 
 #[test]
 fn seek_requires_flow_and_refresh_sections() {
-    for (id, expected) in [(FLOW_SECTION_ID, "FLOW"), (REFRESH_SECTION_ID, "REFRESH")] {
+    for (id, expected) in [
+        (FLOW_SECTION_ID, "FLOW"),
+        (REFRESH_SECTION_ID, "REFRESH"),
+        (SESSION_SECTION_ID, "SESSION"),
+    ] {
         let tmp = temp_path(expected);
         write_single_checkpoint(tmp.path(), Some(id), false);
         let mut source = ReplaySource::open(tmp.path()).unwrap();

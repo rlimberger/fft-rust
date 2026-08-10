@@ -8,10 +8,10 @@
 //! CVD candles per 30-minute period plus Grady cB/cA traded-at-touch counters
 //! that reset on price change.
 //!
-//! Checkpointing: this crate owns the PROFILE (id 3) and CVD (id 4) checkpoint
-//! section byte layouts (`docs/FFTLOG-V2.md` §5). [`MultiProfile::restore`]
-//! reconstructs complete state directly from section bytes — never by replaying
-//! synthetic events (the legacy `rebuild.rs` defect).
+//! Checkpointing: this crate owns the PROFILE (id 3), CVD (id 4), and SESSION
+//! (id 6) checkpoint section byte layouts (`docs/FFTLOG-V2.md` §5,
+//! `docs/ENGINE.md` §4). [`MultiProfile::restore`] reconstructs complete state
+//! directly from section bytes — never by replaying synthetic events.
 
 #![forbid(unsafe_code)]
 
@@ -25,7 +25,10 @@ mod value_area;
 pub use cvd::{Cvd, CvdCandle, TouchCounter};
 pub use profile::MultiProfile;
 pub use serialize::{
-    CVD_SECTION_ID, CVD_SECTION_VERSION, PROFILE_SECTION_ID, PROFILE_SECTION_VERSION, RestoreError,
+    CVD_SECTION_ID, CVD_SECTION_VERSION, PROFILE_SECTION_ID, PROFILE_SECTION_VERSION,
+    ProfileSections, RestoreError, SESSION_SECTION_ID, SESSION_SECTION_VERSION,
 };
 pub use session::{ProfileRow, SessionProfile};
-pub use tpo::{PERIOD_NS, SessionClock, period_letter, tpo_letters};
+pub use tpo::{
+    ETH_PERIOD_COUNT, PERIOD_NS, RTH_PERIOD_COUNT, SessionClock, period_letter, tpo_letters,
+};

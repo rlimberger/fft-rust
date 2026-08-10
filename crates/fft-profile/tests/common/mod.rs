@@ -19,8 +19,12 @@ const DAY_S: u64 = 86_400;
 pub const SESSION_OPEN_NS: u64 = (20_662 * DAY_S + 22 * 3_600) * 1_000_000_000;
 /// RTH open: Wed 2026-07-29 08:30 CDT = 13:30 UTC.
 pub const RTH_OPEN_NS: u64 = (20_663 * DAY_S + 13 * 3_600 + 1_800) * 1_000_000_000;
-/// Session end: Wed 2026-07-29 16:00 CDT = 21:00 UTC.
-pub const SESSION_END_NS: u64 = (20_663 * DAY_S + 21 * 3_600) * 1_000_000_000;
+/// RTH close: Wed 2026-07-29 15:00 CDT = 20:00 UTC (PROFILE-WAVE).
+pub const RTH_CLOSE_NS: u64 = (20_663 * DAY_S + 20 * 3_600) * 1_000_000_000;
+/// ETH lettering end: Wed 2026-07-29 16:00 CDT = 21:00 UTC.
+pub const ETH_END_NS: u64 = (20_663 * DAY_S + 21 * 3_600) * 1_000_000_000;
+/// Globex admission end: Wed 2026-07-29 17:00 CDT = 22:00 UTC.
+pub const SESSION_END_NS: u64 = (20_663 * DAY_S + 22 * 3_600) * 1_000_000_000;
 
 pub fn price(ticks: i64) -> Price {
     Price(ticks * TICK)
