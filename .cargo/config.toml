@@ -1,0 +1,4 @@
+# This machine rewrites https://github.com/ to ssh (git insteadOf); cargo's built-in
+# fetcher cannot authenticate over that rewrite, so git dependencies fetch via the git CLI.
+[net]
+git-fetch-with-cli = true

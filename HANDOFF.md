@@ -19,13 +19,14 @@ State at session close:
   reset_pacing fails loudly; EngineExit carries CoverageCounters; an engine panic can no
   longer destroy gate evidence (JSON written first, verdict FAIL + note, then FAILURE
   exit); Seek on a checkpoint-less log panics with the fft-checkpoint remediation.
-- **GPUI-THROTTLE-OPT-OUT staged, validation PENDING.** The m4 466-miss FAIL was GPUI's
-  unfocused ~30 fps throttle (FRAME-STALL-DIAGNOSIS). Patch: shallow clone of the pinned
-  zed rev at `~/Projects/zed-fft`, commit `34ba175` adds a `GPUI_DISABLE_INACTIVE_THROTTLE=1`
-  opt-out in gpui window.rs; workspace Cargo.toml `[patch]` redirects gpui/gpui_platform
-  to that clone (machine-local, INTERIM — permanent fix is pushing the patch branch to a
-  GitHub fork and repointing, needs René's `gh repo fork`); fft main.rs sets the env var
-  unconditionally. Release build + workspace clippy green against the patch.
+- **GPUI-THROTTLE-OPT-OUT landed.** The m4 466-miss FAIL was GPUI's unfocused ~30 fps
+  throttle (FRAME-STALL-DIAGNOSIS). Fix: `rlimberger/zed` fork, branch
+  `fft-inactive-throttle-optout` = pinned rev `492acd6` + commit `34ba175` adding a
+  `GPUI_DISABLE_INACTIVE_THROTTLE=1` opt-out in gpui window.rs; workspace deps pin that
+  fork rev directly (Cargo.toml; `.cargo/config.toml` fetches git deps via the git CLI —
+  this machine's insteadOf rewrite breaks cargo's built-in fetcher); fft main.rs sets the
+  env var unconditionally. The working clone `~/Projects/zed-fft` is now only needed for
+  future gpui patches, not for builds. Release build + workspace clippy green.
   **VALIDATED (unfocused 60 s run, evidence
   `perf-runner/results/2026-08-10-m4-two-pane-gate-optout.json`): missed 466 → 1,
   frames 2927 → 3600** (full vsync delivery unfocused), p50 16.777 ms, p99 17.302 ms,

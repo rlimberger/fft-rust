@@ -17,18 +17,12 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
-# Pinned to zed-industries/zed default-branch (main) HEAD as of 2026-08-10.
-# At this rev the platform entry point (`application()`) lives in `gpui_platform`;
-# its `wayland` feature selects the Linux/Wayland backend (off by default).
-gpui = { git = "https://github.com/zed-industries/zed", rev = "492acd6c815cbe8c7366d54e6092341340afa6c7" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "492acd6c815cbe8c7366d54e6092341340afa6c7", features = ["wayland"] }
+# rlimberger/zed branch `fft-inactive-throttle-optout`: zed main pinned at 492acd6c
+# (2026-08-10) + one commit adding the GPUI_DISABLE_INACTIVE_THROTTLE opt-out — upstream
+# GPUI hard-caps unfocused windows to ~30fps (window.rs min_frame_interval), which fails
+# the frame gate for an unfocused market display. At this rev the platform entry point
+# (`application()`) lives in `gpui_platform`; its `wayland` feature selects the
+# Linux/Wayland backend (off by default).
+gpui = { git = "https://github.com/rlimberger/zed", rev = "34ba175b1f48e40de4d6d7dfcbca1c6235d006b5" }
+gpui_platform = { git = "https://github.com/rlimberger/zed", rev = "34ba175b1f48e40de4d6d7dfcbca1c6235d006b5", features = ["wayland"] }
 criterion = "0.8"
-
-# INTERIM (2026-08-10): local clone of the pinned rev + one commit (34ba175) adding the
-# GPUI_DISABLE_INACTIVE_THROTTLE opt-out — GPUI hard-caps unfocused windows to ~30fps
-# (window.rs min_frame_interval), which fails the frame gate for an unfocused market
-# display. Machine-local path until the patch lands on a pushed fork; cargo fails loudly
-# if the clone is missing.
-[patch."https://github.com/zed-industries/zed"]
-gpui = { path = "/home/rlimberger/Projects/zed-fft/crates/gpui" }
-gpui_platform = { path = "/home/rlimberger/Projects/zed-fft/crates/gpui_platform" }
