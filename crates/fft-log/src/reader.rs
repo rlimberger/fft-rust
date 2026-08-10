@@ -15,7 +15,7 @@
 
 use std::fs::File;
 use std::ops::Range;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use fft_core::{CanonicalEvent, InstrumentMeta, Ts};
 use memmap2::Mmap;
@@ -65,9 +65,20 @@ pub struct OpenReport {
     pub warnings: Vec<String>,
 }
 
+/// Result of [`LogReader::refresh`] for a concurrently growing (or just-closed) log (§7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RefreshReport {
+    /// Fully committed frames discovered since the previous open/refresh.
+    pub new_frames: usize,
+    /// Whether the on-disk header still has the `LIVE` flag after this refresh.
+    pub live: bool,
+}
+
 /// Memory-mapped fftlog v2 reader. One `Mmap` is the single cursor; all frame and
-/// payload access is bounds-checked slicing into it.
+/// payload access is bounds-checked slicing into it. Hold the path so
+/// [`LogReader::refresh`] can remmap a growing LIVE file (§7 concurrent tail).
 pub struct LogReader {
+    path: PathBuf,
     mmap: Mmap,
     header: HeaderInfo,
     index: Vec<IndexEntry>,
@@ -78,6 +89,7 @@ pub struct LogReader {
 impl std::fmt::Debug for LogReader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LogReader")
+            .field("path", &self.path)
             .field("symbol", &self.header.meta.symbol)
             .field("frames", &self.index.len())
             .field("frames_end", &self.frames_end)
@@ -176,6 +188,51 @@ fn scan_frames(data: &[u8], start: u64, end: u64) -> Result<Scan> {
     })
 }
 
+/// Resolve the frame index for a closed (non-LIVE) file — same policy as open (§6).
+fn resolve_closed_index(
+    mmap: &Mmap,
+    header_len: u64,
+    file_len: u64,
+    warnings: &mut Vec<String>,
+) -> Result<(Vec<IndexEntry>, u64, IndexSource)> {
+    match footer::probe_footer(mmap, header_len) {
+        FooterProbe::Valid {
+            entries,
+            frames_end,
+        } => Ok((entries, frames_end, IndexSource::Footer)),
+        FooterProbe::Corrupt {
+            frames_end: Some(frames_end),
+            detail,
+        } => {
+            let scan = scan_frames(mmap, header_len, frames_end)?;
+            match scan.end {
+                ScanEnd::Clean => {
+                    warnings.push(format!(
+                        "footer index corrupt ({detail}); frame chain intact — \
+                         index rebuilt by scan"
+                    ));
+                    Ok((scan.entries, frames_end, IndexSource::RebuiltCorruptIndex))
+                }
+                ScanEnd::Tail { offset, detail } => Err(LogError::CorruptTail { offset, detail }),
+            }
+        }
+        FooterProbe::Corrupt {
+            frames_end: None,
+            detail,
+        } => Err(LogError::CorruptIndex { detail }),
+        FooterProbe::Absent => {
+            let scan = scan_frames(mmap, header_len, file_len)?;
+            match scan.end {
+                ScanEnd::Clean => {
+                    warnings.push("closed file has no footer; index rebuilt by scan".into());
+                    Ok((scan.entries, file_len, IndexSource::RebuiltMissingFooter))
+                }
+                ScanEnd::Tail { offset, detail } => Err(LogError::CorruptTail { offset, detail }),
+            }
+        }
+    }
+}
+
 impl LogReader {
     /// Open a log and report how (§6–§8). See the module docs for the full policy.
     pub fn open(path: &Path) -> Result<(LogReader, OpenReport)> {
@@ -217,62 +274,13 @@ impl LogReader {
                 Some(recovery),
             )
         } else {
-            match footer::probe_footer(&mmap, header_len) {
-                FooterProbe::Valid {
-                    entries,
-                    frames_end,
-                } => (entries, frames_end, IndexSource::Footer, None),
-                FooterProbe::Corrupt {
-                    frames_end: Some(frames_end),
-                    detail,
-                } => {
-                    let scan = scan_frames(&mmap, header_len, frames_end)?;
-                    match scan.end {
-                        ScanEnd::Clean => {
-                            warnings.push(format!(
-                                "footer index corrupt ({detail}); frame chain intact — \
-                                 index rebuilt by scan"
-                            ));
-                            (
-                                scan.entries,
-                                frames_end,
-                                IndexSource::RebuiltCorruptIndex,
-                                None,
-                            )
-                        }
-                        ScanEnd::Tail { offset, detail } => {
-                            return Err(LogError::CorruptTail { offset, detail });
-                        }
-                    }
-                }
-                FooterProbe::Corrupt {
-                    frames_end: None,
-                    detail,
-                } => {
-                    return Err(LogError::CorruptIndex { detail });
-                }
-                FooterProbe::Absent => {
-                    let scan = scan_frames(&mmap, header_len, file_len)?;
-                    match scan.end {
-                        ScanEnd::Clean => {
-                            warnings
-                                .push("closed file has no footer; index rebuilt by scan".into());
-                            (
-                                scan.entries,
-                                file_len,
-                                IndexSource::RebuiltMissingFooter,
-                                None,
-                            )
-                        }
-                        ScanEnd::Tail { offset, detail } => {
-                            return Err(LogError::CorruptTail { offset, detail });
-                        }
-                    }
-                }
-            }
+            let (index, frames_end, index_source) =
+                resolve_closed_index(&mmap, header_len, file_len, &mut warnings)?;
+            (index, frames_end, index_source, None)
         };
 
         let reader = LogReader {
+            path: path.to_path_buf(),
             mmap,
             header,
             index,
@@ -286,6 +294,80 @@ impl LogReader {
                 warnings,
             },
         ))
+    }
+
+    /// Remap the file and pick up newly committed frames (§7 concurrent LIVE tail).
+    ///
+    /// While the header still has `LIVE` set, a non-validating tail is **not** fatal:
+    /// those bytes are treated as not-yet-committed and left for a later refresh. Hard
+    /// corruption (checksum-valid illegal frame headers) still fails loudly.
+    ///
+    /// After a clean close (`LIVE` cleared, footer written) this switches to the closed
+    /// index path so the reader sees the full footer index.
+    ///
+    /// Wire bytes are untouched; this is remap + rescan only.
+    pub fn refresh(&mut self) -> Result<RefreshReport> {
+        let file = File::open(&self.path).map_err(LogError::io("open log file for refresh"))?;
+        let file_len = file
+            .metadata()
+            .map_err(LogError::io("stat log file for refresh"))?
+            .len();
+        if file_len == 0 {
+            return Err(LogError::HeaderTruncated { file_len });
+        }
+        let mmap = map_file(&file)?;
+        let header = header::decode_header(&mmap)?;
+        if header.header_len != self.header.header_len {
+            return Err(LogError::BadMetadata {
+                detail: format!(
+                    "header length changed on refresh (was {}, now {})",
+                    self.header.header_len, header.header_len
+                ),
+            });
+        }
+
+        let prev_count = self.index.len();
+        let live = header.flags & FLAG_LIVE != 0;
+
+        if live {
+            // Append-only growth: never accept a shrink past the committed region.
+            if file_len < self.frames_end {
+                return Err(LogError::CorruptTail {
+                    offset: file_len,
+                    detail: format!(
+                        "LIVE file shrank below committed frames_end {} (now {file_len})",
+                        self.frames_end
+                    ),
+                });
+            }
+            let scan = scan_frames(&mmap, self.frames_end, file_len)?;
+            // Partial/torn final frame → stop at last committed; retry later (§7).
+            let frames_end = match scan.end {
+                ScanEnd::Clean => file_len,
+                ScanEnd::Tail { offset, .. } => offset,
+            };
+            self.index.extend(scan.entries);
+            self.frames_end = frames_end;
+            self.mmap = mmap;
+            self.header = header;
+            Ok(RefreshReport {
+                new_frames: self.index.len() - prev_count,
+                live: true,
+            })
+        } else {
+            // Clean close: footer (or rebuild) is authoritative for the full index.
+            let mut warnings = Vec::new();
+            let (index, frames_end, _) =
+                resolve_closed_index(&mmap, header.header_len, file_len, &mut warnings)?;
+            self.index = index;
+            self.frames_end = frames_end;
+            self.mmap = mmap;
+            self.header = header;
+            Ok(RefreshReport {
+                new_frames: self.index.len().saturating_sub(prev_count),
+                live: false,
+            })
+        }
     }
 
     /// Instrument metadata from the file header (§2).
@@ -303,9 +385,14 @@ impl LogReader {
         &self.header.schema_tag
     }
 
-    /// Whether the on-disk header had the `LIVE` flag set when opened.
-    pub fn was_live(&self) -> bool {
+    /// Whether the on-disk header currently has the `LIVE` flag (updated by refresh).
+    pub fn is_live(&self) -> bool {
         self.header.flags & FLAG_LIVE != 0
+    }
+
+    /// Whether the on-disk header had the `LIVE` flag set when last opened/refreshed.
+    pub fn was_live(&self) -> bool {
+        self.is_live()
     }
 
     /// The frame index: one entry per committed frame, in file order.

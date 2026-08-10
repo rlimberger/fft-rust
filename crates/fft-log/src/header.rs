@@ -179,6 +179,10 @@ pub(crate) fn decode_header(data: &[u8]) -> Result<HeaderInfo> {
     let trade_date = c.u32("trade_date")?;
     let session_open = Ts(c.u64("session_open")?);
     let schema_tag = c.string("schema tag")?;
+    // Frozen v2.0 carries the constant `mbo` only (§2); anything else is a loud reject.
+    if schema_tag != SCHEMA_TAG {
+        return Err(LogError::UnsupportedSchemaTag { found: schema_tag });
+    }
 
     Ok(HeaderInfo {
         version_minor,
@@ -208,4 +212,48 @@ pub(crate) fn with_live_cleared(header_bytes: &[u8]) -> Vec<u8> {
     let checksum = xxh3_64(&out[..checksum_at]);
     out[checksum_at..].copy_from_slice(&checksum.to_le_bytes());
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fft_core::{InstrumentMeta, Price, Ts};
+
+    fn sample_meta() -> InstrumentMeta {
+        InstrumentMeta {
+            symbol: "ESU6".into(),
+            instrument_id: 42,
+            dataset: "GLBX.MDP3".into(),
+            min_price_increment: Price(250_000_000),
+            unit_of_measure_qty: 50_000_000_000,
+            display_factor: 1,
+            trade_date: 20_662,
+            session_open: Ts(1_785_000_000_000_000_000),
+        }
+    }
+
+    #[test]
+    fn accepts_mbo_schema_tag() {
+        let hdr = encode_header(&sample_meta(), 0).unwrap();
+        let info = decode_header(&hdr).unwrap();
+        assert_eq!(info.schema_tag, SCHEMA_TAG);
+    }
+
+    #[test]
+    fn rejects_non_mbo_schema_tag() {
+        let mut hdr = encode_header(&sample_meta(), 0).unwrap();
+        // Schema tag is the last metadata field: u16-le len + UTF-8, immediately
+        // before the trailing header_xxh3. "mbo" is 3 bytes.
+        let tag_bytes_at = hdr.len() - 8 - 3;
+        assert_eq!(&hdr[tag_bytes_at..tag_bytes_at + 3], b"mbo");
+        hdr[tag_bytes_at..tag_bytes_at + 3].copy_from_slice(b"mbx");
+        let checksum_at = hdr.len() - 8;
+        let checksum = xxh3_64(&hdr[..checksum_at]);
+        hdr[checksum_at..].copy_from_slice(&checksum.to_le_bytes());
+
+        match decode_header(&hdr) {
+            Err(LogError::UnsupportedSchemaTag { found }) => assert_eq!(found, "mbx"),
+            other => panic!("expected UnsupportedSchemaTag, got {other:?}"),
+        }
+    }
 }

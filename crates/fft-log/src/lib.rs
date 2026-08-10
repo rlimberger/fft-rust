@@ -36,5 +36,5 @@ pub use frame::{
     MAX_UNCOMPRESSED_LEN,
 };
 pub use header::{FLAG_LIVE, MAGIC, SCHEMA_TAG, VERSION_MAJOR, VERSION_MINOR};
-pub use reader::{EventsIter, IndexSource, LogReader, OpenReport, TailRecovery};
+pub use reader::{EventsIter, IndexSource, LogReader, OpenReport, RefreshReport, TailRecovery};
 pub use writer::LogWriter;

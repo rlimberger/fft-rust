@@ -45,6 +45,7 @@ pub(crate) fn encode_footer(entries: &[IndexEntry]) -> Vec<u8> {
 }
 
 /// Result of probing the end of a file for a footer.
+#[derive(Debug)]
 pub(crate) enum FooterProbe {
     /// Valid trailer, checksum, and entries. `frames_end` is where the frame chain ends
     /// (= start of the index region).
@@ -189,5 +190,51 @@ mod tests {
     fn absent_when_magic_missing() {
         let file = vec![0u8; 200];
         assert!(matches!(probe_footer(&file, 64), FooterProbe::Absent));
+    }
+
+    /// Regression for the audit claim that trailer `index_len` can drive an unbounded
+    /// allocation: `probe_footer` bounds `index_len` against the file layout via
+    /// `checked_sub` **before** any `Vec` allocation (footer.rs:79–90, then :105 only
+    /// preallocates from the already-sliced byte range). A hostile `index_len` must
+    /// therefore error as `Corrupt { frames_end: None, … }` and never allocate from it.
+    #[test]
+    fn hostile_index_len_errors_before_allocation() {
+        let entries = vec![IndexEntry {
+            offset: 64,
+            kind: 1,
+            first_ts: 0,
+            first_seq: 0,
+        }];
+        let mut file = vec![0u8; 64];
+        file.extend_from_slice(&encode_footer(&entries));
+
+        // Overwrite trailer index_len with u32::MAX while leaving magic intact.
+        let index_len_at = file.len() - TRAILER_LEN;
+        file[index_len_at..index_len_at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+
+        match probe_footer(&file, 64) {
+            FooterProbe::Corrupt {
+                frames_end: None,
+                detail,
+            } => {
+                assert!(
+                    detail.contains("index_len") && detail.contains("exceeds file layout"),
+                    "detail={detail}"
+                );
+            }
+            other => panic!("expected Corrupt with frames_end=None, got {other:?}"),
+        }
+
+        // Truncated layout: trailer claims a huge index but the file is short of it.
+        let mut short = vec![0u8; 64 + TRAILER_LEN];
+        let trailer_start = short.len() - TRAILER_LEN;
+        short[trailer_start..trailer_start + 4].copy_from_slice(&(1_000_000u32).to_le_bytes());
+        short[trailer_start + 12..].copy_from_slice(&INDEX_MAGIC);
+        match probe_footer(&short, 64) {
+            FooterProbe::Corrupt {
+                frames_end: None, ..
+            } => {}
+            other => panic!("expected Corrupt with frames_end=None, got {other:?}"),
+        }
     }
 }

@@ -33,6 +33,11 @@ pub enum LogError {
         /// The major version found in the header.
         found: u16,
     },
+    /// Source schema tag is not the frozen v2 value (`"mbo"`).
+    UnsupportedSchemaTag {
+        /// The schema tag found in the header metadata block.
+        found: String,
+    },
     /// File header checksum mismatch (`header_xxh3` over all preceding header bytes).
     HeaderChecksum,
     /// Malformed metadata block (§2 fixed-order encoding).
@@ -193,6 +198,10 @@ impl fmt::Display for LogError {
                     "unsupported fftlog major version {found} (reader supports 2)"
                 )
             }
+            UnsupportedSchemaTag { found } => write!(
+                f,
+                "unsupported source schema tag {found:?} (v2.0 requires \"mbo\")"
+            ),
             HeaderChecksum => write!(f, "file header xxh3 checksum mismatch"),
             BadMetadata { detail } => write!(f, "malformed header metadata block: {detail}"),
             FrameHeaderChecksum { offset } => {

@@ -97,3 +97,25 @@ fn unprovable_footer_damage_is_loud() {
     let err = LogReader::open(case.path()).unwrap_err();
     assert!(matches!(err, LogError::CorruptTail { .. }), "got {err}");
 }
+
+/// End-to-end regression: hostile trailer `index_len` (u32::MAX) is rejected at open
+/// as `CorruptIndex` — the layout bound in `probe_footer` fires before any index
+/// entry `Vec` is built from that length.
+#[test]
+fn hostile_index_len_is_loud_at_open() {
+    let (_tmp, mut bytes) = three_frame_closed();
+    let index_len_at = bytes.len() - TRAILER_LEN;
+    bytes[index_len_at..index_len_at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+    let case = temp_path("footer-hostile-len");
+    std::fs::write(case.path(), &bytes).unwrap();
+    let err = LogReader::open(case.path()).unwrap_err();
+    match err {
+        LogError::CorruptIndex { detail } => {
+            assert!(
+                detail.contains("index_len") && detail.contains("exceeds file layout"),
+                "detail={detail}"
+            );
+        }
+        other => panic!("expected CorruptIndex, got {other}"),
+    }
+}
