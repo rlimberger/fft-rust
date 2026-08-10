@@ -1,5 +1,8 @@
 use crate::{ReplayError, Result};
-use fft_book::{BOOK_SECTION_ID, BOOK_SECTION_VERSION, Book};
+use fft_book::{
+    BOOK_SECTION_ID, BOOK_SECTION_VERSION, Book, FLOW_SECTION_ID, FLOW_SECTION_VERSION,
+    REFRESH_SECTION_ID, REFRESH_SECTION_VERSION,
+};
 use fft_core::{CanonicalEvent, InstrumentMeta};
 use fft_log::{KIND_CHECKPOINT, LogReader, OpenReport, Section};
 use fft_profile::{
@@ -283,8 +286,17 @@ fn restore_sections(sections: &[Section]) -> Result<(Book, MultiProfile)> {
             expected: BOOK_SECTION_VERSION,
         });
     }
+    let flow = required(sections, FLOW_SECTION_ID, "FLOW")?;
+    if flow.version != FLOW_SECTION_VERSION {
+        return Err(ReplayError::SectionVersion {
+            section: "FLOW",
+            found: flow.version,
+            expected: FLOW_SECTION_VERSION,
+        });
+    }
     let profile = required(sections, PROFILE_SECTION_ID, "PROFILE")?;
     let cvd = required(sections, CVD_SECTION_ID, "CVD")?;
+    let refresh = required(sections, REFRESH_SECTION_ID, "REFRESH")?;
     if profile.version != PROFILE_SECTION_VERSION {
         return Err(ReplayError::SectionVersion {
             section: "PROFILE",
@@ -299,8 +311,15 @@ fn restore_sections(sections: &[Section]) -> Result<(Book, MultiProfile)> {
             expected: CVD_SECTION_VERSION,
         });
     }
+    if refresh.version != REFRESH_SECTION_VERSION {
+        return Err(ReplayError::SectionVersion {
+            section: "REFRESH",
+            found: refresh.version,
+            expected: REFRESH_SECTION_VERSION,
+        });
+    }
     Ok((
-        Book::restore(&book.bytes),
+        Book::restore(&book.bytes, &flow.bytes, &refresh.bytes)?,
         MultiProfile::restore(profile.version, &profile.bytes, cvd.version, &cvd.bytes)?,
     ))
 }

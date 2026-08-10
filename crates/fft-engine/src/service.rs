@@ -252,7 +252,7 @@ impl Runtime {
             }
         }
         EngineExit {
-            book_bytes: self.book.as_ref().map(Book::serialize),
+            book_bytes: self.book.as_ref().map(Book::serialize_book),
             profile_bytes: self.profile.as_ref().map(MultiProfile::serialize),
             watermarks: self.watermarks,
             publications: self.publications,

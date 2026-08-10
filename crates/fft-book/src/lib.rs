@@ -9,9 +9,9 @@
 //! (stacks / pulls / traded-at-touch), and [`Book::check_invariants`].
 //!
 //! New over legacy:
-//! - First-class [`Book::serialize`] / [`Book::restore`]: the fftlog v2 BOOK
-//!   checkpoint section (`docs/FFTLOG-V2.md` §5) — sides in price order, orders
-//!   strictly head-to-tail FIFO, never a replay of synthetic events.
+//! - First-class BOOK/FLOW/REFRESH checkpoint sections (`docs/FFTLOG-V2.md`
+//!   §5): sides in price order, orders strictly head-to-tail FIFO, never a
+//!   replay of synthetic events.
 //! - Exact queue-position queries for any resting order (PRD §4 claim 3).
 //! - The native-refresh (iceberg) state machine on the CME same-`order_id`
 //!   signature: per-order reload count, cumulative hidden volume, per-price
@@ -30,16 +30,27 @@ mod side;
 
 pub use book::Book;
 pub use level::LevelView;
+pub use serialize::RestoreError;
 
 use fft_core::{Price, Side};
 
 /// fftlog v2 checkpoint section id of the BOOK section (`docs/FFTLOG-V2.md` §5).
 pub const BOOK_SECTION_ID: u16 = 1;
 
-/// Byte-layout version written by [`Book::serialize`] and required by
-/// [`Book::restore`]. Carried in the fftlog section header *and* as the first
-/// two payload bytes, so a BOOK payload is self-identifying.
-pub const BOOK_SECTION_VERSION: u16 = 1;
+/// fftlog v2 checkpoint section id of the FLOW section.
+pub const FLOW_SECTION_ID: u16 = 2;
+
+/// fftlog v2 checkpoint section id of the REFRESH section.
+pub const REFRESH_SECTION_ID: u16 = 5;
+
+/// Self-identifying BOOK payload layout version.
+pub const BOOK_SECTION_VERSION: u16 = 3;
+
+/// Self-identifying FLOW payload layout version.
+pub const FLOW_SECTION_VERSION: u16 = 1;
+
+/// Self-identifying REFRESH payload layout version.
+pub const REFRESH_SECTION_VERSION: u16 = 1;
 
 /// Native-refresh acceptance window, event-time ns: a fully-filled order id
 /// restored to positive displayed size more than this long after depletion is a

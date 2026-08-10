@@ -16,6 +16,8 @@ pub enum ReplayError {
         /// Version required by the state crate.
         expected: u16,
     },
+    /// A book-owned checkpoint payload was malformed.
+    BookRestore(fft_book::RestoreError),
     /// The profile checkpoint payload was malformed.
     ProfileRestore(fft_profile::RestoreError),
 }
@@ -38,6 +40,7 @@ impl fmt::Display for ReplayError {
                 f,
                 "fft-replay {section} section version {found}, expected {expected}"
             ),
+            Self::BookRestore(error) => write!(f, "fft-replay book restore: {error}"),
             Self::ProfileRestore(error) => write!(f, "fft-replay profile restore: {error}"),
         }
     }
@@ -54,6 +57,12 @@ impl From<fft_log::LogError> for ReplayError {
 impl From<fft_profile::RestoreError> for ReplayError {
     fn from(value: fft_profile::RestoreError) -> Self {
         Self::ProfileRestore(value)
+    }
+}
+
+impl From<fft_book::RestoreError> for ReplayError {
+    fn from(value: fft_book::RestoreError) -> Self {
+        Self::BookRestore(value)
     }
 }
 

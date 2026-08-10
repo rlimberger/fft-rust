@@ -54,7 +54,12 @@ fn chunked_forward_matches_oneshot() {
     chunked_book.check_invariants();
 
     assert_eq!(total, oneshot_progress.events);
-    assert_eq!(chunked_book.serialize(), oneshot_book.serialize());
+    assert_eq!(chunked_book.serialize_book(), oneshot_book.serialize_book());
+    assert_eq!(chunked_book.serialize_flow(), oneshot_book.serialize_flow());
+    assert_eq!(
+        chunked_book.serialize_refresh(),
+        oneshot_book.serialize_refresh()
+    );
     assert_eq!(chunked_profile.serialize(), oneshot_profile.serialize());
     assert_eq!(chunked.applied_seq(), oneshot.applied_seq());
     assert_eq!(chunked.applied_ts(), oneshot.applied_ts());

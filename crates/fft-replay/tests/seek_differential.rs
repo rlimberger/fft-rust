@@ -3,10 +3,16 @@
 mod common;
 
 use common::*;
-use fft_book::Book;
+use fft_book::{
+    BOOK_SECTION_ID, BOOK_SECTION_VERSION, Book, FLOW_SECTION_ID, FLOW_SECTION_VERSION,
+    REFRESH_SECTION_ID, REFRESH_SECTION_VERSION, RestoreError,
+};
 use fft_core::Side;
-use fft_profile::MultiProfile;
-use fft_replay::ReplaySource;
+use fft_log::SectionRef;
+use fft_profile::{
+    CVD_SECTION_ID, CVD_SECTION_VERSION, MultiProfile, PROFILE_SECTION_ID, PROFILE_SECTION_VERSION,
+};
+use fft_replay::{ReplayError, ReplaySource};
 
 #[test]
 fn seek_matches_forward_at_multiple_targets() {
@@ -42,7 +48,12 @@ fn seek_matches_forward_at_multiple_targets() {
             .expect("seek");
         assert!(!report.cancelled);
         assert_eq!(report.target_ts, target);
-        assert_eq!(seek_book.serialize(), forward_book.serialize());
+        assert_eq!(seek_book.serialize_book(), forward_book.serialize_book());
+        assert_eq!(seek_book.serialize_flow(), forward_book.serialize_flow());
+        assert_eq!(
+            seek_book.serialize_refresh(),
+            forward_book.serialize_refresh()
+        );
         assert_eq!(seek_profile.serialize(), forward_profile.serialize());
         assert_eq!(seek_src.applied_seq(), forward_src.applied_seq());
         assert_eq!(seek_src.applied_ts(), forward_src.applied_ts());
@@ -110,4 +121,95 @@ fn seek_cancel_leaves_no_success_report() {
         )
         .unwrap();
     assert!(report.cancelled);
+}
+
+fn write_single_checkpoint(path: &std::path::Path, omit: Option<u16>, bad_book_inner: bool) {
+    let meta = es_meta();
+    let event = add(1, Side::Bid, 19_999, 3, SESSION_OPEN_NS, 1);
+    let mut book = Book::new(meta.min_price_increment);
+    book.apply(&event);
+    let mut profile = MultiProfile::new(meta.min_price_increment);
+    profile.begin_session(meta.trade_date);
+    profile.apply(&event);
+
+    let mut book_bytes = book.serialize_book();
+    if bad_book_inner {
+        book_bytes[..2].copy_from_slice(&99u16.to_le_bytes());
+    }
+    let flow_bytes = book.serialize_flow();
+    let refresh_bytes = book.serialize_refresh();
+    let (profile_bytes, cvd_bytes) = profile.serialize();
+    let mut sections = vec![
+        SectionRef {
+            id: BOOK_SECTION_ID,
+            version: BOOK_SECTION_VERSION,
+            flags: 0,
+            bytes: &book_bytes,
+        },
+        SectionRef {
+            id: FLOW_SECTION_ID,
+            version: FLOW_SECTION_VERSION,
+            flags: 0,
+            bytes: &flow_bytes,
+        },
+        SectionRef {
+            id: PROFILE_SECTION_ID,
+            version: PROFILE_SECTION_VERSION,
+            flags: 0,
+            bytes: &profile_bytes,
+        },
+        SectionRef {
+            id: CVD_SECTION_ID,
+            version: CVD_SECTION_VERSION,
+            flags: 0,
+            bytes: &cvd_bytes,
+        },
+        SectionRef {
+            id: REFRESH_SECTION_ID,
+            version: REFRESH_SECTION_VERSION,
+            flags: 0,
+            bytes: &refresh_bytes,
+        },
+    ];
+    sections.retain(|section| Some(section.id) != omit);
+    let mut writer = fft_log::LogWriter::create(path, &meta).unwrap();
+    writer.append_events(&[event]).unwrap();
+    writer.write_checkpoint(sections).unwrap();
+    writer.close().unwrap();
+}
+
+#[test]
+fn seek_requires_flow_and_refresh_sections() {
+    for (id, expected) in [(FLOW_SECTION_ID, "FLOW"), (REFRESH_SECTION_ID, "REFRESH")] {
+        let tmp = temp_path(expected);
+        write_single_checkpoint(tmp.path(), Some(id), false);
+        let mut source = ReplaySource::open(tmp.path()).unwrap();
+        let mut book = Book::new(source.meta().min_price_increment);
+        let mut profile = MultiProfile::new(source.meta().min_price_increment);
+        profile.begin_session(source.meta().trade_date);
+        let error = source
+            .seek(SESSION_OPEN_NS, &mut book, &mut profile, || false)
+            .unwrap_err();
+        assert!(matches!(error, ReplayError::MissingSection(section) if section == expected));
+    }
+}
+
+#[test]
+fn seek_maps_typed_book_restore_errors() {
+    let tmp = temp_path("bad-book-inner-version");
+    write_single_checkpoint(tmp.path(), None, true);
+    let mut source = ReplaySource::open(tmp.path()).unwrap();
+    let mut book = Book::new(source.meta().min_price_increment);
+    let mut profile = MultiProfile::new(source.meta().min_price_increment);
+    profile.begin_session(source.meta().trade_date);
+    let error = source
+        .seek(SESSION_OPEN_NS, &mut book, &mut profile, || false)
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        ReplayError::BookRestore(RestoreError::UnsupportedVersion {
+            section: "BOOK",
+            version: 99,
+        })
+    ));
 }

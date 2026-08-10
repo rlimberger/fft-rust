@@ -6,6 +6,12 @@ use fft_core::Side;
 /// Null slot sentinel for the intrusive lists.
 pub(crate) const NIL: u32 = u32::MAX;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OrderOrigin {
+    Live,
+    Snapshot,
+}
+
 /// One resting order. `prev`/`next` are slab slots forming the level FIFO.
 #[derive(Debug, Clone)]
 pub(crate) struct Order {
@@ -19,6 +25,7 @@ pub(crate) struct Order {
     /// Gap epoch at (re)placement; behind the current epoch ⇒ refresh reads
     /// are Unavailable for this order.
     pub epoch: u32,
+    pub origin: OrderOrigin,
     pub prev: u32,
     pub next: u32,
 }
@@ -28,6 +35,8 @@ pub(crate) struct Order {
 pub(crate) struct Level {
     pub head: u32,
     pub tail: u32,
+    /// Tail of the snapshot-loaded FIFO prefix, or [`NIL`] when absent.
+    pub snapshot_tail: u32,
     pub total_size: u64,
     pub order_count: u32,
     pub flow: Flow,
@@ -38,6 +47,7 @@ impl Default for Level {
         Self {
             head: NIL,
             tail: NIL,
+            snapshot_tail: NIL,
             total_size: 0,
             order_count: 0,
             flow: Flow::default(),

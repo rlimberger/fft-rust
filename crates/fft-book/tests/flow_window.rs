@@ -38,6 +38,38 @@ fn flow_survives_on_emptied_level_until_stale() {
 }
 
 #[test]
+fn flow_survives_dense_window_recenter_until_expiry() {
+    let mut b = book();
+    b.apply(&add(1, Side::Bid, 100, 5, T0));
+    b.apply(&cancel(1, T0 + 1));
+
+    // With no resting best, this distant add recentres the dense window around
+    // 1_000 and evicts the just-emptied level at 100 into the far map.
+    b.apply(&add(2, Side::Bid, 1_000, 1, T0 + 2));
+    let fresh = b.level(Side::Bid, px(100));
+    assert_eq!(
+        (fresh.order_count, fresh.added_5s, fresh.cancelled_5s),
+        (0, 5, 5)
+    );
+
+    b.apply(&ev(
+        fft_core::EventKind::Status,
+        Side::None,
+        0,
+        0,
+        0,
+        T0 + 6 * S,
+        0,
+    ));
+    let expired = b.level(Side::Bid, px(100));
+    assert_eq!(
+        (expired.order_count, expired.added_5s, expired.cancelled_5s,),
+        (0, 0, 0)
+    );
+    b.check_invariants();
+}
+
+#[test]
 fn inside_traded_counters_reset_on_price_change() {
     let mut b = book();
     b.apply(&trade(Side::Ask, 100, 5, T0)); // sell into the bid

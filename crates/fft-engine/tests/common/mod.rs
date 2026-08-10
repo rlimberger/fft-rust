@@ -2,7 +2,10 @@
 
 #![allow(dead_code)]
 
-use fft_book::{BOOK_SECTION_ID, BOOK_SECTION_VERSION, Book};
+use fft_book::{
+    BOOK_SECTION_ID, BOOK_SECTION_VERSION, Book, FLOW_SECTION_ID, FLOW_SECTION_VERSION,
+    REFRESH_SECTION_ID, REFRESH_SECTION_VERSION,
+};
 use fft_core::{CanonicalEvent, EventKind, InstrumentMeta, OrderId, Price, Seq, Side, Ts};
 use fft_engine::{EngineConfig, EngineHandle, EngineService, RenderSnapshot};
 use fft_log::{LogWriter, SectionRef};
@@ -117,7 +120,9 @@ pub fn write_checkpointed_log(path: &Path, event_count: usize, checkpoint_every:
             writer.append_events(&batch).expect("append");
             batch.clear();
             if applied.is_multiple_of(checkpoint_every) && i + 1 != event_count {
-                let book_bytes = book.serialize();
+                let book_bytes = book.serialize_book();
+                let flow_bytes = book.serialize_flow();
+                let refresh_bytes = book.serialize_refresh();
                 let (profile_bytes, cvd_bytes) = profile.serialize();
                 writer
                     .write_checkpoint([
@@ -126,6 +131,12 @@ pub fn write_checkpointed_log(path: &Path, event_count: usize, checkpoint_every:
                             version: BOOK_SECTION_VERSION,
                             flags: 0,
                             bytes: &book_bytes,
+                        },
+                        SectionRef {
+                            id: FLOW_SECTION_ID,
+                            version: FLOW_SECTION_VERSION,
+                            flags: 0,
+                            bytes: &flow_bytes,
                         },
                         SectionRef {
                             id: PROFILE_SECTION_ID,
@@ -138,6 +149,12 @@ pub fn write_checkpointed_log(path: &Path, event_count: usize, checkpoint_every:
                             version: CVD_SECTION_VERSION,
                             flags: 0,
                             bytes: &cvd_bytes,
+                        },
+                        SectionRef {
+                            id: REFRESH_SECTION_ID,
+                            version: REFRESH_SECTION_VERSION,
+                            flags: 0,
+                            bytes: &refresh_bytes,
                         },
                     ])
                     .expect("checkpoint");

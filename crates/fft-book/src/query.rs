@@ -2,7 +2,7 @@
 //! state accessors, and the invariant checker.
 
 use crate::book::Book;
-use crate::level::{Level, NIL, view_of};
+use crate::level::{Level, NIL, OrderOrigin, view_of};
 use crate::{InsideTraded, LastTrade, LevelView, PriceRefreshAgg, QueuePosition, RefreshState};
 use fft_core::{OrderId, Price, Side, Ts};
 use std::collections::HashMap;
@@ -178,6 +178,8 @@ impl Book {
         let mut count = 0u32;
         let mut cur = level.head;
         let mut prev = NIL;
+        let mut snapshot_tail = NIL;
+        let mut reached_live = false;
         while cur != NIL {
             let o = &self.orders[cur as usize];
             assert!(
@@ -218,6 +220,17 @@ impl Book {
                 o.epoch,
                 self.refresh.gap_epoch
             );
+            match o.origin {
+                OrderOrigin::Snapshot => {
+                    assert!(
+                        !reached_live,
+                        "fft-book invariant: snapshot order {} follows live order at {side:?} {price}",
+                        o.id
+                    );
+                    snapshot_tail = cur;
+                }
+                OrderOrigin::Live => reached_live = true,
+            }
             total += u64::from(o.size);
             count += 1;
             prev = cur;
@@ -230,6 +243,10 @@ impl Book {
         assert!(
             prev == level.tail,
             "fft-book invariant: stale tail pointer at {side:?} {price}"
+        );
+        assert_eq!(
+            snapshot_tail, level.snapshot_tail,
+            "fft-book invariant: snapshot prefix tail mismatch at {side:?} {price}"
         );
         assert!(
             total == level.total_size,

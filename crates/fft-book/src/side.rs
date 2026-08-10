@@ -1,6 +1,6 @@
 //! One side of the book: sliding dense window of levels + `BTreeMap` far map.
 
-use crate::level::{Level, NIL, Order};
+use crate::level::{Level, NIL, Order, OrderOrigin};
 use slab::Slab;
 use std::collections::BTreeMap;
 
@@ -91,7 +91,7 @@ impl SideBook {
 
     /// Ensure the window is placed for activity at `price`, recentring on the
     /// current best when it drifts within `WINDOW_MARGIN` of an edge.
-    pub fn prepare_for(&mut self, price: i64) {
+    pub fn prepare_for(&mut self, price: i64, now: u64) {
         let len = self.window.len() as i64;
         if !self.initialised {
             self.initialised = true;
@@ -103,17 +103,17 @@ impl SideBook {
         if off >= WINDOW_MARGIN as i64 && off < len - WINDOW_MARGIN as i64 {
             return;
         }
-        self.recentre(anchor - len / 2);
+        self.recentre(anchor - len / 2, now);
     }
 
-    fn evict(&mut self, i: usize, old_base: i64) {
+    fn evict(&mut self, i: usize, old_base: i64, now: u64) {
         let l = std::mem::take(&mut self.window[i]);
-        if l.order_count > 0 {
+        if l.order_count > 0 || (!l.flow.untouched() && !l.flow.stale(now)) {
             self.far.insert(old_base + i as i64, l);
         }
     }
 
-    pub fn recentre(&mut self, new_base: i64) {
+    fn recentre(&mut self, new_base: i64, now: u64) {
         let shift = new_base - self.base_tick;
         if shift == 0 {
             return;
@@ -124,11 +124,11 @@ impl SideBook {
 
         if s >= len {
             for i in 0..len {
-                self.evict(i, old_base);
+                self.evict(i, old_base, now);
             }
         } else if shift > 0 {
             for i in 0..s {
-                self.evict(i, old_base);
+                self.evict(i, old_base, now);
             }
             self.window.rotate_left(s);
             for l in &mut self.window[(len - s)..] {
@@ -136,7 +136,7 @@ impl SideBook {
             }
         } else {
             for i in (len - s)..len {
-                self.evict(i, old_base);
+                self.evict(i, old_base, now);
             }
             self.window.rotate_right(s);
             for l in &mut self.window[..s] {
@@ -300,16 +300,6 @@ impl SideBook {
         });
         out
     }
-
-    /// Place a deserialized level (flow only; orders are relinked afterwards).
-    pub fn insert_restored_level(&mut self, price: i64, level: Level) {
-        if let Some(i) = self.idx(price) {
-            self.note_occupied(i);
-            self.window[i] = level;
-        } else {
-            self.far.insert(price, level);
-        }
-    }
 }
 
 /// Append the order in `slot` to the tail of its price level FIFO.
@@ -335,6 +325,40 @@ pub(crate) fn link_tail(sb: &mut SideBook, orders: &mut Slab<Order>, slot: u32) 
     }
 }
 
+/// Append a snapshot-loaded order to the snapshot prefix, ahead of every
+/// live-origin order while preserving snapshot block order.
+pub(crate) fn link_snapshot(sb: &mut SideBook, orders: &mut Slab<Order>, slot: u32) {
+    debug_assert_eq!(orders[slot as usize].origin, OrderOrigin::Snapshot);
+    let price = orders[slot as usize].price;
+    let size = orders[slot as usize].size;
+    let level = sb.level_entry(price);
+    let prefix_tail = level.snapshot_tail;
+    let next = if prefix_tail == NIL {
+        level.head
+    } else {
+        orders[prefix_tail as usize].next
+    };
+
+    if prefix_tail == NIL {
+        level.head = slot;
+    } else {
+        orders[prefix_tail as usize].next = slot;
+    }
+    if next == NIL {
+        level.tail = slot;
+    } else {
+        orders[next as usize].prev = slot;
+    }
+    orders[slot as usize].prev = prefix_tail;
+    orders[slot as usize].next = next;
+    level.snapshot_tail = slot;
+    level.total_size += u64::from(size);
+    level.order_count += 1;
+    if level.order_count == 1 {
+        sb.populated += 1;
+    }
+}
+
 /// Detach the order in `slot` from its price level FIFO.
 pub(crate) fn unlink(sb: &mut SideBook, orders: &mut Slab<Order>, slot: u32) {
     let o = orders[slot as usize].clone();
@@ -352,6 +376,9 @@ pub(crate) fn unlink(sb: &mut SideBook, orders: &mut Slab<Order>, slot: u32) {
     }
     if level.tail == slot {
         level.tail = o.prev;
+    }
+    if level.snapshot_tail == slot {
+        level.snapshot_tail = o.prev;
     }
     level.total_size -= u64::from(o.size);
     level.order_count -= 1;

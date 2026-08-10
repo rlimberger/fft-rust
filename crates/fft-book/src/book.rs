@@ -1,15 +1,19 @@
 //! The book proper: canonical-event application with exact CME semantics.
 
 use crate::flow::TradedAtInsideTicks;
-use crate::level::{NIL, Order};
+use crate::level::{NIL, Order, OrderOrigin};
 use crate::refresh::RefreshTracker;
-use crate::side::{SideBook, link_tail, unlink};
+use crate::side::{SideBook, link_snapshot, link_tail, unlink};
 use fft_core::{CanonicalEvent, EventKind, Price, Side};
 use slab::Slab;
 use std::collections::HashMap;
 
 /// Events between dead-level / expired-tombstone sweeps.
 pub(crate) const GC_INTERVAL: u32 = 4096;
+
+/// Databento `flags::SNAPSHOT` in pinned dbn 0.65.0. Kept local so fft-book
+/// remains independent of the source-format crate.
+const DATABENTO_SNAPSHOT_FLAG: u16 = 1 << 5;
 
 /// L3 MBO book for one instrument. See the crate docs for the full contract.
 #[derive(Debug)]
@@ -87,6 +91,16 @@ impl Book {
     /// Apply one canonical event. Panics (fail loudly) on malformed events,
     /// feed-contract violations, and unexplained sequence regressions.
     pub fn apply(&mut self, ev: &CanonicalEvent) {
+        if ev.flags & DATABENTO_SNAPSHOT_FLAG != 0 {
+            assert_eq!(
+                ev.kind,
+                EventKind::Add,
+                "fft-book: snapshot-flagged event must be Add, got {:?}: {ev:?}",
+                ev.kind
+            );
+            self.do_snapshot_add(ev);
+            return;
+        }
         let ts = ev.ts.0;
         if ts > self.now {
             self.now = ts;
@@ -152,6 +166,60 @@ impl Book {
         self.insert_order(ev.order_id.0, ev.side, price, ev.size, ts);
     }
 
+    fn do_snapshot_add(&mut self, ev: &CanonicalEvent) {
+        assert!(
+            ev.side == Side::Bid || ev.side == Side::Ask,
+            "fft-book: snapshot Add without side: {ev:?}"
+        );
+        assert!(ev.size > 0, "fft-book: snapshot Add with size 0: {ev:?}");
+        let price = self.to_ticks(ev.price);
+        let id = ev.order_id.0;
+
+        if let Some(&slot) = self.index.get(&id) {
+            let resting = &self.orders[slot as usize];
+            assert_eq!(
+                ev.side, resting.side,
+                "fft-book: snapshot Add side mismatch for known order {id}: snapshot {:?}, resting {:?}",
+                ev.side, resting.side
+            );
+            assert_eq!(
+                price, resting.price,
+                "fft-book: snapshot Add price mismatch for known order {id}: snapshot {price} ticks, resting {} ticks",
+                resting.price
+            );
+            assert_eq!(
+                ev.size, resting.size,
+                "fft-book: snapshot Add size mismatch for known order {id}: snapshot {}, resting {}",
+                ev.size, resting.size
+            );
+            return;
+        }
+
+        self.refresh.on_snapshot_loaded(id);
+        let order = Order {
+            id,
+            price,
+            side: ev.side,
+            size: ev.size,
+            ts: ev.ts.0,
+            epoch: self.refresh.gap_epoch,
+            origin: OrderOrigin::Snapshot,
+            prev: NIL,
+            next: NIL,
+        };
+        let slot =
+            u32::try_from(self.orders.insert(order)).expect("fft-book: order slot exceeds u32");
+        self.index.insert(id, slot);
+        let sb = if ev.side == Side::Bid {
+            &mut self.bids
+        } else {
+            &mut self.asks
+        };
+        sb.prepare_for(price, self.now);
+        link_snapshot(sb, &mut self.orders, slot);
+        sb.note_add(price);
+    }
+
     /// Shared placement path for Add and iceberg restores: routes through the
     /// refresh tracker, then links at the back of the level FIFO.
     fn insert_order(&mut self, id: u64, side: Side, price: i64, size: u32, ts: u64) {
@@ -163,6 +231,7 @@ impl Book {
             size,
             ts,
             epoch: self.refresh.gap_epoch,
+            origin: OrderOrigin::Live,
             prev: NIL,
             next: NIL,
         };
@@ -173,7 +242,7 @@ impl Book {
         } else {
             &mut self.asks
         };
-        sb.prepare_for(price);
+        sb.prepare_for(price, self.now);
         link_tail(sb, &mut self.orders, slot);
         sb.level_entry(price).flow.record_added(ts, size);
         sb.note_add(price);
@@ -240,6 +309,7 @@ impl Book {
         );
         let new_price = self.to_ticks(ev.price);
         let new_size = ev.size;
+        let now = self.now;
         let sb = if o.side == Side::Bid {
             &mut self.bids
         } else {
@@ -263,6 +333,7 @@ impl Book {
                 let ord = &mut self.orders[slot as usize];
                 ord.size = new_size;
                 ord.ts = ts;
+                ord.origin = OrderOrigin::Live;
                 link_tail(sb, &mut self.orders, slot);
                 sb.level_mut(o.price)
                     .expect("fft-book invariant: level missing for live order")
@@ -278,11 +349,12 @@ impl Book {
             .flow
             .record_cancelled(ts, o.size);
         sb.note_remove(o.price);
-        sb.prepare_for(new_price);
+        sb.prepare_for(new_price, now);
         let ord = &mut self.orders[slot as usize];
         ord.price = new_price;
         ord.size = new_size;
         ord.ts = ts;
+        ord.origin = OrderOrigin::Live;
         link_tail(sb, &mut self.orders, slot);
         sb.level_entry(new_price).flow.record_added(ts, new_size);
         sb.note_add(new_price);

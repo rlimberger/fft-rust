@@ -47,6 +47,25 @@ pub(crate) struct RefreshTracker {
 }
 
 impl RefreshTracker {
+    /// Snapshot loading cannot prove a new order life or a native refresh.
+    /// Preserve any observed lower-bound history, discard candidacy, and keep
+    /// classification unavailable until later clean observed activity proves it.
+    pub fn on_snapshot_loaded(&mut self, id: u64) {
+        let (reloads, hidden) = self
+            .tombstones
+            .remove(&id)
+            .map(|t| (t.reloads, t.hidden))
+            .unwrap_or((0, 0));
+        self.live.insert(
+            id,
+            LiveRefresh {
+                reloads,
+                hidden,
+                unavailable: true,
+            },
+        );
+    }
+
     /// An order id is being (re)placed in the book. Consumes a matching
     /// tombstone and classifies the restore.
     pub fn on_placed(&mut self, id: u64, side: Side, price: i64, size: u32, ts: u64) {
