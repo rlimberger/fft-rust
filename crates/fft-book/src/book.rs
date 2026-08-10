@@ -42,6 +42,8 @@ pub struct Book {
     /// Cancel/Modify/Fill events referencing unknown order ids (normal after a
     /// mid-stream join, a Clear, or a gap; the engine asserts 0 on full logs).
     pub(crate) unknown_refs: u64,
+    /// Snapshot-flagged Clear records ignored (FFTLOG-V2 §4 block framing).
+    pub(crate) snapshot_clears: u64,
 }
 
 impl Book {
@@ -71,6 +73,7 @@ impl Book {
             gap_pending: false,
             last_gap: None,
             unknown_refs: 0,
+            snapshot_clears: 0,
         }
     }
 
@@ -92,10 +95,16 @@ impl Book {
     /// feed-contract violations, and unexplained sequence regressions.
     pub fn apply(&mut self, ev: &CanonicalEvent) {
         if ev.flags & DATABENTO_SNAPSHOT_FLAG != 0 {
+            // FFTLOG-V2 §4: the block's leading Clear is venue reset framing —
+            // merge semantics supersede clear-and-rebuild; ignore it loudly.
+            if ev.kind == EventKind::Clear {
+                self.snapshot_clears += 1;
+                return;
+            }
             assert_eq!(
                 ev.kind,
                 EventKind::Add,
-                "fft-book: snapshot-flagged event must be Add, got {:?}: {ev:?}",
+                "fft-book: snapshot-flagged event must be Add or Clear, got {:?}: {ev:?}",
                 ev.kind
             );
             self.do_snapshot_add(ev);

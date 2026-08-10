@@ -153,10 +153,11 @@ impl SessionProfile {
     /// period cursor advances; every other kind advances the cursor only.
     pub fn apply(&mut self, ev: &CanonicalEvent) {
         if ev.flags & DATABENTO_SNAPSHOT_FLAG != 0 {
-            assert_eq!(
-                ev.kind,
-                EventKind::Add,
-                "fft-profile: snapshot-flagged event must be Add, got {:?}: {ev:?}",
+            // FFTLOG-V2 §4: the block's leading Clear is venue reset framing;
+            // the profile ignores snapshot records entirely, Clear included.
+            assert!(
+                ev.kind == EventKind::Add || ev.kind == EventKind::Clear,
+                "fft-profile: snapshot-flagged event must be Add or Clear, got {:?}: {ev:?}",
                 ev.kind
             );
             return;

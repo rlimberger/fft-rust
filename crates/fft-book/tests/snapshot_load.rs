@@ -218,3 +218,19 @@ fn snapshot_order_fill_progress_survives_restore() {
     assert_eq!(restored.serialize_refresh(), book.serialize_refresh());
     restored.check_invariants();
 }
+
+#[test]
+fn snapshot_clear_is_ignored_as_block_framing() {
+    let mut book = book();
+    book.apply(&ev(EventKind::Add, Side::Bid, 100, 5, 1, T0, 50));
+    // FFTLOG-V2 §4: the admitted block opens with a snapshot-flagged Clear —
+    // ignored with a loud counter, never a book reset.
+    let mut clear = ev(EventKind::Clear, Side::None, 0, 0, 0, T0 - 10, 0);
+    clear.flags = SNAPSHOT_FLAG;
+    book.apply(&clear);
+    assert_eq!(book.snapshot_clears(), 1);
+    assert_eq!(book.last_seq(), Some(50));
+    assert_eq!(fifo(&book, Side::Bid, 100), [1]);
+    book.apply(&snapshot(2, Side::Bid, 100, 6, T0 - 10, 7));
+    assert_eq!(fifo(&book, Side::Bid, 100), [2, 1]);
+}

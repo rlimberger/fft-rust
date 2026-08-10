@@ -127,6 +127,8 @@ pub(super) fn restore(bytes: &[u8]) -> Result<Book, RestoreError> {
         gap_pending,
         last_gap,
         unknown_refs,
+        // Runtime block-framing counter, not seek-relevant state — restarts at 0.
+        snapshot_clears: 0,
     })
 }
 

@@ -124,7 +124,12 @@ Fixed 32-byte records after decompression:
   accounting; unknown `order_id` → insert **ahead of** every live-added order at that
   level, in block order (every snapshot order predates every observed live add by
   construction — an order entered during the observed window was already seen live and
-  is a *known* id); known `order_id` → verify side/price/size, loud mismatch. Book state
+  is a *known* id); known `order_id` → verify side/price/size, loud mismatch. The block
+  **begins with a snapshot-flagged Clear** (venue reset framing, observed flags
+  SNAPSHOT|BAD_TS_RECV): consumers **ignore it with a loud counter** — the merge
+  semantics above supersede clear-and-rebuild framing, and the observed book at that
+  moment is a strict subset of the block. Snapshot-flagged kinds other than Add/Clear
+  stay loud errors. Book state
   before the admitted snapshot block is partial-but-truthful: unknown-ref activity is
   counted loudly and iceberg/queue classification reads *unavailable* until observed
   (PRD §4.3–4.4).

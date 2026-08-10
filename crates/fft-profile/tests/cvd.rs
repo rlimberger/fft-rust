@@ -203,3 +203,15 @@ fn sideless_trade_counts_volume_but_no_delta_or_touch() {
     assert!(p.cvd().candles().is_empty());
     assert_eq!(p.cvd().current_bid().price(), None);
 }
+
+#[test]
+fn snapshot_clear_is_tolerated_and_ignored() {
+    let mut p = empty_profile();
+    p.apply(&trade(20_000, 3, Side::Bid, SESSION_OPEN_NS));
+    let mut clear = trade(20_000, 1, Side::Bid, SESSION_OPEN_NS + 1);
+    clear.kind = fft_core::EventKind::Clear;
+    clear.size = 0;
+    clear.flags = 1 << 5;
+    p.apply(&clear);
+    assert_eq!(p.total_volume(), 3);
+}

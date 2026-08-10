@@ -173,6 +173,11 @@ impl Book {
         self.refresh.fills_off_display
     }
 
+    /// Snapshot-flagged Clear records ignored as block framing (FFTLOG-V2 §4).
+    pub fn snapshot_clears(&self) -> u64 {
+        self.snapshot_clears
+    }
+
     fn walk_level(
         &self,
         side: Side,
