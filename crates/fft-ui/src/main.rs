@@ -3,6 +3,7 @@
 //!
 //! ```text
 //! fft [--gate <seconds>] [--trace <path>] [--replay <fftlog>] [--gate-out <path>]
+//!     [--manifest <path>] [--conditions <text>]
 //! ```
 //!
 //! Without `--replay`, the M0 blank/dark window + frame harness is unchanged. With
@@ -13,8 +14,10 @@
 //! count fails the process (`docs/ENGINE.md` §3). An engine-thread panic is recorded in the
 //! evidence and fails the process — it never pre-empts the write.
 //!
-//! `--gate-out` writes the run's self-identifying JSON evidence (git SHA + dirty, replay
-//! path, frame-time distribution, coverage) — on `FAIL` as well as `PASS`.
+//! `--gate-out` writes the run's self-identifying JSON evidence (git SHA + dirty, pinned
+//! `gpui` rev, replay path, frame-time distribution, coverage) — on `FAIL` as well as
+//! `PASS`. `--manifest` / `--conditions` are runner-supplied provenance; absent ⇒ JSON
+//! `null`. `--manifest` is validated before the window opens.
 //!
 //! Redraw uses GPUI's `request_animation_frame` pattern. Keep the gate window
 //! keyboard-focused: GPUI caps unfocused animation-driven redraw to ~30 fps.
@@ -36,6 +39,10 @@ struct Args {
     trace: Option<PathBuf>,
     replay: Option<PathBuf>,
     gate_out: Option<PathBuf>,
+    /// Perf-runner manifest path — validated at startup, recorded verbatim in evidence.
+    manifest: Option<PathBuf>,
+    /// Free-form run conditions from the runner — recorded verbatim when supplied.
+    conditions: Option<String>,
 }
 
 fn parse_args() -> Args {
@@ -44,6 +51,8 @@ fn parse_args() -> Args {
     let mut trace = None;
     let mut replay = None;
     let mut gate_out = None;
+    let mut manifest = None;
+    let mut conditions = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--gate" => {
@@ -76,6 +85,27 @@ fn parse_args() -> Args {
                     .unwrap_or_else(|| usage("--gate-out requires <path>"));
                 gate_out = Some(PathBuf::from(path));
             }
+            "--manifest" => {
+                let path = args
+                    .next()
+                    .unwrap_or_else(|| usage("--manifest requires <path>"));
+                let path = PathBuf::from(path);
+                // Same rationale as GateOut::create: bad provenance must fail before a
+                // measured run is spent, never after it.
+                if !path.is_file() {
+                    usage(&format!(
+                        "--manifest file does not exist: {}",
+                        path.display()
+                    ));
+                }
+                manifest = Some(path);
+            }
+            "--conditions" => {
+                let text = args
+                    .next()
+                    .unwrap_or_else(|| usage("--conditions requires <text>"));
+                conditions = Some(text);
+            }
             other => usage(&format!("unknown argument: {other}")),
         }
     }
@@ -84,13 +114,15 @@ fn parse_args() -> Args {
         trace,
         replay,
         gate_out,
+        manifest,
+        conditions,
     }
 }
 
 fn usage(msg: &str) -> ! {
     eprintln!(
         "fft: {msg}\nusage: fft [--gate <seconds>] [--trace <path>] [--replay <fftlog>] \
-         [--gate-out <path>]"
+         [--gate-out <path>] [--manifest <path>] [--conditions <text>]"
     );
     std::process::exit(2);
 }
@@ -122,6 +154,11 @@ fn main() -> ExitCode {
         git: GitInfo::capture(),
         replay: args.replay.clone(),
         trace: args.trace.clone(),
+        manifest: args
+            .manifest
+            .as_ref()
+            .map(|path| path.display().to_string()),
+        conditions: args.conditions.clone(),
     };
     let gate_out = args.gate_out.clone().map(GateOut::create);
 

@@ -31,6 +31,8 @@ fn sample_meta() -> RunMeta {
         },
         replay: Some(PathBuf::from("fixtures/esu6.fftlog")),
         trace: None,
+        manifest: None,
+        conditions: None,
     }
 }
 
@@ -112,6 +114,13 @@ fn report_json_carries_every_documented_field() {
     assert_eq!(top["replay"], "fixtures/esu6.fftlog");
     assert!(top["trace"].is_null());
     assert!(top["manifest"].is_null());
+    assert!(top["conditions"].is_null());
+    let gpui_rev = top["gpui_rev"].as_str().expect("gpui_rev is a string");
+    assert_eq!(gpui_rev.len(), 40, "gpui_rev must be a 40-hex git rev");
+    assert!(
+        gpui_rev.chars().all(|c| c.is_ascii_hexdigit()),
+        "gpui_rev must be hex: {gpui_rev}"
+    );
 }
 
 #[test]
@@ -135,7 +144,41 @@ fn report_json_nulls_are_explicit_when_evidence_is_absent() {
     assert!(json["replay"].is_null());
     assert_eq!(json["git_sha"], "unknown");
     assert!(json["git_dirty"].is_null(), "unknown sha => dirty null");
+    assert!(json["manifest"].is_null(), "unsupplied manifest => null");
+    assert!(
+        json["conditions"].is_null(),
+        "unsupplied conditions => null"
+    );
+    let gpui_rev = json["gpui_rev"].as_str().expect("gpui_rev always present");
+    assert_eq!(gpui_rev.len(), 40);
+    assert!(gpui_rev.chars().all(|c| c.is_ascii_hexdigit()));
     assert_eq!(json["verdict"], "FAIL", "no frames measured is a failure");
+}
+
+#[test]
+fn report_carries_supplied_manifest_and_conditions_verbatim() {
+    let meta = RunMeta {
+        manifest: Some("perf-runner/manifests/box-a.toml".to_string()),
+        conditions: Some("governor=performance SMT=off idle=60s".to_string()),
+        ..sample_meta()
+    };
+    let report = GateReport::new(
+        &meta,
+        "2026-08-10T10:11:00Z".to_string(),
+        Some(sample_result()),
+        Some(CoverageReport::new(1_000, 1_000, 0)),
+    );
+    assert_eq!(
+        report.manifest.as_deref(),
+        Some("perf-runner/manifests/box-a.toml")
+    );
+    assert_eq!(
+        report.conditions.as_deref(),
+        Some("governor=performance SMT=off idle=60s")
+    );
+    let json = as_json(&report);
+    assert_eq!(json["manifest"], "perf-runner/manifests/box-a.toml");
+    assert_eq!(json["conditions"], "governor=performance SMT=off idle=60s");
 }
 
 #[test]

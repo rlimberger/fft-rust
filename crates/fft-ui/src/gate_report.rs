@@ -86,6 +86,10 @@ pub struct RunMeta {
     pub git: GitInfo,
     pub replay: Option<PathBuf>,
     pub trace: Option<PathBuf>,
+    /// Perf-runner manifest path (`--manifest`); `None` ⇒ JSON `null`.
+    pub manifest: Option<String>,
+    /// Run conditions text (`--conditions`); `None` ⇒ JSON `null`.
+    pub conditions: Option<String>,
 }
 
 /// Git provenance. `sha == "unknown"` (with `dirty == None`) is the only tolerated
@@ -136,8 +140,9 @@ fn git(args: &[&str]) -> Result<String, String> {
 }
 
 /// The `--gate-out` JSON document. A superset of the M0 gate artifact: fields the binary
-/// cannot know (perf-runner manifest, gpui rev, run conditions, notes) are emitted as
-/// `null` for the runner to fill in, never guessed.
+/// cannot know (perf-runner manifest, run conditions, notes) are emitted as `null` for
+/// the runner to fill in, never guessed. `gpui_rev` is knowable at build time from
+/// `Cargo.lock` and is always populated.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct GateReport {
     pub gate: String,
@@ -175,9 +180,9 @@ impl GateReport {
             git_dirty: meta.git.dirty,
             replay: path_string(meta.replay.as_deref()),
             trace: path_string(meta.trace.as_deref()),
-            manifest: None,
-            gpui_rev: None,
-            conditions: None,
+            manifest: meta.manifest.clone(),
+            gpui_rev: Some(env!("FFT_GPUI_REV").to_string()),
+            conditions: meta.conditions.clone(),
             notes: None,
             verdict: verdict(result.as_ref(), coverage.as_ref()),
             result,
@@ -287,7 +292,7 @@ pub fn rfc3339_utc(unix_secs: u64) -> String {
 }
 
 /// Days since the Unix epoch to `(year, month, day)` (Hinnant's `civil_from_days`).
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
+pub(crate) fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);
@@ -398,6 +403,8 @@ mod tests {
             },
             replay: None,
             trace: None,
+            manifest: None,
+            conditions: None,
         };
         let mut report = GateReport::new(
             &meta,
