@@ -38,9 +38,17 @@ apply semantics. Wed log at scratchpad must be re-ingested after the fix. Do NOT
 `fft --replay` a full-day log until INGEST-SNAPSHOT-ADMISSION + BOOK-SNAPSHOT-LOAD
 land.
 
+Accepted + pushed (2026-08-10, later): **INGEST-SNAPSHOT-ADMISSION** (`88b37f2`) —
+Wed measured exact: 7561 snapshots kept / 7409 dropped. Grok's gap analysis REFUTED
+the "phantom gaps from snapshot seqs" hypothesis (bypass already existed): the 1880
+gaps were forward channel-seq holes from Databento symbol filtering (`ES.FUT`
+parent). condition.json = `available` all five days ⇒ holes are filter artifacts,
+not loss. Policy frozen in FFTLOG-V2 §4 "Batch gap policy": regression-only Gap
+synthesis for batch, `seq_holes_ignored` counted loudly; live gaps at gateway (M6).
+
 In flight next:
-- **INGEST-SNAPSHOT-ADMISSION** (Grok, fft-ingest): implement FFTLOG-V2 §4 admission
-  + gap-detector bypass.
+- **INGEST-GAP-POLICY** (Grok, fft-ingest): implement the batch gap policy;
+  re-ingest Wed → v3.
 - **BOOK-SNAPSHOT-LOAD** (Codex/Sol, fft-book): snapshot-load apply semantics + the
   audit's fft-book wave (six-section split per ENGINE.md §4, fresh-flow eviction fix).
 - Audit spot-checks: claims 1, 7, 8 CONFIRMED (7 approved+documented in PRD, 8 fixed);

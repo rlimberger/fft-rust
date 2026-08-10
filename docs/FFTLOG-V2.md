@@ -86,6 +86,16 @@ Fixed 32-byte records after decompression:
 - **Gap records** are first-class events: `price` = expected seq, `order_id` = observed
   seq. Downstream consumers (book, native-refresh classifier) must transition to their
   gap states; classification across a gap reads *unavailable*, never false (PRD §4.4).
+- **Batch gap policy (frozen 2026-08-10):** Databento batch files are symbol-filtered
+  (the sample job is `ES.FUT` parent), so **forward channel-seq holes are expected
+  filtering artifacts, never gaps** — completeness authority for batch data is the
+  job's `condition.json` (`available` = complete capture; the sample week is available
+  on all five days). Batch ingest therefore synthesizes a Gap **only on a sequence
+  regression** in the decoded stream (a genuine anomaly), never on a forward jump;
+  ignored forward holes are counted and reported loudly in `WriteStats`
+  (`seq_holes_ignored`), not silently dropped from accounting. Live ingestion (M6)
+  detects real gaps at the gateway/session layer, where the full channel stream is
+  visible; Gap records stay first-class in the format for that path.
 - Status records carry the `status`-schema code in `size`.
 - **Snapshot records** (source SNAPSHOT flag set in `flags`; frozen 2026-08-10, evidence
   in HANDOFF): Databento daily files roll at 00:00 UTC (19:00 CT) and open with a
