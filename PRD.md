@@ -94,7 +94,11 @@ on hover for any observed order.
 
 **Chrome:** header = contract · NY clock · FPS. Nothing else. Transport strip only when replay
 mode (`r`) is on. Keys as in legacy PRD (`d`, `e`, `r`, space, `l`, arrows, `[`/`]`, 1/2/4,
-Ctrl+wheel zoom). OS monospace font. OS theme (Omarchy live-reload kept).
+Ctrl+wheel zoom). **Type: JetBrains Mono for all UI text** (family "JetBrainsMono Nerd
+Font" as installed; no other face anywhere). **Color: Catppuccin** — flavor from prefs,
+default Mocha; Latte serves light mode. Palette roles map once (base/surface/text/overlay +
+semantic accents for bid/ask/VA/VPOC/IB) and every draw call uses a role, never a raw hex.
+This supersedes the earlier OS-theme (Omarchy) derivation (decision: René, 2026-08-10).
 
 ## 6. Data
 

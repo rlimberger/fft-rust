@@ -9,7 +9,45 @@ reviews every diff and gate before acceptance. Standing order (René 2026-08-10)
 commit + push accepted work without asking — scoped commits per track, review first.
 Recenter key `c` confirmed by René.
 
-## Track board (2026-08-10, orchestrator)
+## Evening wave 2 (2026-08-10, orchestrator review — read this first)
+
+Staffing: **Sol (gpt-5.6) is out of tokens and unavailable.** Remaining workforce: the two
+Grok sessions + orchestrator's Opus 5 subagents.
+
+New standing directives (René, in PRD §5 same-commit):
+- **JetBrains Mono for all UI text** (installed family: "JetBrainsMono Nerd Font");
+- **Catppuccin palettes** (default Mocha, Latte for light), all draw calls through palette
+  roles — supersedes OS-theme/Omarchy derivation. Open track: **UI-THEME-CATPPUCCIN**
+  (replace hardcoded hex constants in mp_element/dom_ladder + font_family("monospace")).
+
+Accepted + committed this wave (diff-reviewed, workspace fmt/clippy/test re-verified green):
+- **CHECKPOINT-PASS** (`c155229`, fft-engine): six-section 60 s event-time checkpointed
+  copy through the shared apply path; Wed real run 21.4 M events → 1393 checkpoints,
+  restore seeks 4.5–6.3 ms, no replay-from-start. fft-checkpoint bin.
+- **MP-PANE** (`c3c2e4a`, fft-ui): WT profile as one custom Element + linked two-pane
+  shell; 14 pure tests; zero entity.update. Follow-ups owed: (a) `ProfileSessionRender`
+  needs a session open-price field (engine crate) before the session-open hairline can
+  draw; (b) hovered-pane 1/2/4 routing is provisional — PRD §5 still specifies 1/2/4=MP,
+  Shift=DOM; M5 keyboard track must reconcile (ask René which wins); (c) hand-rolled
+  `civil_from_days` in mp_view.rs duplicates jiff — fold into the theme/polish wave.
+- **LOG-POLISH-PERF-CI** report reviewed post-hoc (already landed as `f854f7f`); its
+  PERF-RUNNER.md staleness findings fixed by orchestrator (evidence-file section added).
+
+**GATE EVIDENCE — two-pane frame gate FAILED (expected-red, first real run):**
+`fft --gate 60 --replay /tmp/esu6-wed-v3-ckpt.fftlog` on the 60.2 Hz desk display:
+frames=2927 **missed=466 (16 %)** p50=16.777 ms p99=50.332 ms max=50.456 ms,
+coverage 4823/4823 dropped=0. Spikes are ~3 refresh intervals, periodic, at near-zero
+event load → structural UI/engine stall, not data volume. Evidence:
+`perf-runner/results/2026-08-10-m4-two-pane-gate.json` (note: the untracked m3 evidence
+file from the earlier session is empty — that run died before writing; rerun wanted).
+Caveats: desk display is 60 Hz (240 Hz box per PERF-RUNNER still unprovisioned); run was
+launched unattended — focus flapping can throttle animation frames to ~30 fps and would
+look exactly like this. **Next track: FRAME-STALL-DIAGNOSIS** — rerun focused with
+`--trace`, bucket miss timestamps, correlate against glyph-cache sweeps, per-frame
+`visible_rows` aggregation cost, engine publish cadence, and compositor logs before
+touching any code.
+
+
 
 Accepted this session (reviewed against diff, gates green; uncommitted pending René):
 - **LOG-HARDEN** (Grok, fft-log): footer-bound claim REFUTED with regression tests;
