@@ -189,7 +189,7 @@ pub fn check_pane_agreement(
 
 pub fn session_open_footer(trade_date: u32) -> String {
     assert!(trade_date > 0, "trade date must follow Unix epoch day zero");
-    let (_, month, day) = civil_from_days(i64::from(trade_date) - 1);
+    let (_, month, day) = crate::gate_report::civil_from_days(i64::from(trade_date) - 1);
     format!("{month:02}-{day:02} 18:00")
 }
 
@@ -219,6 +219,12 @@ fn bucket(price: Price, tick: Price) -> Price {
     )
 }
 
+/// Session-open hairline price floored to `scaled_tick`, if the session has an open.
+pub fn open_marker_bucket(session: &ProfileSessionRender, scaled_tick: Price) -> Option<Price> {
+    assert!(scaled_tick.0 > 0, "MP open marker tick must be positive");
+    session.open.map(|price| bucket(price, scaled_tick))
+}
+
 fn merge(target: &mut MpRow, source: &ProfilePriceRow) {
     target.eth_periods |= source.eth_periods;
     target.rth_periods |= source.rth_periods;
@@ -238,22 +244,6 @@ fn merge(target: &mut MpRow, source: &ProfilePriceRow) {
         .sell_volume
         .checked_add(source.sell_volume)
         .expect("MP sell-volume aggregation overflow");
-}
-
-// Gregorian civil date from Unix-epoch days (Howard Hinnant's integer algorithm).
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let day_of_era = z - era * 146_097;
-    let year_of_era =
-        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let mut year = year_of_era + era * 400;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_prime = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
-    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
-    year += i64::from(month <= 2);
-    (year, month as u32, day as u32)
 }
 
 #[cfg(test)]
@@ -388,5 +378,20 @@ mod tests {
         assert_eq!(session_open_footer(20_663), "07-28 18:00");
         // 1970-01-02 trade date rolls the footer into the prior year boundary safely.
         assert_eq!(session_open_footer(1), "01-01 18:00");
+    }
+
+    #[test]
+    fn open_marker_bucket_present_or_absent() {
+        let with = ProfileSessionRender {
+            open: Some(Price(103)),
+            ..Default::default()
+        };
+        assert_eq!(open_marker_bucket(&with, Price(2)), Some(Price(102)));
+
+        let without = ProfileSessionRender {
+            open: None,
+            ..Default::default()
+        };
+        assert_eq!(open_marker_bucket(&without, Price(2)), None);
     }
 }

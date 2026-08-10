@@ -27,6 +27,8 @@ pub struct Palette {
     pub ib: Hsla,
     pub vah_val: Hsla,
     pub current_price: Hsla,
+    /// Session-open hairline (first print); quieter than `current_price`.
+    pub session_open: Hsla,
     pub period_cursor: Hsla,
     pub period_gap: Hsla,
     pub eth_tpo: Hsla,
@@ -48,6 +50,7 @@ impl Palette {
         const PEACH: u32 = 0xfab387;
         const YELLOW: u32 = 0xf9e2af;
         const TEAL: u32 = 0x94e2d5;
+        const LAVENDER: u32 = 0xb4befe;
         const SAPPHIRE: u32 = 0x74c7ec;
         const BLUE: u32 = 0x89b4fa;
         const RED: u32 = 0xf38ba8;
@@ -78,6 +81,7 @@ impl Palette {
             ib: alpha(YELLOW, 0.45),
             vah_val: alpha(TEAL, 0.55),
             current_price: alpha(TEXT, 0.80),
+            session_open: alpha(LAVENDER, 0.40),
             period_cursor: alpha(PEACH, 0.16),
             period_gap: alpha(RED, 0.12),
             eth_tpo: solid(OVERLAY1),
@@ -99,6 +103,7 @@ impl Palette {
         const PEACH: u32 = 0xfe640b;
         const YELLOW: u32 = 0xdf8e1d;
         const TEAL: u32 = 0x179299;
+        const LAVENDER: u32 = 0x7287fd;
         const SAPPHIRE: u32 = 0x209fb5;
         const BLUE: u32 = 0x1e66f5;
         const RED: u32 = 0xd20f39;
@@ -129,6 +134,7 @@ impl Palette {
             ib: alpha(YELLOW, 0.45),
             vah_val: alpha(TEAL, 0.55),
             current_price: alpha(TEXT, 0.80),
+            session_open: alpha(LAVENDER, 0.40),
             period_cursor: alpha(PEACH, 0.16),
             period_gap: alpha(RED, 0.12),
             eth_tpo: solid(OVERLAY1),
@@ -187,9 +193,14 @@ mod tests {
         assert_eq!(mocha.period_cursor.a, 0.16);
         assert_eq!(mocha.period_gap.a, 0.12);
         assert_eq!(mocha.current_price.a, 0.80);
+        assert_eq!(mocha.session_open.a, 0.40);
         assert_eq!(mocha.ib.a, 0.45);
         assert_eq!(mocha.vah_val.a, 0.55);
         assert_eq!(mocha.va_bg.a, 0.55);
+        assert_ne!(mocha.session_open, mocha.current_price);
+        assert_ne!(mocha.session_open, mocha.vpoc);
+        assert_ne!(mocha.session_open, mocha.vah_val);
+        assert_ne!(mocha.session_open, mocha.ib);
 
         assert_eq!(latte.base, solid(0xeff1f5));
         assert_eq!(latte.text, solid(0x4c4f69));

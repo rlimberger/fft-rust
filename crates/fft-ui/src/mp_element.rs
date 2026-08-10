@@ -67,6 +67,7 @@ pub(crate) struct PreparedText {
 
 #[derive(Clone, Copy, Default)]
 struct Markers {
+    open: Option<Price>,
     vpoc: Option<Price>,
     vah: Option<Price>,
     val: Option<Price>,
@@ -187,6 +188,7 @@ impl Element for MarketProfile {
             max_pv,
             max_sv,
             markers: Markers {
+                open: session.open,
                 vpoc: session.vpoc,
                 vah: session.vah,
                 val: session.val,
@@ -461,6 +463,8 @@ fn paint_semantic_lines(
             ));
         }
     };
+    // Open first (lowest priority); every other marker overdraws it.
+    line(prepaint.markers.open, palette.session_open, 1.0);
     line(prepaint.markers.vah, palette.vah_val, 1.0);
     line(prepaint.markers.val, palette.vah_val, 1.0);
     line(prepaint.markers.ib_high, palette.ib, 1.0);
