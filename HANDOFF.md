@@ -5,26 +5,46 @@
 Latest user directive (2026-08-10, René): **Fable 5 orchestrates** (this session); workers
 are Codex `gpt-5.6-sol` (Opus-tier tasks) and Grok 4.5 (workhorse tasks), each in its own
 session, René relaying briefs/reports. The orchestrator gives path-bounded briefs and
-reviews every diff and gate before acceptance. Do not commit unless René asks.
+reviews every diff and gate before acceptance. Standing order (René 2026-08-10):
+commit + push accepted work without asking — scoped commits per track, review first.
+Recenter key `c` confirmed by René.
 
-## In flight (2026-08-10, orchestrator)
+## Track board (2026-08-10, orchestrator)
 
-- **UI-M3-INTERACT** (Codex/Sol, owns `crates/fft-ui` only): glyph-run cache,
-  price-drag + wheel pan, tick scale 1/2/4, recenter, move replay-path validation off
-  the pre-window path (audit item 9). Serves René's stated priority: visible M3.
-- **LOG-HARDEN** (Grok, owns `crates/fft-log` only): audit repair-wave item — verify
-  then fix footer-decode bounding (audit claim looks partially overstated;
-  `footer.rs:81-88` already bounds against file layout — worker must confirm/refute
-  with evidence), validate the frozen `mbo` schema tag, prove concurrent LIVE-tail
-  refresh/retry/clean-close, stop the fixture test regenerating fixtures before
-  checking. No wire-byte changes.
-- **Orchestrator**: CoverageCounters LANDED in `fft-engine` per ENGINE.md §3 (workspace
-  green). Six-section checkpoint integration interface FROZEN in ENGINE.md §4
-  (2026-08-10) — fft-book/fft-profile/fft-replay repair briefs must implement to it.
-  Full-Wed log ready: 21.4 M events at
-  `/tmp/claude-1000/-home-rlimberger-Projects-fft-rust/15b78ada-b372-4552-8837-c05baff916f6/scratchpad/esu6-2026-07-29.fftlog`.
-- Audit spot-checks by orchestrator: claims 1 and 7 CONFIRMED at source; claim 6
-  plausible (16:00 CT constant present in `tpo.rs`); claim 10 partially overstated.
+Accepted this session (reviewed against diff, gates green; uncommitted pending René):
+- **LOG-HARDEN** (Grok, fft-log): footer-bound claim REFUTED with regression tests;
+  `mbo` schema-tag validation; LIVE-tail `refresh()` API + torn-tail retry tests;
+  fixture self-masking closed. Nits deferred: `was_live()` aliases `is_live()`;
+  reader.rs at 532 lines.
+- **INGEST-STITCH** (Grok, fft-ingest): shared GapDetector across ordered inputs
+  (boundary gaps now emitted); gap bucketing confirmed shared; snapshot evidence
+  delivered (drove the FFTLOG-V2 §4 snapshot freeze below).
+- **UI-M3-INTERACT** (Codex/Sol, fft-ui): DomView aggregation (1/2/4, floor buckets,
+  checked sums), persistent generation-swept GlyphCache, drag/wheel pan with
+  fractional coalescing, recenter `c` (provisional key), replay spawn moved to
+  `on_next_frame` (no pre-paint I/O). Zero `entity.update` on input/snapshot paths.
+  M3 frame/input gates intentionally unclaimed — display run pending.
+- **Orchestrator** (fft-engine): CoverageCounters per ENGINE.md §3; ENGINE.md §4
+  six-section checkpoint interface FROZEN; audit item 8 fixed (SetSource drops
+  batched stale seek, resets latest_seek) + regression test; latent slot-then-wake
+  test race fixed.
+
+**BLOCKER found (2026-08-10): full-day fftlogs are unreplayable.** Databento snapshot
+records (original ts, non-channel seqs) replay as live Adds → book panics
+`seq regression 644 -> 643` immediately; snapshot seqs also feed the gap detector →
+~1.9k phantom Gap records per day log. Policy frozen in FFTLOG-V2 §4 "Snapshot
+records": admission by first-live-event bucket, gap-detector bypass, snapshot-load
+apply semantics. Wed log at scratchpad must be re-ingested after the fix. Do NOT
+`fft --replay` a full-day log until INGEST-SNAPSHOT-ADMISSION + BOOK-SNAPSHOT-LOAD
+land.
+
+In flight next:
+- **INGEST-SNAPSHOT-ADMISSION** (Grok, fft-ingest): implement FFTLOG-V2 §4 admission
+  + gap-detector bypass.
+- **BOOK-SNAPSHOT-LOAD** (Codex/Sol, fft-book): snapshot-load apply semantics + the
+  audit's fft-book wave (six-section split per ENGINE.md §4, fresh-flow eviction fix).
+- Audit spot-checks: claims 1, 7, 8 CONFIRMED (7 approved+documented in PRD, 8 fixed);
+  claim 6 plausible (fft-profile wave pending); claim 10 REFUTED with tests.
 
 Truth: `PRD.md`, `TECH-STACK.md`, `IMPLEMENTATION-PLAN.md`, and
 `docs/{FFTLOG-V2,ENGINE,PERF-RUNNER,FIXTURES}.md`. Never modify `~/Projects/fft-legacy`.

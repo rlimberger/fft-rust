@@ -87,6 +87,22 @@ Fixed 32-byte records after decompression:
   seq. Downstream consumers (book, native-refresh classifier) must transition to their
   gap states; classification across a gap reads *unavailable*, never false (PRD §4.4).
 - Status records carry the `status`-schema code in `size`.
+- **Snapshot records** (source SNAPSHOT flag set in `flags`; frozen 2026-08-10, evidence
+  in HANDOFF): Databento daily files roll at 00:00 UTC (19:00 CT) and open with a
+  resting-book snapshot whose records carry **original order-entry timestamps and
+  non-channel sequence numbers**. Therefore: (1) *ingest admission* — for target trade
+  date D, a file's snapshot block is admitted iff the file's first non-snapshot event
+  buckets to D (the stale prior-day block is dropped; for a Wed log that admits only the
+  19:00 CT Tue block, 2 h after open); (2) snapshot records **bypass the gap detector**
+  and carry their source seq verbatim; (3) *replay semantics* — a consumer applies a
+  snapshot-flagged record as a **snapshot-load**, never a live Add: no sequence
+  accounting; unknown `order_id` → insert **ahead of** every live-added order at that
+  level, in block order (every snapshot order predates every observed live add by
+  construction — an order entered during the observed window was already seen live and
+  is a *known* id); known `order_id` → verify side/price/size, loud mismatch. Book state
+  before the admitted snapshot block is partial-but-truthful: unknown-ref activity is
+  counted loudly and iceberg/queue classification reads *unavailable* until observed
+  (PRD §4.3–4.4).
 
 ## 5. Checkpoints
 
