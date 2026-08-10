@@ -15,3 +15,4 @@ mod mp_prepare;
 pub mod mp_view;
 pub mod pane_state;
 pub mod shell;
+pub mod theme;

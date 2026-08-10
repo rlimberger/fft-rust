@@ -8,8 +8,7 @@ use fft_core::Price;
 use fft_engine::RenderSnapshot;
 use gpui::{
     App, Bounds, ContentMask, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement,
-    LayoutId, Pixels, Point, ShapedLine, Style, TextAlign, Window, fill, hsla, point, px, relative,
-    rgb, size,
+    LayoutId, Pixels, Point, ShapedLine, Style, TextAlign, Window, fill, point, px, relative, size,
 };
 
 use crate::glyph_cache::GlyphCache;
@@ -21,21 +20,14 @@ use crate::mp_prepare::prepare_tpos;
 use crate::mp_view::{
     ETH_PERIOD_COUNT, VisibleProfile, display_session, session_open_footer, visible_rows,
 };
-
-const BG: u32 = 0x0d1014;
-const FOOTER_BG: u32 = 0x15191f;
-const VA_BG: u32 = 0x151c25;
-const PV_BAR: u32 = 0x35404c;
-const SV_TOTAL: u32 = 0x30363d;
-const BUY: u32 = 0x315f82;
-const SELL: u32 = 0x7a3d43;
-const DIVIDER: u32 = 0x2a3038;
+use crate::theme::Palette;
 
 pub struct MarketProfile {
     snapshot: Arc<RenderSnapshot>,
     center: Option<Price>,
     tick_scale: u8,
     glyph_cache: Rc<RefCell<GlyphCache>>,
+    palette: Rc<Palette>,
 }
 
 impl MarketProfile {
@@ -44,12 +36,14 @@ impl MarketProfile {
         center: Option<Price>,
         tick_scale: u8,
         glyph_cache: Rc<RefCell<GlyphCache>>,
+        palette: Rc<Palette>,
     ) -> Self {
         Self {
             snapshot,
             center,
             tick_scale,
             glyph_cache,
+            palette,
         }
     }
 }
@@ -89,10 +83,6 @@ pub struct MpPrepaint {
     max_pv: u64,
     max_sv: u64,
     markers: Markers,
-}
-
-fn text_color() -> gpui::Hsla {
-    hsla(0.0, 0.0, 0.82, 1.0)
 }
 
 impl Element for MarketProfile {
@@ -162,9 +152,17 @@ impl Element for MarketProfile {
             .unwrap_or(0);
         let mut texts = Vec::with_capacity(profile.rows.len() * 7 + 1);
         let mut cache = self.glyph_cache.borrow_mut();
-        prepare_rows(&profile, cols, bounds, window, &mut cache, &mut texts);
+        prepare_rows(
+            &profile,
+            cols,
+            bounds,
+            window,
+            &mut cache,
+            &mut texts,
+            &self.palette,
+        );
         let footer = session_open_footer(session.trade_date);
-        let line = cache.get_or_shape(window, footer, text_color(), px(11.0));
+        let line = cache.get_or_shape(window, footer, self.palette.text, px(11.0));
         texts.push(PreparedText {
             line,
             origin: point(
@@ -211,7 +209,8 @@ impl Element for MarketProfile {
         window: &mut Window,
         cx: &mut App,
     ) {
-        window.paint_quad(fill(bounds, rgb(BG)));
+        let palette = &*self.palette;
+        window.paint_quad(fill(bounds, palette.base));
         let width = f32::from(bounds.size.width);
         let height = f32::from(bounds.size.height);
         let origin_x = f32::from(bounds.origin.x);
@@ -222,12 +221,12 @@ impl Element for MarketProfile {
             point(bounds.origin.x, px(origin_y + body_h)),
             size(bounds.size.width, px(MP_FOOTER_H)),
         );
-        window.paint_quad(fill(footer, rgb(FOOTER_BG)));
+        window.paint_quad(fill(footer, palette.footer_bg));
 
-        paint_period_cursor(bounds, body_h, cols, prepaint.markers, window);
-        paint_rows(bounds, cols, prepaint, window);
-        paint_semantic_lines(bounds, body_h, prepaint, window);
-        paint_dividers(bounds, body_h, cols, window);
+        paint_period_cursor(bounds, body_h, cols, prepaint.markers, palette, window);
+        paint_rows(bounds, cols, prepaint, palette, window);
+        paint_semantic_lines(bounds, body_h, prepaint, palette, window);
+        paint_dividers(bounds, body_h, cols, palette, window);
 
         for prepared in prepaint.texts.drain(..) {
             window
@@ -258,14 +257,31 @@ fn prepare_rows(
     window: &mut Window,
     cache: &mut GlyphCache,
     texts: &mut Vec<PreparedText>,
+    palette: &Palette,
 ) {
     let origin_y = f32::from(bounds.origin.y);
     for (from_top, row) in profile.rows.iter().rev().enumerate() {
         let y = row_y(origin_y, from_top) + 1.0;
-        prepare_tpos(cache, window, texts, row, cols, y);
-        prepare_number(cache, window, texts, row.period_volume, cols.pv, y);
-        prepare_number(cache, window, texts, row.session_volume, cols.sv, y);
-        let line = cache.get_or_shape(window, format_price(row.price.0), text_color(), px(10.0));
+        prepare_tpos(cache, window, texts, row, cols, y, palette);
+        prepare_number(
+            cache,
+            window,
+            texts,
+            row.period_volume,
+            cols.pv,
+            y,
+            palette.text,
+        );
+        prepare_number(
+            cache,
+            window,
+            texts,
+            row.session_volume,
+            cols.sv,
+            y,
+            palette.text,
+        );
+        let line = cache.get_or_shape(window, format_price(row.price.0), palette.text, px(10.0));
         texts.push(PreparedText {
             line,
             origin: point(px(cols.axis.x + 2.0), px(y)),
@@ -287,12 +303,13 @@ fn prepare_number(
     value: u64,
     strip: crate::mp_layout::Strip,
     y: f32,
+    color: gpui::Hsla,
 ) {
     let text = format_size(value);
     if text.is_empty() {
         return;
     }
-    let line = cache.get_or_shape(window, text, text_color(), px(9.0));
+    let line = cache.get_or_shape(window, text, color, px(9.0));
     texts.push(PreparedText {
         line,
         origin: point(px(strip.x + 2.0), px(y)),
@@ -306,7 +323,13 @@ fn prepare_number(
     });
 }
 
-fn paint_rows(bounds: Bounds<Pixels>, cols: MpStrips, prepaint: &MpPrepaint, window: &mut Window) {
+fn paint_rows(
+    bounds: Bounds<Pixels>,
+    cols: MpStrips,
+    prepaint: &MpPrepaint,
+    palette: &Palette,
+    window: &mut Window,
+) {
     let origin_y = f32::from(bounds.origin.y);
     for (from_top, row) in prepaint.profile.rows.iter().rev().enumerate() {
         let y = row_y(origin_y, from_top);
@@ -326,7 +349,7 @@ fn paint_rows(bounds: Bounds<Pixels>, cols: MpStrips, prepaint: &MpPrepaint, win
                     point(bounds.origin.x, px(y)),
                     size(px(cols.axis.x - f32::from(bounds.origin.x)), px(MP_ROW_H)),
                 ),
-                rgb(VA_BG),
+                palette.va_bg,
             ));
         }
         let pv_w = volume_width(row.period_volume, prepaint.max_pv, cols.pv.w - 4.0);
@@ -336,7 +359,7 @@ fn paint_rows(bounds: Bounds<Pixels>, cols: MpStrips, prepaint: &MpPrepaint, win
                     point(px(cols.pv.x + 2.0), px(y + 3.0)),
                     size(px(pv_w), px(MP_ROW_H - 6.0)),
                 ),
-                rgb(PV_BAR),
+                palette.pv_bar,
             ));
         }
         let total_w = volume_width(row.session_volume, prepaint.max_sv, cols.sv.w - 4.0);
@@ -346,7 +369,7 @@ fn paint_rows(bounds: Bounds<Pixels>, cols: MpStrips, prepaint: &MpPrepaint, win
                     point(px(cols.sv.x + 2.0), px(y + 4.0)),
                     size(px(total_w), px(MP_ROW_H - 8.0)),
                 ),
-                rgb(SV_TOTAL),
+                palette.sv_total,
             ));
         }
         let half = (cols.sv.w - 4.0) / 2.0;
@@ -359,7 +382,7 @@ fn paint_rows(bounds: Bounds<Pixels>, cols: MpStrips, prepaint: &MpPrepaint, win
                     point(px(center - sell_w), px(y + 2.0)),
                     size(px(sell_w), px(MP_ROW_H - 4.0)),
                 ),
-                rgb(SELL),
+                palette.sell,
             ));
         }
         if buy_w > 0.0 {
@@ -368,7 +391,7 @@ fn paint_rows(bounds: Bounds<Pixels>, cols: MpStrips, prepaint: &MpPrepaint, win
                     point(px(center), px(y + 2.0)),
                     size(px(buy_w), px(MP_ROW_H - 4.0)),
                 ),
-                rgb(BUY),
+                palette.buy,
             ));
         }
     }
@@ -379,6 +402,7 @@ fn paint_period_cursor(
     body_h: f32,
     cols: MpStrips,
     markers: Markers,
+    palette: &Palette,
     window: &mut Window,
 ) {
     let period = usize::try_from(markers.current_period).expect("MP period fits usize");
@@ -389,7 +413,7 @@ fn paint_period_cursor(
                 point(px(cols.ep.x + period as f32 * step), bounds.origin.y),
                 size(px(step.max(1.0)), px(body_h)),
             ),
-            hsla(0.10, 0.30, 0.35, 0.16),
+            palette.period_cursor,
         ));
     }
     if markers.period_gap {
@@ -398,7 +422,7 @@ fn paint_period_cursor(
                 point(px(cols.pv.x), bounds.origin.y),
                 size(px(cols.pv.w), px(body_h)),
             ),
-            hsla(0.0, 0.45, 0.35, 0.12),
+            palette.period_gap,
         ));
     }
 }
@@ -407,6 +431,7 @@ fn paint_semantic_lines(
     bounds: Bounds<Pixels>,
     body_h: f32,
     prepaint: &MpPrepaint,
+    palette: &Palette,
     window: &mut Window,
 ) {
     let Some(top) = prepaint.profile.rows.last().map(|row| row.price) else {
@@ -436,26 +461,28 @@ fn paint_semantic_lines(
             ));
         }
     };
-    line(prepaint.markers.vah, hsla(0.55, 0.20, 0.48, 0.55), 1.0);
-    line(prepaint.markers.val, hsla(0.55, 0.20, 0.48, 0.55), 1.0);
-    line(prepaint.markers.ib_high, hsla(0.12, 0.28, 0.52, 0.45), 1.0);
-    line(prepaint.markers.ib_low, hsla(0.12, 0.28, 0.52, 0.45), 1.0);
-    line(prepaint.markers.vpoc, hsla(0.08, 0.45, 0.62, 0.75), 1.5);
-    line(
-        prepaint.markers.current_price,
-        hsla(0.0, 0.0, 0.86, 0.80),
-        1.0,
-    );
+    line(prepaint.markers.vah, palette.vah_val, 1.0);
+    line(prepaint.markers.val, palette.vah_val, 1.0);
+    line(prepaint.markers.ib_high, palette.ib, 1.0);
+    line(prepaint.markers.ib_low, palette.ib, 1.0);
+    line(prepaint.markers.vpoc, palette.vpoc, 1.5);
+    line(prepaint.markers.current_price, palette.current_price, 1.0);
 }
 
-fn paint_dividers(bounds: Bounds<Pixels>, body_h: f32, cols: MpStrips, window: &mut Window) {
+fn paint_dividers(
+    bounds: Bounds<Pixels>,
+    body_h: f32,
+    cols: MpStrips,
+    palette: &Palette,
+    window: &mut Window,
+) {
     for x in [cols.ep.x, cols.pv.x, cols.sv.x, cols.axis.x] {
         window.paint_quad(fill(
             Bounds::new(
                 point(px(x), bounds.origin.y),
                 size(px(1.0), bounds.size.height),
             ),
-            rgb(DIVIDER),
+            palette.divider,
         ));
     }
     window.paint_quad(fill(
@@ -463,6 +490,6 @@ fn paint_dividers(bounds: Bounds<Pixels>, body_h: f32, cols: MpStrips, window: &
             point(bounds.origin.x, px(f32::from(bounds.origin.y) + body_h)),
             size(bounds.size.width, px(1.0)),
         ),
-        rgb(DIVIDER),
+        palette.divider,
     ));
 }

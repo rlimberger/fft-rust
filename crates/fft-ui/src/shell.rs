@@ -12,7 +12,7 @@ use fft_engine::{
 };
 use gpui::{
     AnyElement, Context, FocusHandle, MouseButton, Render, ScrollDelta, Window, div, prelude::*,
-    px, relative, rgb,
+    px, relative,
 };
 
 use crate::dom_input::DomInput;
@@ -25,6 +25,10 @@ use crate::mp_element::MarketProfile;
 use crate::mp_layout::MP_ROW_H;
 use crate::mp_view::{check_pane_agreement, display_session, pan_center};
 use crate::pane_state::{Pane, PaneState, SPLITTER_WIDTH};
+use crate::theme::Palette;
+
+/// Installed family name (`fc-list`); not the bare "JetBrains Mono".
+const FONT_FAMILY: &str = "JetBrainsMono Nerd Font";
 
 struct ReplayResources {
     snapshots: SnapshotSlot,
@@ -43,6 +47,7 @@ pub struct Shell {
     dom_input: Rc<RefCell<DomInput>>,
     mp_input: Rc<RefCell<DomInput>>,
     glyph_cache: Rc<RefCell<GlyphCache>>,
+    palette: Rc<Palette>,
     focus: FocusHandle,
     focus_once: bool,
 }
@@ -66,6 +71,7 @@ impl Shell {
             dom_input: Rc::new(RefCell::new(DomInput::default())),
             mp_input: Rc::new(RefCell::new(DomInput::default())),
             glyph_cache: Rc::new(RefCell::new(GlyphCache::default())),
+            palette: Rc::new(Palette::from_env()),
             focus: cx.focus_handle().tab_stop(true),
             focus_once: true,
         }
@@ -112,7 +118,10 @@ impl Render for Shell {
         }
         self.start_replay_after_first_paint(window);
         if self.snapshots.is_none() {
-            return div().size_full().bg(rgb(0x101010)).into_any_element();
+            return div()
+                .size_full()
+                .bg(self.palette.blank_window)
+                .into_any_element();
         }
         if self.focus_once {
             self.focus.focus(window, cx);
@@ -149,6 +158,7 @@ impl Render for Shell {
             center,
             mp_scale,
             Rc::clone(&self.glyph_cache),
+            Rc::clone(&self.palette),
         );
         let dom = DomLadder::new(
             Arc::clone(&self.frame_snapshot),
@@ -157,6 +167,7 @@ impl Render for Shell {
                 tick_scale: dom_scale,
             },
             Rc::clone(&self.glyph_cache),
+            Rc::clone(&self.palette),
         );
 
         let mp_pane = mp_pane(
@@ -173,7 +184,7 @@ impl Render for Shell {
             Rc::clone(&self.panes),
             Rc::clone(&self.dom_input),
         );
-        let splitter = splitter(Rc::clone(&self.panes));
+        let splitter = splitter(Rc::clone(&self.panes), Rc::clone(&self.palette));
         let key_panes = Rc::clone(&self.panes);
         let split_move = Rc::clone(&self.panes);
         let split_end = Rc::clone(&self.panes);
@@ -182,7 +193,7 @@ impl Render for Shell {
         div()
             .id("fft-two-pane-shell")
             .size_full()
-            .font_family("monospace")
+            .font_family(FONT_FAMILY)
             .flex()
             .flex_row()
             .track_focus(&self.focus)
@@ -409,13 +420,13 @@ fn pan_dom(panes: &Rc<RefCell<PaneState>>, snapshot: &RenderSnapshot, delta: i64
     true
 }
 
-fn splitter(panes: Rc<RefCell<PaneState>>) -> AnyElement {
+fn splitter(panes: Rc<RefCell<PaneState>>, palette: Rc<Palette>) -> AnyElement {
     div()
         .id("pane-splitter")
         .w(px(SPLITTER_WIDTH))
         .h_full()
         .flex_none()
-        .bg(rgb(0x30343a))
+        .bg(palette.splitter)
         .cursor_col_resize()
         .on_mouse_down(MouseButton::Left, move |event, window, cx| {
             panes

@@ -1,11 +1,12 @@
 //! Compact TPO glyph-run preparation shared by CP and EP.
 
-use gpui::{Bounds, Pixels, TextAlign, Window, hsla, point, px, size};
+use gpui::{Bounds, Hsla, Pixels, TextAlign, Window, point, px, size};
 
 use crate::glyph_cache::GlyphCache;
 use crate::mp_element::PreparedText;
 use crate::mp_layout::{MP_ROW_H, MpStrips, Strip};
 use crate::mp_view::{ETH_PERIOD_COUNT, MpRow, TpoKind, for_each_tpo};
+use crate::theme::Palette;
 
 pub(crate) fn prepare_tpos(
     cache: &mut GlyphCache,
@@ -14,6 +15,7 @@ pub(crate) fn prepare_tpos(
     row: &MpRow,
     cols: MpStrips,
     y: f32,
+    palette: &Palette,
 ) {
     let mut cp_eth = String::new();
     let mut cp_rth = String::new();
@@ -43,7 +45,7 @@ pub(crate) fn prepare_tpos(
         cols.cp,
         y,
         cp_font,
-        eth_color(),
+        palette.eth_tpo,
     );
     prepare_line(
         cache,
@@ -53,7 +55,7 @@ pub(crate) fn prepare_tpos(
         cols.cp,
         y,
         cp_font,
-        rth_color(),
+        palette.rth_tpo,
     );
     prepare_line(
         cache,
@@ -63,7 +65,7 @@ pub(crate) fn prepare_tpos(
         cols.ep,
         y,
         ep_font,
-        eth_color(),
+        palette.eth_tpo,
     );
     prepare_line(
         cache,
@@ -73,7 +75,7 @@ pub(crate) fn prepare_tpos(
         cols.ep,
         y,
         ep_font,
-        rth_color(),
+        palette.rth_tpo,
     );
 }
 
@@ -86,7 +88,7 @@ fn prepare_line(
     strip: Strip,
     y: f32,
     font_size: Pixels,
-    color: gpui::Hsla,
+    color: Hsla,
 ) {
     if text.trim().is_empty() {
         return;
@@ -103,12 +105,4 @@ fn prepare_line(
             size(px(strip.w), px(MP_ROW_H)),
         ),
     });
-}
-
-fn eth_color() -> gpui::Hsla {
-    hsla(0.58, 0.10, 0.64, 1.0)
-}
-
-fn rth_color() -> gpui::Hsla {
-    hsla(0.10, 0.58, 0.68, 1.0)
 }

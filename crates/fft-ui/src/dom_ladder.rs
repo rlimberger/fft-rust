@@ -8,8 +8,7 @@ use std::sync::Arc;
 use fft_engine::RenderSnapshot;
 use gpui::{
     App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement, LayoutId,
-    Pixels, Point, ShapedLine, Style, TextAlign, Window, fill, hsla, point, px, relative, rgb,
-    size,
+    Pixels, Point, ShapedLine, Style, TextAlign, Window, fill, point, px, relative, size,
 };
 
 use crate::dom_view::{AggregatedDom, DomView, DomViewRow};
@@ -18,20 +17,14 @@ use crate::layout::{
     COL_LABELS, HEADER_H, ROW_H, column_rects, depth_block_width, format_price, format_size,
     is_inside_market, max_visible_rows, row_top_y,
 };
-
-const BG: u32 = 0x101010;
-const HEADER_BG: u32 = 0x1a1a1a;
-const INSIDE_BG: u32 = 0x243040;
-const BID_DEPTH: u32 = 0x1a3a6e;
-const ASK_DEPTH: u32 = 0x8b1a1a;
-const VOL_BAR: u32 = 0x3a3a3a;
-const GRID: u32 = 0x222222;
+use crate::theme::Palette;
 
 /// Single-element DOM ladder driven by one coherent [`RenderSnapshot`].
 pub struct DomLadder {
     snapshot: Arc<RenderSnapshot>,
     view: DomView,
     glyph_cache: Rc<RefCell<GlyphCache>>,
+    palette: Rc<Palette>,
 }
 
 impl DomLadder {
@@ -39,11 +32,13 @@ impl DomLadder {
         snapshot: Arc<RenderSnapshot>,
         view: DomView,
         glyph_cache: Rc<RefCell<GlyphCache>>,
+        palette: Rc<Palette>,
     ) -> Self {
         Self {
             snapshot,
             view,
             glyph_cache,
+            palette,
         }
     }
 }
@@ -68,14 +63,6 @@ pub struct Prepaint {
     texts: Vec<PreparedText>,
     dom: AggregatedDom,
     row_range: Range<usize>,
-}
-
-fn text_color() -> gpui::Hsla {
-    hsla(0.0, 0.0, 0.85, 1.0)
-}
-
-fn muted_color() -> gpui::Hsla {
-    hsla(0.0, 0.0, 0.55, 1.0)
 }
 
 fn max_side_sizes(rows: &[DomViewRow]) -> (u64, u64, u64) {
@@ -136,9 +123,11 @@ impl Element for DomLadder {
         let row_range = self.view.window_range(&dom, max_rows);
         let mut texts = Vec::with_capacity(6 + row_range.len() * 6);
         let mut glyph_cache = self.glyph_cache.borrow_mut();
+        let text = self.palette.text;
+        let subtext = self.palette.subtext;
 
         for (i, label) in COL_LABELS.iter().enumerate() {
-            let line = glyph_cache.get_or_shape(window, *label, muted_color(), font_size);
+            let line = glyph_cache.get_or_shape(window, *label, subtext, font_size);
             let col = cols[i];
             texts.push(PreparedText {
                 line,
@@ -160,12 +149,12 @@ impl Element for DomLadder {
                 (4, format_size(row.ca), TextAlign::Right),
                 (5, format_size(row.ask_size), TextAlign::Left),
             ];
-            for (ci, text, align) in cells {
-                if text.is_empty() {
+            for (ci, cell_text, align) in cells {
+                if cell_text.is_empty() {
                     continue;
                 }
                 let col = cols[ci];
-                let line = glyph_cache.get_or_shape(window, text, text_color(), font_size);
+                let line = glyph_cache.get_or_shape(window, cell_text, text, font_size);
                 texts.push(PreparedText {
                     line,
                     origin: point(px(col.x + 4.0), px(y)),
@@ -193,10 +182,11 @@ impl Element for DomLadder {
         window: &mut Window,
         cx: &mut App,
     ) {
-        window.paint_quad(fill(bounds, rgb(BG)));
+        let palette = &*self.palette;
+        window.paint_quad(fill(bounds, palette.base));
 
         let header = Bounds::new(bounds.origin, size(bounds.size.width, px(HEADER_H)));
-        window.paint_quad(fill(header, rgb(HEADER_BG)));
+        window.paint_quad(fill(header, palette.mantle));
 
         let dom = &prepaint.dom;
         let origin_x = f32::from(bounds.origin.x);
@@ -215,7 +205,7 @@ impl Element for DomLadder {
                 size(bounds.size.width, px(ROW_H)),
             );
             if is_inside_market(row.price.0, best_bid, best_ask) {
-                window.paint_quad(fill(row_bounds, rgb(INSIDE_BG)));
+                window.paint_quad(fill(row_bounds, palette.inside_band));
             }
 
             let vol_w = depth_block_width(row.session_volume, max_vol, cols[1].w - 8.0);
@@ -225,7 +215,7 @@ impl Element for DomLadder {
                         point(px(cols[1].x + 4.0), px(y + 3.0)),
                         size(px(vol_w), px(ROW_H - 6.0)),
                     ),
-                    rgb(VOL_BAR),
+                    palette.pv_bar,
                 ));
             }
 
@@ -236,7 +226,7 @@ impl Element for DomLadder {
                         point(px(cols[2].x + cols[2].w - bid_w - 2.0), px(y + 1.0)),
                         size(px(bid_w), px(ROW_H - 2.0)),
                     ),
-                    rgb(BID_DEPTH),
+                    palette.bid_depth,
                 ));
             }
 
@@ -247,7 +237,7 @@ impl Element for DomLadder {
                         point(px(cols[5].x + 2.0), px(y + 1.0)),
                         size(px(ask_w), px(ROW_H - 2.0)),
                     ),
-                    rgb(ASK_DEPTH),
+                    palette.ask_depth,
                 ));
             }
 
@@ -256,7 +246,7 @@ impl Element for DomLadder {
                     point(bounds.origin.x, px(y + ROW_H - 1.0)),
                     size(bounds.size.width, px(1.0)),
                 ),
-                rgb(GRID),
+                palette.divider,
             ));
         }
 
@@ -266,7 +256,7 @@ impl Element for DomLadder {
                     point(px(col.x), bounds.origin.y),
                     size(px(1.0), bounds.size.height),
                 ),
-                rgb(GRID),
+                palette.divider,
             ));
         }
 
