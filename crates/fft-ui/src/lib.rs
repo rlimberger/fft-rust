@@ -5,5 +5,7 @@ pub mod dom_input;
 pub mod dom_ladder;
 pub mod dom_view;
 pub mod frame_stats;
+pub mod gate_report;
 pub mod glyph_cache;
+pub mod harness;
 pub mod layout;

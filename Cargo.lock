@@ -1912,6 +1912,8 @@ dependencies = [
  "fft-engine",
  "gpui",
  "gpui_platform",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -2,20 +2,23 @@
 //! replay into a Daytradr DOM ladder (`DomLadder` custom Element).
 //!
 //! ```text
-//! fft [--gate <seconds>] [--trace <path>] [--replay <fftlog>]
+//! fft [--gate <seconds>] [--trace <path>] [--replay <fftlog>] [--gate-out <path>]
 //! ```
 //!
 //! Without `--replay`, the M0 blank/dark window + frame harness is unchanged. With
 //! `--replay`, the dedicated engine thread is spawned, `SetSource(Replay)` + `Play` are
 //! sent, and each animation frame loads exactly one `Arc<RenderSnapshot>` from the
-//! latest-value slot (zero `entity.update` calls on the snapshot path).
+//! latest-value slot (zero `entity.update` calls on the snapshot path); after the run the
+//! final snapshot's coverage counters are printed and, with `--gate`, a nonzero dropped
+//! count fails the process (`docs/ENGINE.md` §3).
+//!
+//! `--gate-out` writes the run's self-identifying JSON evidence (git SHA + dirty, replay
+//! path, frame-time distribution, coverage) — on `FAIL` as well as `PASS`.
 //!
 //! Redraw uses GPUI's `request_animation_frame` pattern. Keep the gate window
 //! keyboard-focused: GPUI caps unfocused animation-driven redraw to ~30 fps.
 
 use std::cell::RefCell;
-use std::fs::File;
-use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::rc::Rc;
@@ -29,18 +32,14 @@ use fft_engine::{
 use fft_ui::dom_input::DomInput;
 use fft_ui::dom_ladder::DomLadder;
 use fft_ui::dom_view::DomView;
-use fft_ui::frame_stats::FrameStats;
+use fft_ui::gate_report::{CoverageReport, GateOut, GateReport, GitInfo, RunMeta};
 use fft_ui::glyph_cache::GlyphCache;
+use fft_ui::harness::Harness;
 use fft_ui::layout::{HEADER_H, ROW_H};
 use gpui::{
     App, Bounds, Context, FocusHandle, MouseButton, ScrollDelta, Window, WindowBounds,
     WindowOptions, div, prelude::*, px, rgb, size,
 };
-
-/// Warmup is a time budget, never an event count (doctrine rule 5); the sample floor only
-/// guards the median against a compositor that briefly withholds frame callbacks.
-const WARMUP: Duration = Duration::from_millis(500);
-const MIN_WARMUP_SAMPLES: usize = 8;
 
 struct ReplayResources {
     snapshots: SnapshotSlot,
@@ -218,132 +217,11 @@ impl Render for Shell {
     }
 }
 
-enum Phase {
-    Warmup {
-        started: Instant,
-        gaps: Vec<Duration>,
-    },
-    Measuring {
-        stats: FrameStats,
-        gate_ends: Option<Instant>,
-    },
-}
-
-struct Harness {
-    gate: Option<Duration>,
-    trace: Option<Trace>,
-    last_frame: Option<Instant>,
-    phase: Option<Phase>,
-}
-
-impl Harness {
-    fn new(gate: Option<Duration>, trace: Option<PathBuf>) -> Self {
-        Self {
-            gate,
-            trace: trace.map(Trace::new),
-            last_frame: None,
-            phase: None,
-        }
-    }
-
-    /// Returns `false` once the gate window has elapsed and the redraw loop should stop.
-    fn on_frame(&mut self, now: Instant) -> bool {
-        let gap = self.last_frame.replace(now).map(|last| now - last);
-        let phase = self.phase.get_or_insert(Phase::Warmup {
-            started: now,
-            gaps: Vec::new(),
-        });
-        let Some(gap) = gap else { return true };
-        match phase {
-            Phase::Warmup { started, gaps } => {
-                gaps.push(gap);
-                if now - *started >= WARMUP && gaps.len() >= MIN_WARMUP_SAMPLES {
-                    gaps.sort_unstable();
-                    let refresh_interval = gaps[gaps.len() / 2];
-                    let deadline = refresh_interval * 3 / 2;
-                    eprintln!(
-                        "fft: refresh interval {:.3} ms ({:.1} Hz), deadline {:.3} ms",
-                        refresh_interval.as_secs_f64() * 1e3,
-                        1.0 / refresh_interval.as_secs_f64(),
-                        deadline.as_secs_f64() * 1e3,
-                    );
-                    self.phase = Some(Phase::Measuring {
-                        stats: FrameStats::new(deadline),
-                        gate_ends: self.gate.map(|g| now + g),
-                    });
-                }
-                true
-            }
-            Phase::Measuring { stats, gate_ends } => {
-                stats.record(gap);
-                if let Some(trace) = &mut self.trace {
-                    trace.samples.push(gap.as_nanos());
-                }
-                gate_ends.is_none_or(|ends| now < ends)
-            }
-        }
-    }
-
-    /// Prints the summary; returns the process exit code (nonzero iff gating and any miss).
-    fn finish(&mut self) -> ExitCode {
-        if let Some(trace) = &self.trace {
-            trace.write();
-        }
-        match &self.phase {
-            Some(Phase::Measuring { stats, .. }) if stats.frames() > 0 => {
-                let summary = stats.summary();
-                println!("{summary}");
-                if self.gate.is_some() && summary.missed > 0 {
-                    ExitCode::FAILURE
-                } else {
-                    ExitCode::SUCCESS
-                }
-            }
-            _ => {
-                eprintln!("fft: no frames measured (warmup never completed)");
-                if self.gate.is_some() {
-                    ExitCode::FAILURE
-                } else {
-                    ExitCode::SUCCESS
-                }
-            }
-        }
-    }
-}
-
-struct Trace {
-    path: PathBuf,
-    samples: Vec<u128>,
-}
-
-impl Trace {
-    fn new(path: PathBuf) -> Self {
-        Self {
-            path,
-            samples: Vec::new(),
-        }
-    }
-
-    /// Trace I/O happens only after the window closes; the UI thread records in memory.
-    fn write(&self) {
-        let file = File::create(&self.path).unwrap_or_else(|err| {
-            panic!("fft: cannot open trace file {}: {err}", self.path.display())
-        });
-        let mut writer = BufWriter::new(file);
-        for sample in &self.samples {
-            writeln!(writer, "{sample}")
-                .unwrap_or_else(|err| panic!("fft: trace write failed: {err}"));
-        }
-        writer
-            .flush()
-            .unwrap_or_else(|err| panic!("fft: trace flush failed: {err}"));
-    }
-}
-
 struct Args {
     gate: Option<Duration>,
     trace: Option<PathBuf>,
     replay: Option<PathBuf>,
+    gate_out: Option<PathBuf>,
 }
 
 fn parse_args() -> Args {
@@ -351,6 +229,7 @@ fn parse_args() -> Args {
     let mut gate = None;
     let mut trace = None;
     let mut replay = None;
+    let mut gate_out = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--gate" => {
@@ -377,6 +256,12 @@ fn parse_args() -> Args {
                     .unwrap_or_else(|| usage("--replay requires <fftlog>"));
                 replay = Some(PathBuf::from(path));
             }
+            "--gate-out" => {
+                let path = args
+                    .next()
+                    .unwrap_or_else(|| usage("--gate-out requires <path>"));
+                gate_out = Some(PathBuf::from(path));
+            }
             other => usage(&format!("unknown argument: {other}")),
         }
     }
@@ -384,12 +269,28 @@ fn parse_args() -> Args {
         gate,
         trace,
         replay,
+        gate_out,
     }
 }
 
 fn usage(msg: &str) -> ! {
-    eprintln!("fft: {msg}\nusage: fft [--gate <seconds>] [--trace <path>] [--replay <fftlog>]");
+    eprintln!(
+        "fft: {msg}\nusage: fft [--gate <seconds>] [--trace <path>] [--replay <fftlog>] \
+         [--gate-out <path>]"
+    );
     std::process::exit(2);
+}
+
+/// Self-identifying description of what this run measured.
+fn gate_description(args: &Args) -> String {
+    let window = match args.gate {
+        Some(gate) => format!("fft frame gate — {:.3} s", gate.as_secs_f64()),
+        None => "fft frame harness (ungated)".to_string(),
+    };
+    match &args.replay {
+        Some(path) => format!("{window}, replay {}", path.display()),
+        None => format!("{window}, blank window"),
+    }
 }
 
 fn spawn_replay_engine(path: PathBuf) -> (EngineHandle, SnapshotSlot, Arc<AtomicBool>) {
@@ -416,10 +317,22 @@ fn spawn_replay_engine(path: PathBuf) -> (EngineHandle, SnapshotSlot, Arc<Atomic
 
 fn main() -> ExitCode {
     let args = parse_args();
+    // Provenance and evidence-file writability are established before the window opens: a
+    // 60 s measured run must never be spent to discover the result cannot be recorded.
+    let meta = RunMeta {
+        gate: gate_description(&args),
+        binary: fft_ui::gate_report::command_line(std::env::args()),
+        git: GitInfo::capture(),
+        replay: args.replay.clone(),
+        trace: args.trace.clone(),
+    };
+    let gate_out = args.gate_out.clone().map(GateOut::create);
+
     let harness = Rc::new(RefCell::new(Harness::new(args.gate, args.trace)));
     let app_harness = harness.clone();
     let engine_slot: Rc<RefCell<Option<EngineHandle>>> = Rc::new(RefCell::new(None));
     let engine_for_app = engine_slot.clone();
+    let replaying = args.replay.is_some();
     let replay = args.replay;
 
     gpui_platform::application().run(move |cx: &mut App| {
@@ -451,10 +364,43 @@ fn main() -> ExitCode {
         cx.activate(true);
     });
 
+    // Keep the slot alive across shutdown: the engine may publish once more while draining.
+    let snapshots = engine_slot.borrow().as_ref().map(EngineHandle::snapshots);
     if let Some(handle) = engine_slot.borrow_mut().take() {
         handle
             .shutdown()
             .unwrap_or_else(|err| panic!("fft: engine thread panicked: {err:?}"));
     }
-    harness.borrow_mut().finish()
+
+    let coverage = snapshots.map(|slot| {
+        let counters = slot.load().coverage;
+        CoverageReport::new(
+            counters.events_read,
+            counters.events_applied,
+            counters.gap_records,
+        )
+    });
+    match &coverage {
+        Some(coverage) => println!("fft: {coverage}"),
+        None if replaying => {
+            eprintln!("fft: WARNING replay requested but the engine never started — no coverage");
+        }
+        None => {}
+    }
+
+    let result = harness.borrow_mut().finish();
+    let report = GateReport::new(
+        &meta,
+        fft_ui::gate_report::now_rfc3339_utc(),
+        result,
+        coverage,
+    );
+    if let Some(out) = gate_out {
+        out.write(&report);
+    }
+    if fft_ui::gate_report::gate_failed(harness.borrow().gating(), report.verdict) {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }

@@ -74,7 +74,15 @@ In flight next:
 - **BOOK-FILL-SEMANTICS** (Sol, fft-book): Fill per frozen FFTLOG-V2 §4.
 - **PROFILE-WAVE** (xai-Grok, fft-profile): claims A/B/C fixes + SESSION(6) split +
   snapshot-flag guard, per orchestrator brief.
-- **UI-GATE-EVIDENCE** (Opus subagent, fft-ui): coverage exit line + --gate-out JSON.
+- **UI-GATE-EVIDENCE**: ACCEPTED — coverage exit line + --gate-out JSON evidence
+  (git sha+dirty, refresh/deadline, p50/p95/p99/max, coverage; FAIL on any drop).
+  Two engine-side follow-ups it exposed (orchestrator's crate): (a) an engine-thread
+  panic kills evidence — EngineHandle::shutdown expects on a dead thread before the
+  JSON is written; (b) CoverageCounters unreachable at exit except via last published
+  snapshot — add coverage to EngineExit. Also observed: committed
+  fixtures/fft-log/clean_small.fftlog trips the profile lattice (PROFILE-WAVE item 2
+  territory), and an independently ingested 2026-07-26 log reproduces the Fill panic
+  (BOOK-FILL-SEMANTICS confirmation from a second day's data).
 - Audit spot-checks: claims 1, 7, 8 CONFIRMED (7 approved+documented in PRD, 8 fixed);
   claim 6 plausible (fft-profile wave pending); claim 10 REFUTED with tests.
 
