@@ -224,21 +224,26 @@ pub fn map_mbo(rec: &MboMsg) -> Result<CanonicalEvent, IngestError> {
     })
 }
 
-/// Channel-sequence continuity: per DBN channel, consecutive records must carry the same
-/// sequence (same venue packet) or the successor. Anything else — including a backwards
-/// jump or reset — synthesizes a canonical gap record (`docs/FFTLOG-V2.md` §4).
+/// Channel-sequence accounting per DBN channel (`docs/FFTLOG-V2.md` §4 batch gap policy).
 ///
-/// Records with `sequence == 0` carry no venue sequence and are excluded from gap
-/// accounting entirely. Measured on the sample week: Databento's synthetic week-open
-/// `Clear` records all carry `sequence` 0 while the first sequenced record starts in the
-/// hundreds, so seeding the baseline from 0 would fabricate a gap at every week open.
+/// Batch files are symbol-filtered, so **forward** holes are expected filtering artifacts:
+/// counted on [`seq_holes_ignored`](Self::seq_holes_ignored) and otherwise ignored — no
+/// Gap record, no gap-state poison. A **regression** (`observed < expected`) is a genuine
+/// anomaly and synthesizes a canonical Gap. Same-packet repeats (`seq == last`) and the
+/// immediate successor are continuous.
+///
+/// Records with `sequence == 0` carry no venue sequence and are excluded from accounting
+/// entirely. Measured on the sample week: Databento's synthetic week-open `Clear` records
+/// all carry `sequence` 0 while the first sequenced record starts in the hundreds, so
+/// seeding the baseline from 0 would fabricate a discontinuity at every week open.
 #[derive(Default)]
 pub struct GapDetector {
     last: Vec<(u8, u32)>,
+    seq_holes_ignored: u64,
 }
 
 impl GapDetector {
-    /// Observe a record's channel/sequence; returns the gap event to emit before it, if any.
+    /// Observe a record's channel/sequence; returns a Gap only on sequence regression.
     pub fn observe(&mut self, channel_id: u8, seq: u32, ts: Ts) -> Option<CanonicalEvent> {
         if seq == 0 {
             return None;
@@ -250,11 +255,26 @@ impl GapDetector {
             }
             Some((_, last)) => {
                 let expected = u64::from(*last) + 1;
-                let continuous = seq == *last || u64::from(seq) == expected;
+                let observed = u64::from(seq);
+                if seq == *last || observed == expected {
+                    *last = seq;
+                    return None;
+                }
                 *last = seq;
-                (!continuous).then(|| CanonicalEvent::gap(ts, expected, u64::from(seq)))
+                if observed < expected {
+                    Some(CanonicalEvent::gap(ts, expected, observed))
+                } else {
+                    // Forward jump: filter artifact. Count loudly; do not synthesize Gap.
+                    self.seq_holes_ignored += 1;
+                    None
+                }
             }
         }
+    }
+
+    /// Forward channel-seq holes ignored under the batch gap policy (one per discontinuity).
+    pub fn seq_holes_ignored(&self) -> u64 {
+        self.seq_holes_ignored
     }
 
     /// Channels seen so far.
@@ -263,13 +283,17 @@ impl GapDetector {
     }
 }
 
-/// Streaming DBN-MBO → canonical decoder with gap synthesis. Wraps the `dbn` streaming
-/// decoder, so memory stays constant regardless of file size.
+/// Streaming DBN-MBO → canonical decoder with batch gap policy. Wraps the `dbn`
+/// streaming decoder, so memory stays constant regardless of file size.
 pub struct CanonicalDecoder<R> {
     inner: DbnDecoder<R>,
     gaps: GapDetector,
     pending: Option<DecodedEvent>,
     gap_count: u64,
+    seq_holes_ignored: u64,
+    /// Set when the most recent [`next_event`](Self::next_event) live record revealed a
+    /// forward hole (no Gap emitted). Cleared on Gap delivery and on continuous records.
+    last_forward_hole: bool,
 }
 
 /// Concrete decoder type for `.dbn.zst` files (the batch-download layout on disk).
@@ -287,6 +311,8 @@ impl<R: io::Read> CanonicalDecoder<R> {
             gaps: GapDetector::default(),
             pending: None,
             gap_count: 0,
+            seq_holes_ignored: 0,
+            last_forward_hole: false,
         }
     }
 
@@ -314,11 +340,24 @@ impl<R: io::Read> CanonicalDecoder<R> {
         self.inner.metadata()
     }
 
-    /// Sequence gaps synthesized so far **in this decoder instance** (not cumulative
-    /// across a multi-file stitch that reuses [`GapDetector`] via
+    /// Sequence regressions synthesized so far **in this decoder instance** (not
+    /// cumulative across a multi-file stitch that reuses [`GapDetector`] via
     /// [`set_gap_detector`](Self::set_gap_detector)).
     pub fn gap_count(&self) -> u64 {
         self.gap_count
+    }
+
+    /// Forward holes ignored so far **in this decoder instance** (same scoping as
+    /// [`gap_count`](Self::gap_count)). Prefer [`GapDetector::seq_holes_ignored`] after
+    /// [`into_gap_detector`](Self::into_gap_detector) for stitch-cumulative totals.
+    pub fn seq_holes_ignored(&self) -> u64 {
+        self.seq_holes_ignored
+    }
+
+    /// Whether the just-returned live event revealed a forward hole (batch filter
+    /// artifact). Always `false` for Gap/snapshot deliveries.
+    pub fn last_forward_hole(&self) -> bool {
+        self.last_forward_hole
     }
 
     /// Distinct DBN channel ids seen so far.
@@ -326,10 +365,11 @@ impl<R: io::Read> CanonicalDecoder<R> {
         self.gaps.channels()
     }
 
-    /// Next canonical event, `Ok(None)` at clean end of stream. A sequence discontinuity
+    /// Next canonical event, `Ok(None)` at clean end of stream. A sequence regression
     /// yields the synthesized gap event first, then the record that revealed it.
     pub fn next_event(&mut self) -> Result<Option<DecodedEvent>, IngestError> {
         if let Some(pending) = self.pending.take() {
+            self.last_forward_hole = false;
             return Ok(Some(pending));
         }
         let Some(rec_ref) = self.inner.decode_record_ref()? else {
@@ -350,16 +390,22 @@ impl<R: io::Read> CanonicalDecoder<R> {
         // week: every day file opens with per-instrument Clear + Add snapshot records.
         // They pass through to the caller (flags intact) but never touch gap accounting.
         if mbo.flags.is_snapshot() {
+            self.last_forward_hole = false;
             return Ok(Some(decoded));
         }
+        let holes_before = self.gaps.seq_holes_ignored();
         if let Some(gap) = self.gaps.observe(mbo.channel_id, mbo.sequence, event.ts) {
             self.gap_count += 1;
+            self.last_forward_hole = false;
             self.pending = Some(decoded);
             return Ok(Some(DecodedEvent {
                 instrument_id: 0,
                 event: gap,
             }));
         }
+        let hole = self.gaps.seq_holes_ignored() - holes_before;
+        self.seq_holes_ignored += hole;
+        self.last_forward_hole = hole > 0;
         Ok(Some(decoded))
     }
 }
@@ -465,12 +511,16 @@ mod tests {
         assert_eq!(det.observe(0, 100, ts), None); // first sequenced record: no baseline
         assert_eq!(det.observe(0, 100, ts), None); // same packet
         assert_eq!(det.observe(0, 101, ts), None); // successor
-        let gap = det.observe(0, 107, ts).expect("jump must synthesize a gap");
+        // Forward jump: counted, no Gap.
+        assert_eq!(det.observe(0, 107, ts), None);
+        assert_eq!(det.seq_holes_ignored(), 1);
+        // Regression (observed < expected) synthesizes a Gap.
+        let gap = det
+            .observe(0, 3, ts)
+            .expect("regression must synthesize a gap");
         assert_eq!(gap.kind, EventKind::Gap);
-        assert_eq!(gap.gap_seqs(), (102, 107));
-        // Backwards (reset) is also a discontinuity.
-        let gap = det.observe(0, 3, ts).expect("reset must synthesize a gap");
         assert_eq!(gap.gap_seqs(), (108, 3));
+        assert_eq!(det.seq_holes_ignored(), 1); // regressions do not increment holes
         // Channels are tracked independently.
         assert_eq!(det.observe(1, 500, ts), None);
         assert_eq!(det.observe(0, 4, ts), None);

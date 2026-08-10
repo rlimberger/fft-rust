@@ -22,7 +22,7 @@ use dbn::decode::{DbnMetadata, DecodeRecordRef};
 use dbn::encode::EncodeRecordRef;
 use dbn::encode::dbn::Encoder;
 use fft_core::{EventKind, Ts};
-use fft_ingest::decode::{self, DecodedEvent, IngestError, open_zstd_file};
+use fft_ingest::decode::{self, DecodedEvent, GapDetector, IngestError, open_zstd_file};
 use fft_ingest::session::{TradeDateBucketer, session_open};
 use fft_ingest::write::{parse_write_args, write_fftlog, write_usage};
 use jiff::Timestamp;
@@ -94,12 +94,15 @@ fn cmd_stats(paths: &[String]) -> Result<(), IngestError> {
     let mut stats = Stats::default();
     let mut bucketer = TradeDateBucketer::default();
     let mut symbols = BTreeMap::new();
+    // Shared across ordered inputs — same stitch policy as write_fftlog.
+    let mut gaps = GapDetector::default();
     // (channel, first seq, last seq) per file, for cross-file continuity reporting.
     type SeqBound = (u8, u32, u32);
     let mut file_bounds: Vec<(String, Vec<SeqBound>)> = Vec::new();
 
     for path in paths {
         let mut decoder = open_zstd_file(Path::new(path))?;
+        decoder.set_gap_detector(std::mem::take(&mut gaps));
         let md = decoder.metadata();
         println!(
             "file {path}: dataset {} schema {} dbn-version {} start {} end {}",
@@ -115,6 +118,7 @@ fn cmd_stats(paths: &[String]) -> Result<(), IngestError> {
         let mut file_events = 0u64;
         let mut snapshot_events = 0u64;
         let gaps_before = decoder.gap_count();
+        let holes_before = decoder.seq_holes_ignored();
         let snapshot_flag = u16::from(dbn::flags::SNAPSHOT);
         while let Some(ev) = decoder.next_event()? {
             file_events += 1;
@@ -137,14 +141,17 @@ fn cmd_stats(paths: &[String]) -> Result<(), IngestError> {
             first.0 = *channels.first().unwrap_or(&0);
         }
         println!(
-            "  events {file_events} (snapshot {snapshot_events}, gaps {}) channels {channels:?} live seq {:?}",
+            "  events {file_events} (snapshot {snapshot_events}, gaps {}, \
+             seq_holes_ignored {}) channels {channels:?} live seq {:?}",
             decoder.gap_count() - gaps_before,
+            decoder.seq_holes_ignored() - holes_before,
             bounds
                 .iter()
                 .map(|(ch, a, b)| format!("ch{ch}: {a}..={b}"))
                 .collect::<Vec<_>>(),
         );
         file_bounds.push((path.clone(), bounds));
+        gaps = decoder.into_gap_detector();
     }
 
     for pair in file_bounds.windows(2) {
@@ -154,9 +161,14 @@ fn cmd_stats(paths: &[String]) -> Result<(), IngestError> {
             && *first != *last
             && u64::from(*first) != u64::from(*last) + 1
         {
+            let kind = if u64::from(*first) < u64::from(*last) + 1 {
+                "regression"
+            } else {
+                "forward hole (ignored)"
+            };
             println!(
-                "note: file boundary discontinuity {prev_path} (last seq {last}) -> \
-                 {next_path} (first seq {first}) — files decode with independent gap state"
+                "note: file boundary discontinuity ({kind}) {prev_path} (last seq {last}) -> \
+                 {next_path} (first seq {first})"
             );
         }
     }
@@ -191,8 +203,10 @@ fn cmd_stats(paths: &[String]) -> Result<(), IngestError> {
     }
 
     println!(
-        "\ntotal events {}  sequence gaps {}",
-        stats.total, stats.gap_count
+        "\ntotal events {}  sequence gaps {}  seq_holes_ignored {}",
+        stats.total,
+        stats.gap_count,
+        gaps.seq_holes_ignored()
     );
     Ok(())
 }
@@ -236,17 +250,24 @@ fn cmd_write(args: &[String]) -> Result<(), IngestError> {
     let config = parse_write_args(args)?;
     let stats = write_fftlog(&config)?;
     println!(
-        "wrote {} events ({} frames, {} snapshots kept, {} snapshots dropped, {} gaps) -> {} \
-         instrument_id {} trade_date {}",
+        "wrote {} events ({} frames, {} snapshots kept, {} snapshots dropped, {} gaps, \
+         {} seq_holes_ignored) -> {} instrument_id {} trade_date {}",
         stats.events_written,
         stats.frames,
         stats.snapshots_kept,
         stats.snapshots_dropped,
         stats.gaps_kept,
+        stats.seq_holes_ignored,
         config.output.display(),
         config.instrument_id,
         config.trade_date,
     );
+    if stats.gaps_kept > 0 {
+        eprintln!(
+            "WARNING: gaps_kept {} — sequence regression(s) in batch stream (real anomaly)",
+            stats.gaps_kept
+        );
+    }
     Ok(())
 }
 

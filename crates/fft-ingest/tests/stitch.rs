@@ -112,25 +112,83 @@ fn snap_flag(ev: &fft_core::CanonicalEvent) -> bool {
 }
 
 #[test]
-fn boundary_seq_discontinuity_emits_exactly_one_gap() {
+fn boundary_forward_jump_ignores_hole_no_gap() {
     let a = temp_path("a-jump.dbn.zst");
     let b = temp_path("b-jump.dbn.zst");
     let out = temp_path("jump.fftlog");
     let _ = std::fs::remove_file(&out);
 
-    // File A: 100, 101. File B: 200 — expected next is 102, observed 200.
+    // File A: 100, 101. File B: 200 — expected next is 102, observed 200 (forward hole).
     write_dbn(&a, &[(100, WED_SESSION_TS), (101, WED_SESSION_TS + 1)]);
     write_dbn(&b, &[(200, WED_SESSION_TS + 2)]);
 
     let stats = write_fftlog(&write_cfg(out.clone(), vec![a.clone(), b.clone()])).expect("write");
-    assert_eq!(stats.gaps_kept, 1, "boundary jump must synthesize one Gap");
+    assert_eq!(stats.gaps_kept, 0, "forward jump must not synthesize a Gap");
+    assert_eq!(stats.seq_holes_ignored, 1);
+    assert_eq!(stats.events_written, 3); // 3 Adds, no Gap
+
+    let events = read_events(&out);
+    assert!(events.iter().all(|e| e.kind != EventKind::Gap));
+
+    let _ = std::fs::remove_file(&a);
+    let _ = std::fs::remove_file(&b);
+    let _ = std::fs::remove_file(&out);
+}
+
+#[test]
+fn in_file_regression_synthesizes_gap() {
+    let a = temp_path("a-reg.dbn.zst");
+    let out = temp_path("reg.fftlog");
+    let _ = std::fs::remove_file(&out);
+
+    // 100, 101, then 50 — expected 102, observed 50 (regression).
+    write_dbn(
+        &a,
+        &[
+            (100, WED_SESSION_TS),
+            (101, WED_SESSION_TS + 1),
+            (50, WED_SESSION_TS + 2),
+        ],
+    );
+
+    let stats = write_fftlog(&write_cfg(out.clone(), vec![a.clone()])).expect("write");
+    assert_eq!(stats.gaps_kept, 1);
+    assert_eq!(stats.seq_holes_ignored, 0);
     assert_eq!(stats.events_written, 4); // 3 Adds + 1 Gap
 
     let events = read_events(&out);
     let gaps: Vec<_> = events.iter().filter(|e| e.kind == EventKind::Gap).collect();
     assert_eq!(gaps.len(), 1);
-    assert_eq!(gaps[0].gap_seqs(), (102, 200));
-    // Gap is stamped with the observing record's ts.
+    assert_eq!(gaps[0].gap_seqs(), (102, 50));
+    assert_eq!(gaps[0].ts, Ts(WED_SESSION_TS + 2));
+
+    let _ = std::fs::remove_file(&a);
+    let _ = std::fs::remove_file(&out);
+}
+
+#[test]
+fn boundary_regression_synthesizes_gap() {
+    let a = temp_path("a-breg.dbn.zst");
+    let b = temp_path("b-breg.dbn.zst");
+    let out = temp_path("breg.fftlog");
+    let _ = std::fs::remove_file(&out);
+
+    // File A ends at 101; File B opens at 50 — shared detector must catch the regression.
+    write_dbn(&a, &[(100, WED_SESSION_TS), (101, WED_SESSION_TS + 1)]);
+    write_dbn(&b, &[(50, WED_SESSION_TS + 2)]);
+
+    let stats = write_fftlog(&write_cfg(out.clone(), vec![a.clone(), b.clone()])).expect("write");
+    assert_eq!(
+        stats.gaps_kept, 1,
+        "boundary regression must synthesize one Gap"
+    );
+    assert_eq!(stats.seq_holes_ignored, 0);
+    assert_eq!(stats.events_written, 4); // 3 Adds + 1 Gap
+
+    let events = read_events(&out);
+    let gaps: Vec<_> = events.iter().filter(|e| e.kind == EventKind::Gap).collect();
+    assert_eq!(gaps.len(), 1);
+    assert_eq!(gaps[0].gap_seqs(), (102, 50));
     assert_eq!(gaps[0].ts, Ts(WED_SESSION_TS + 2));
 
     let _ = std::fs::remove_file(&a);
@@ -150,6 +208,7 @@ fn contiguous_inputs_emit_zero_gaps() {
 
     let stats = write_fftlog(&write_cfg(out.clone(), vec![a.clone(), b.clone()])).expect("write");
     assert_eq!(stats.gaps_kept, 0);
+    assert_eq!(stats.seq_holes_ignored, 0);
     assert_eq!(stats.events_written, 4);
 
     let events = read_events(&out);
@@ -161,7 +220,7 @@ fn contiguous_inputs_emit_zero_gaps() {
 }
 
 /// Gap ts is the observing record's ts; the shared bucketer assigns trade dates the
-/// same way for Gaps as for live events. A discontinuity revealed by a post-open
+/// same way for Gaps as for live events. A regression revealed by a post-open
 /// record buckets to Wed; one revealed pre-open does not for a Wed write target.
 #[test]
 fn gap_buckets_by_observing_ts_across_session_open() {
@@ -170,7 +229,7 @@ fn gap_buckets_by_observing_ts_across_session_open() {
     assert_eq!(trade_date(Ts(open)), date(2026, 7, 29));
 
     // Shared bucketer (same type as write_fftlog) across a synthetic two-file stitch:
-    // last live on Mon, first live on Wed with a seq jump → Gap stamped at Wed ts.
+    // last live on Mon, first live on Wed with a seq regression → Gap stamped at Wed ts.
     let mut bucketer = TradeDateBucketer::default();
     let mon_ts = Ts(open - 1);
     let wed_ts = Ts(open + 1);
@@ -183,20 +242,21 @@ fn gap_buckets_by_observing_ts_across_session_open() {
     let _ = std::fs::remove_file(&out);
 
     write_dbn(&a, &[(50, open - 1)]);
-    write_dbn(&b, &[(60, open + 1)]); // jump 50 → 60, expected 51
+    write_dbn(&b, &[(40, open + 1)]); // regression 50 → 40, expected 51
 
     // Target Wed: Mon live event dropped; Gap (ts=open+1) and Wed Add kept.
     let stats = write_fftlog(&write_cfg(out.clone(), vec![a.clone(), b.clone()])).expect("write");
     assert_eq!(stats.gaps_kept, 1);
+    assert_eq!(stats.seq_holes_ignored, 0);
     assert_eq!(stats.events_written, 2); // Gap + Add
 
     let events = read_events(&out);
     assert_eq!(events.len(), 2);
     assert_eq!(events[0].kind, EventKind::Gap);
-    assert_eq!(events[0].gap_seqs(), (51, 60));
+    assert_eq!(events[0].gap_seqs(), (51, 40));
     assert_eq!(events[0].ts, Ts(open + 1));
     assert_eq!(events[1].kind, EventKind::Add);
-    assert_eq!(events[1].seq.0, 60);
+    assert_eq!(events[1].seq.0, 40);
 
     let _ = std::fs::remove_file(&a);
     let _ = std::fs::remove_file(&b);
@@ -205,8 +265,8 @@ fn gap_buckets_by_observing_ts_across_session_open() {
 
 /// §4 snapshot admission: keep a file's SNAPSHOT block iff its first non-snapshot
 /// event buckets to the target trade date. Stale prior-day block is dropped; the
-/// admitted block is kept; boundary gap from live seq continuity still fires; snapshot
-/// seqs never synthesize phantom Gaps.
+/// admitted block is kept; live forward holes are ignored (not Gaps); snapshot seqs
+/// never synthesize phantom Gaps.
 #[test]
 fn snapshot_admission_keeps_target_day_block_drops_stale() {
     let open = session_open(date(2026, 7, 29)).0;
@@ -229,7 +289,7 @@ fn snapshot_admission_keeps_target_day_block_drops_stale() {
             mbo_live(100, mon_live_ts),
         ],
     );
-    // File B (target day): 3 snapshots + Wed live with a real channel jump from 100 → 200.
+    // File B (target day): 3 snapshots + Wed live with a forward channel hole 100 → 200.
     write_dbn_records(
         &b,
         &[
@@ -250,29 +310,24 @@ fn snapshot_admission_keeps_target_day_block_drops_stale() {
         "file B snapshot block must be admitted"
     );
     assert_eq!(
-        stats.gaps_kept, 1,
-        "live boundary discontinuity still emits one Gap"
+        stats.gaps_kept, 0,
+        "forward live hole must not synthesize a Gap"
     );
-    // 3 snaps (B) + 1 Gap + 1 Wed live (Mon live dropped by trade-date filter).
-    assert_eq!(stats.events_written, 5);
+    assert_eq!(
+        stats.seq_holes_ignored, 1,
+        "live 100→200 is one ignored hole"
+    );
+    // 3 snaps (B) + 1 Wed live (Mon live dropped by trade-date filter); no Gap.
+    assert_eq!(stats.events_written, 4);
 
     let events = read_events(&out);
     let snaps: Vec<_> = events.iter().filter(|e| snap_flag(e)).collect();
     assert_eq!(snaps.len(), 3);
     assert!(snaps.iter().all(|e| e.seq.0 == 99_999 || e.seq.0 == 7));
 
-    let gaps: Vec<_> = events.iter().filter(|e| e.kind == EventKind::Gap).collect();
-    assert_eq!(gaps.len(), 1);
-    assert_eq!(
-        gaps[0].gap_seqs(),
-        (101, 200),
-        "gap must be live-channel 100→200, not a phantom from snapshot seqs"
-    );
-
-    // No extra gaps from snapshot seq discontinuities.
-    assert_eq!(
-        events.iter().filter(|e| e.kind == EventKind::Gap).count(),
-        1
+    assert!(
+        events.iter().all(|e| e.kind != EventKind::Gap),
+        "no Gaps from snapshot seqs or forward live holes"
     );
 
     let _ = std::fs::remove_file(&a);

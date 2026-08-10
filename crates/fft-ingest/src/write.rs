@@ -50,12 +50,15 @@ pub struct WriteConfig {
 pub struct WriteStats {
     pub events_written: u64,
     pub frames: u64,
+    /// Sequence-regression Gaps kept after trade-date filter. Nonzero is a real anomaly.
     pub gaps_kept: u64,
     pub snapshots_kept: u64,
     /// SNAPSHOT-flagged records for the instrument that were dropped because the file's
     /// first non-snapshot event did not bucket to the target trade date
     /// (`docs/FFTLOG-V2.md` §4 snapshot admission).
     pub snapshots_dropped: u64,
+    /// Forward channel-seq holes ignored under the batch gap policy (filter artifacts).
+    pub seq_holes_ignored: u64,
 }
 
 /// Resolve `instrument_id` → raw symbol from DBN metadata mappings.
@@ -160,11 +163,16 @@ impl FileAdmission {
 
 /// Consume one decoded event under §4 admission + live trade-date filter. Calls `out`
 /// for each event that should be written.
+///
+/// `forward_hole` is true when this live event revealed a forward channel-seq hole
+/// (batch filter artifact). Counted on `seq_holes_ignored` when the observing ts buckets
+/// to the target trade date — same keep rule Gaps used under the prior policy.
 fn admit_event(
     ev: DecodedEvent,
     admission: &mut FileAdmission,
     bucketer: &mut TradeDateBucketer,
     stats: &mut WriteStats,
+    forward_hole: bool,
     out: &mut impl FnMut(DecodedEvent),
 ) {
     // Gap ⇒ decoder already observed a non-snapshot; decide from the gap's ts (the
@@ -196,6 +204,12 @@ fn admit_event(
             }
         }
         return;
+    }
+
+    // Forward hole accounting uses observing-ts trade-date (channel-wide), matching
+    // prior gaps_kept scoping — not the instrument keep filter.
+    if forward_hole && bucketer.bucket(ev.event.ts) == admission.trade_date {
+        stats.seq_holes_ignored += 1;
     }
 
     // First non-snapshot live record in this file establishes snapshot admission.
@@ -261,6 +275,7 @@ pub fn write_fftlog(config: &WriteConfig) -> Result<WriteStats, IngestError> {
         gaps_kept: 0,
         snapshots_kept: 0,
         snapshots_dropped: 0,
+        seq_holes_ignored: 0,
     };
 
     for path in &config.inputs {
@@ -268,9 +283,17 @@ pub fn write_fftlog(config: &WriteConfig) -> Result<WriteStats, IngestError> {
         decoder.set_gap_detector(std::mem::take(&mut gaps));
         let mut admission = FileAdmission::new(config.instrument_id, config.trade_date);
         while let Some(ev) = decoder.next_event()? {
-            admit_event(ev, &mut admission, &mut bucketer, &mut stats, &mut |kept| {
-                batch.push(kept.event);
-            });
+            let forward_hole = decoder.last_forward_hole();
+            admit_event(
+                ev,
+                &mut admission,
+                &mut bucketer,
+                &mut stats,
+                forward_hole,
+                &mut |kept| {
+                    batch.push(kept.event);
+                },
+            );
             while batch.len() >= config.batch_size {
                 let frame: Vec<CanonicalEvent> = batch.drain(..config.batch_size).collect();
                 writer.append_events(&frame)?;
@@ -476,12 +499,21 @@ pub fn decode_filtered(
         gaps_kept: 0,
         snapshots_kept: 0,
         snapshots_dropped: 0,
+        seq_holes_ignored: 0,
     };
     let mut out = Vec::new();
     while let Some(ev) = decoder.next_event()? {
-        admit_event(ev, &mut admission, &mut bucketer, &mut stats, &mut |kept| {
-            out.push(kept);
-        });
+        let forward_hole = decoder.last_forward_hole();
+        admit_event(
+            ev,
+            &mut admission,
+            &mut bucketer,
+            &mut stats,
+            forward_hole,
+            &mut |kept| {
+                out.push(kept);
+            },
+        );
     }
     admission.finish(&mut stats);
     Ok(out)
