@@ -135,6 +135,11 @@ fn clean_close_refresh_sees_full_footer_index() {
     assert!(!r.live, "LIVE must be cleared after clean close");
     assert_eq!(r.new_frames, 0);
     assert!(!reader.is_live());
+    // was_live is sticky to open time; is_live tracks the current header flag.
+    assert!(
+        reader.was_live(),
+        "was_live must remain true after clean-close refresh"
+    );
     assert_eq!(reader.frame_count(), 3);
 
     // Re-open path would report Footer; refresh on the live handle must match.
@@ -149,4 +154,38 @@ fn clean_close_refresh_sees_full_footer_index() {
         .unwrap();
     let expected: Vec<_> = batches.into_iter().flatten().collect();
     assert_eq!(events, expected);
+}
+
+/// `was_live()` is the open-time LIVE flag; `is_live()` tracks the current header.
+/// After opening a LIVE file and refreshing past a clean close they diverge.
+#[test]
+fn was_live_sticky_is_live_tracks_refresh() {
+    let tmp = temp_path("live-was-sticky");
+    let batch = mono_events(10, 1_000, 1);
+
+    let mut w = LogWriter::create(tmp.path(), &es_meta()).unwrap();
+    w.append_events(&batch).unwrap();
+
+    let (mut reader, report) = LogReader::open(tmp.path()).unwrap();
+    assert_eq!(report.index_source, IndexSource::LiveRecovery);
+    assert!(reader.was_live(), "opened while LIVE");
+    assert!(reader.is_live(), "still LIVE before close");
+
+    w.close().unwrap();
+    let r = reader.refresh().unwrap();
+    assert!(!r.live);
+    assert!(
+        reader.was_live(),
+        "was_live stays true — open-time observation"
+    );
+    assert!(
+        !reader.is_live(),
+        "is_live follows the cleared header after refresh"
+    );
+    assert_eq!(reader.frame_count(), 1);
+
+    // A fresh open of the closed file sees was_live == false.
+    let (closed, _) = LogReader::open(tmp.path()).unwrap();
+    assert!(!closed.was_live());
+    assert!(!closed.is_live());
 }

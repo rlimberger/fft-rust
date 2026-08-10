@@ -19,4 +19,24 @@ jobs:
       - name: Preflight — governor, isolation, display, thermal (docs/PERF-RUNNER.md)
         run: ./perf-runner/provision.sh preflight
       - name: M0 frame gate — 60 s, zero missed deadlines
-        run: ./target/release/fft --gate 60
+        id: gate
+        run: |
+          set -euo pipefail
+          DATE=$(date -u +%Y-%m-%d)
+          # Match existing M0 artifact style: perf-runner/results/<date>-m0-frame-gate.json
+          OUT="perf-runner/results/${DATE}-m0-frame-gate.json"
+          mkdir -p perf-runner/results
+          echo "GATE_OUT=${OUT}" >> "${GITHUB_ENV}"
+          echo "Writing gate evidence to ${OUT}"
+          # --gate-out writes evidence on both PASS and FAIL so the upload step
+          # always has a self-identifying JSON result (git SHA + dirty + counters).
+          ./target/release/fft --gate 60 --gate-out "${OUT}"
+      - name: Upload gate evidence
+        # Evidence of failure is still evidence — upload even when the gate step fails.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m0-frame-gate-evidence
+          path: ${{ env.GATE_OUT }}
+          if-no-files-found: warn
+          retention-days: 90
