@@ -86,6 +86,8 @@ pub struct ProfileSessionRender {
     pub trade_date: u32,
     /// Traded price rows in ascending order.
     pub rows: Vec<ProfilePriceRow>,
+    /// First print of the session (the MP session-open hairline).
+    pub open: Option<Price>,
     /// Volume point of control.
     pub vpoc: Option<Price>,
     /// Value-area high.
@@ -295,6 +297,7 @@ fn build_profiles(profiles: &MultiProfile) -> ProfileRenderState {
             ProfileSessionRender {
                 trade_date: session.trade_date(),
                 rows,
+                open: session.open_price(),
                 vpoc: session.vpoc(),
                 vah,
                 val,

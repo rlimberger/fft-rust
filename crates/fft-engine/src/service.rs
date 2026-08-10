@@ -404,17 +404,18 @@ impl Runtime {
                 )?
                 .expect("peeked replay event disappeared");
             self.coverage.events_applied += 1;
+            // Snapshot records carry original order-entry seqs (FFTLOG-V2 §4) — non-channel
+            // and freely regressing — so they retain the prior watermark, exactly like
+            // seq-0 records; neither advances nor consumes sequence accounting.
+            if event.seq.0 != 0 && !event.is_snapshot() {
+                self.watermarks.apply_forward(u64::from(event.seq.0));
+            }
             if event.kind == EventKind::Gap {
                 self.coverage.gap_records += 1;
+                // Gap re-anchors sequence accounting (FFTLOG-V2 §4): the post-gap
+                // channel seq may be below the pre-gap watermark, same as Book::do_gap.
+                self.watermarks.gap();
             }
-            // Snapshot records carry original order-entry seqs (FFTLOG-V2 §4) — non-channel
-            // and freely regressing, so they retain the prior watermark like seq 0 does.
-            let seq = if event.seq.0 == 0 || event.is_snapshot() {
-                self.watermarks.applied_seq
-            } else {
-                u64::from(event.seq.0)
-            };
-            self.watermarks.apply_forward(seq);
             self.applied_ts = event.ts.0;
             applied = true;
         }
