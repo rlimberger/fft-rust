@@ -32,11 +32,16 @@ Linux/Wayland first. No order entry.
 
 - The main session **orchestrates**; work fans out to parallel subagents with **surgically
   precise briefs** (exact paths, interfaces, output format, explicit non-goals).
-- **External CLI workers launch through the `grok` CLI with the model pinned** (standing
-  order, René 2026-08-10; routing update same day): `grok -m <model> --effort high …`.
-  Available routes: `grok-4.5` (default), `ocx-gpt-5-6-sol`, `ocx-xai-grok-4-5`,
-  `ocx-cursor-grok-4-5-fast`, `ocx-anthropic-claude-{fable,opus}-5`. Never launch a
-  worker on a default/auto model; `cursor-agent` is retired.
+- **Orchestration topology (René 2026-08-10, supersedes the CLI-relay model):** one
+  opencodex/grok session hosts the orchestrator — Claude Fable 5
+  (`ocx-anthropic-claude-fable-5`) — which fans **all** implementation work out to
+  in-session subagents pinned to `ocx-xai-grok-4-5` and `ocx-cursor-grok-4-5-fast`, as
+  many in parallel as the work decomposes into. No external CLI workers, no human
+  relay: briefs, work, and reports stay inside the one session. Models are always
+  pinned explicitly — never default/auto. The orchestrator writes crate code only in
+  its own track; otherwise it briefs (exact paths, interfaces, output format, explicit
+  non-goals), reviews every diff, authors quality-critical artifacts, and
+  commits+pushes accepted work.
 - Quality-critical artifacts (docs, architecture, synthesis) are authored by the
   orchestrator, not pasted from a subagent.
 - Don't rush. When genuinely stuck or facing a product decision, **ask René** — don't guess.

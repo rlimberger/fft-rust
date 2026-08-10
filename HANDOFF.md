@@ -2,12 +2,46 @@
 
 ## Binding
 
-Latest user directive (2026-08-10, René): **Fable 5 orchestrates** (this session); workers
-are Codex `gpt-5.6-sol` (Opus-tier tasks) and Grok 4.5 (workhorse tasks), each in its own
-session, René relaying briefs/reports. The orchestrator gives path-bounded briefs and
-reviews every diff and gate before acceptance. Standing order (René 2026-08-10):
-commit + push accepted work without asking — scoped commits per track, review first.
-Recenter key `c` confirmed by René.
+**Topology (René 2026-08-10 night, supersedes everything below it):** the orchestrator is
+Claude Fable 5 running inside one opencodex/grok session (`ocx-anthropic-claude-fable-5`);
+ALL implementation work fans out to in-session subagents pinned to `ocx-xai-grok-4-5` and
+`ocx-cursor-grok-4-5-fast` — as many in parallel as the work decomposes into. No external
+CLI workers, no human relay. Full rule in AGENTS.md "Process rules". Standing orders that
+carry over: commit + push accepted work without asking (scoped commits per track, review
+first); recenter key `c`; models always pinned, never default/auto.
+
+## Wave 4 board (2026-08-10 night — READ THIS FIRST, next orchestrator)
+
+State at session close:
+- **ENGINE-DEFECT-WAVE landed** (`663a1cc`): snapshot-flagged records exempt from ALL
+  seq accounting (`CanonicalEvent::is_snapshot()` in fft-core, wired through fft-replay
+  cursor + fft-engine watermarks — this was the panic waiting ~2 h into any GUI replay);
+  reset_pacing fails loudly; EngineExit carries CoverageCounters; an engine panic can no
+  longer destroy gate evidence (JSON written first, verdict FAIL + note, then FAILURE
+  exit); Seek on a checkpoint-less log panics with the fft-checkpoint remediation.
+- **GPUI-THROTTLE-OPT-OUT staged, validation PENDING.** The m4 466-miss FAIL was GPUI's
+  unfocused ~30 fps throttle (FRAME-STALL-DIAGNOSIS). Patch: shallow clone of the pinned
+  zed rev at `~/Projects/zed-fft`, commit `34ba175` adds a `GPUI_DISABLE_INACTIVE_THROTTLE=1`
+  opt-out in gpui window.rs; workspace Cargo.toml `[patch]` redirects gpui/gpui_platform
+  to that clone (machine-local, INTERIM — permanent fix is pushing the patch branch to a
+  GitHub fork and repointing, needs René's `gh repo fork`); fft main.rs sets the env var
+  unconditionally. Release build + workspace clippy green against the patch.
+  **VALIDATED (unfocused 60 s run, evidence
+  `perf-runner/results/2026-08-10-m4-two-pane-gate-optout.json`): missed 466 → 1,
+  frames 2927 → 3600** (full vsync delivery unfocused), p50 16.777 ms, p99 17.302 ms,
+  coverage 4823/4823 dropped=0. Verdict is FAIL on the letter of the gate: **one** 32.3 ms
+  spike in 3600 frames. FIRST ACTION next session: rerun with `--trace`, localize that
+  single spike (candidates: glyph-cache generation sweep, engine publish stall, compositor
+  jitter), fix or formally attribute it — a missed deadline is a bug, not a tuning issue.
+  Also fill the evidence JSON's null `gpui_rev`/`manifest`/`conditions` fields (schema
+  exists, values unplumbed).
+- Owed follow-ups: (a) `ProfileSessionRender` session open-price field (fft-engine) →
+  unblocks the MP session-open hairline (fft-ui); (b) `civil_from_days` in mp_view.rs
+  duplicates jiff — fold; (c) the adversarial audit's assert-hunt dimension never ran
+  (4 agents died on session limits) — rerun it; remaining audit findings triaged into
+  ENGINE-DEFECT-WAVE already. (d) The untracked 0-byte
+  `perf-runner/results/2026-08-10-m3-frame-gate.json` is a corpse from the pre-fix
+  evidence-death hole — delete it and rerun the m3 gate for real evidence.
 
 ## Evening wave 2 (2026-08-10, orchestrator review — read this first)
 
