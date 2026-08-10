@@ -10,7 +10,55 @@ CLI workers, no human relay. Full rule in AGENTS.md "Process rules". Standing or
 carry over: commit + push accepted work without asking (scoped commits per track, review
 first); recenter key `c`; models always pinned, never default/auto.
 
-## Wave 4 board (2026-08-10 night — READ THIS FIRST, next orchestrator)
+## Wave 5 board (2026-08-10 late night — READ THIS FIRST, next orchestrator)
+
+State at session close (all listed work committed + pushed; workspace fmt/clippy/test green):
+- **M3 + M4 frame gates PASS with real evidence.**
+  `perf-runner/results/2026-08-10-m3-frame-gate.json` (single-pane gate file the board
+  owed): frames 3600/3600, missed 0, p50 16.777, p99 17.302, max 17.129 ms, coverage
+  4823/4823 dropped=0, verdict PASS. `2026-08-10-m4-two-pane-gate-trace.json`: 3600/3600,
+  missed 0, max 17.172 ms, PASS. Both at 60 Hz DP-2, unfocused with the throttle opt-out.
+- **The 32.3 ms spike: formally attributed to host jitter, app paint unindicted.**
+  Method: `--trace` reruns under three load conditions plus a blank-window control.
+  (1) Under concurrent cargo builds: 13–17 misses, all ~33.3 ms (2 refresh intervals).
+  (2) **Blank window, zero content, same box: 5 misses, identical ~33.3 ms signature**
+  (`2026-08-10-blank-window-control.json` + traces in /tmp, volatile). (3) Quiet box
+  (no builds): **0 misses × 3 consecutive 60 s runs**, max 17.2 ms — 7.8 ms of headroom.
+  The spike is compositor/scheduler jitter on the shared desk box, load-correlated,
+  content-independent. The real fix is the isolated `fft-perf` runner box
+  (PERF-RUNNER.md pinned config, core isolation) — still unprovisioned; on this shared
+  box a gate run is only valid on an otherwise-idle machine. One 6.9 s frame outage was
+  observed while two subagent build jobs saturated the box — same attribution.
+- **EVIDENCE-META landed** (`92adcc2`): evidence JSON now always carries `gpui_rev`
+  (parsed from Cargo.lock at build time, loud build failure if absent); new
+  `--manifest <path>` (existence-validated before the window opens) and
+  `--conditions <text>` flags recorded verbatim, null when unsupplied.
+- **MP session-open hairline landed** (`f2b1f16` engine, `da0945a` ui):
+  `ProfileSessionRender.open` from `Session::open_price()`; painted first among the
+  semantic lines, palette role `session_open` = Catppuccin Lavender @ 0.40 alpha both
+  palettes. `civil_from_days` dedupe (owed item b) done in the same track.
+- **ASSERT-HUNT sweep completed** (read-only audit vs FFTLOG-V2 §4; full report in the
+  session transcript). Finding 1 **fixed** (`f2b1f16`): engine watermark now re-anchors
+  on Gap (one-shot, mirrors `Book::do_gap`; post-gap seq below the watermark was a
+  guaranteed panic on any gap-bearing log — latent for M6 live). Prior claims
+  re-verified as mitigated: profile lattice admission, backward-ts periods, profile
+  snapshot-gate (+ book-first apply ordering confirmed at fft-replay source.rs:282).
+  **Open REACHABLE findings, triaged for the next wave (not fixed, other crates):**
+  (a) fft-book `check_invariants` (query.rs:320) asserts `bb < ba` — a locked book
+  (bb == ba) panics on Seek/restore; §4 freezes nothing about locks. Needs a René
+  ruling: legalize lock, forbid only cross. (b) book.rs Cancel/Modify hard-assert
+  size/price agreement on *known* ids after a true Gap — post-gap desync panics
+  instead of gap-state accounting (§4: classification across a gap reads
+  unavailable). (c) profile session.rs:215 asserts Trade size > 0 — §4 leaves size
+  free. All three are unreachable on the clean Wed v3 log (0 gaps), so nothing burns
+  today; (a)+(b) become real the day a gap-bearing or locked stream replays.
+- Owed follow-ups carried: ProfileSessionRender consumers beyond MP (none yet);
+  `manifest` field still null until the perf-runner box + manifest exist; 240 Hz
+  hardware still mandatory for the M3 gate per PERF-RUNNER.md (current evidence is
+  60 Hz desk-display — accepted as interim, the letter of that spec still owes a
+  240 Hz run when the box lands).
+
+## Wave 4 board (2026-08-10 night — superseded by Wave 5 above)
 
 State at session close:
 - **ENGINE-DEFECT-WAVE landed** (`663a1cc`): snapshot-flagged records exempt from ALL

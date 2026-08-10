@@ -1,0 +1,28 @@
+{
+  "gate": "fft frame gate — 60.000 s, blank window",
+  "date": "2026-08-10T20:06:17Z",
+  "binary": "fft --gate 60 --trace /tmp/blank-trace-ns.txt --gate-out /tmp/blank-gate.json",
+  "git_sha": "417d38a89e612481f5da71998a6011eb0ff42e81",
+  "git_dirty": true,
+  "replay": null,
+  "trace": "/tmp/blank-trace-ns.txt",
+  "manifest": null,
+  "gpui_rev": "34ba175b1f48e40de4d6d7dfcbca1c6235d006b5",
+  "conditions": null,
+  "notes": null,
+  "result": {
+    "refresh_interval_ms": 16.62,
+    "refresh_hz": 60.17,
+    "deadline_ms": 24.929,
+    "warmup_ms": 513.951,
+    "warmup_samples": 35,
+    "frames": 3598,
+    "missed": 5,
+    "p50_ms": 16.777,
+    "p95_ms": 17.302,
+    "p99_ms": 17.302,
+    "max_ms": 33.444
+  },
+  "coverage": null,
+  "verdict": "FAIL"
+}

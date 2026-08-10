@@ -1,0 +1,33 @@
+{
+  "gate": "fft frame gate — 60.000 s, replay /tmp/esu6-wed-v3-ckpt.fftlog",
+  "date": "2026-08-10T20:25:50Z",
+  "binary": "fft --gate 60 --replay /tmp/esu6-wed-v3-ckpt.fftlog --gate-out perf-runner/results/2026-08-10-m3-frame-gate.json --conditions unfocused full-rate via GPUI_DISABLE_INACTIVE_THROTTLE; DP-2 5120x2880@60Hz Hyprland; shared desk box (perf runner unprovisioned)",
+  "git_sha": "da0945a68550a760f1a2b18c1a7d93ca5bc18258",
+  "git_dirty": true,
+  "replay": "/tmp/esu6-wed-v3-ckpt.fftlog",
+  "trace": null,
+  "manifest": null,
+  "gpui_rev": "34ba175b1f48e40de4d6d7dfcbca1c6235d006b5",
+  "conditions": "unfocused full-rate via GPUI_DISABLE_INACTIVE_THROTTLE; DP-2 5120x2880@60Hz Hyprland; shared desk box (perf runner unprovisioned)",
+  "notes": null,
+  "result": {
+    "refresh_interval_ms": 16.654,
+    "refresh_hz": 60.046,
+    "deadline_ms": 24.981,
+    "warmup_ms": 505.191,
+    "warmup_samples": 32,
+    "frames": 3600,
+    "missed": 0,
+    "p50_ms": 16.777,
+    "p95_ms": 17.302,
+    "p99_ms": 17.302,
+    "max_ms": 17.129
+  },
+  "coverage": {
+    "events_read": 4823,
+    "events_applied": 4823,
+    "dropped": 0,
+    "gap_records": 0
+  },
+  "verdict": "PASS"
+}
