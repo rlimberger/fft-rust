@@ -23,7 +23,9 @@ use crate::harness::Harness;
 use crate::layout::{HEADER_H, ROW_H};
 use crate::mp_element::MarketProfile;
 use crate::mp_layout::MP_ROW_H;
-use crate::mp_view::{check_pane_agreement, display_session, pan_center};
+#[cfg(debug_assertions)]
+use crate::mp_view::check_pane_agreement;
+use crate::mp_view::{display_session, pan_center};
 use crate::pane_state::{Pane, PaneState, SPLITTER_WIDTH};
 use crate::theme::Palette;
 

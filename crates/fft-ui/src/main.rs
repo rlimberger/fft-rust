@@ -108,6 +108,11 @@ fn gate_description(args: &Args) -> String {
 }
 
 fn main() -> ExitCode {
+    // A market display must never render at GPUI's unfocused ~30fps throttle rate —
+    // the tape runs whether or not this window holds keyboard focus (patched opt-out,
+    // see the [patch] section in the workspace Cargo.toml).
+    // SAFETY: before any thread exists; GPUI reads the variable once, later.
+    unsafe { std::env::set_var("GPUI_DISABLE_INACTIVE_THROTTLE", "1") };
     let args = parse_args();
     // Provenance and evidence-file writability are established before the window opens: a
     // 60 s measured run must never be spent to discover the result cannot be recorded.

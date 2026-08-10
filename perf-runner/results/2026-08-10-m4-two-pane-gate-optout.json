@@ -1,0 +1,33 @@
+{
+  "gate": "fft frame gate — 60.000 s, replay /tmp/esu6-wed-v3-ckpt.fftlog",
+  "date": "2026-08-10T19:14:10Z",
+  "binary": "fft --gate 60 --replay /tmp/esu6-wed-v3-ckpt.fftlog --gate-out perf-runner/results/2026-08-10-m4-two-pane-gate-optout.json",
+  "git_sha": "110efe49995caef24c5b84afa01cc2c2b831afd0",
+  "git_dirty": true,
+  "replay": "/tmp/esu6-wed-v3-ckpt.fftlog",
+  "trace": null,
+  "manifest": null,
+  "gpui_rev": null,
+  "conditions": null,
+  "notes": null,
+  "result": {
+    "refresh_interval_ms": 16.587,
+    "refresh_hz": 60.287,
+    "deadline_ms": 24.881,
+    "warmup_ms": 509.634,
+    "warmup_samples": 33,
+    "frames": 3600,
+    "missed": 1,
+    "p50_ms": 16.777,
+    "p95_ms": 17.302,
+    "p99_ms": 17.302,
+    "max_ms": 32.347
+  },
+  "coverage": {
+    "events_read": 4823,
+    "events_applied": 4823,
+    "dropped": 0,
+    "gap_records": 0
+  },
+  "verdict": "FAIL"
+}
