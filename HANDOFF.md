@@ -38,11 +38,29 @@ State at session close:
   exists, values unplumbed).
 - Owed follow-ups: (a) `ProfileSessionRender` session open-price field (fft-engine) →
   unblocks the MP session-open hairline (fft-ui); (b) `civil_from_days` in mp_view.rs
-  duplicates jiff — fold; (c) the adversarial audit's assert-hunt dimension never ran
-  (4 agents died on session limits) — rerun it; remaining audit findings triaged into
-  ENGINE-DEFECT-WAVE already. (d) The untracked 0-byte
-  `perf-runner/results/2026-08-10-m3-frame-gate.json` is a corpse from the pre-fix
-  evidence-death hole — delete it and rerun the m3 gate for real evidence.
+  duplicates jiff — fold; (c) an adversarial audit's assert-hunt dimension never ran
+  (agents died on session limits) — sweep every `assert!`/`expect` reachable from real
+  data for unfrozen semantics; remaining audit findings are already triaged into
+  ENGINE-DEFECT-WAVE. (d) The m3 gate (single-pane DOM) still has no valid evidence
+  file — rerun `fft --gate 60 --replay <wed-v3-ckpt> --gate-out
+  perf-runner/results/<date>-m3-frame-gate.json`.
+
+Volatile fixtures (`/tmp` dies on reboot — regenerate with these exact commands):
+```
+cargo run --release -p fft-ingest -- write /tmp/esu6-wed-v3.fftlog \
+  data/GLBX-20260803-4WJS899FNL/*.mbo.dbn.zst --trade-date 2026-07-29 \
+  --tick 250000000 --uom-qty 50000000000 --display-factor 1
+cargo run --release -p fft-engine --bin fft-checkpoint -- \
+  /tmp/esu6-wed-v3.fftlog /tmp/esu6-wed-v3-ckpt.fftlog
+```
+Expected: 21,401,139 events, 0 gaps, 1880 seq_holes_ignored, 7561 snapshots kept /
+7409 dropped; checkpoint pass writes 1393 checkpoints. Gate replays use the -ckpt copy
+(Seek panics on the plain one by design).
+
+Worker git hygiene (hard rule, learned from a real incident): subagents NEVER run
+`git stash`, `git clean`, `git checkout -- .`, commit, or push in the shared tree —
+one worker's stash swept another's uncommitted track. Workers leave diffs in the
+working tree; the orchestrator reviews, commits, pushes.
 
 ## Evening wave 2 (2026-08-10, orchestrator review — read this first)
 
@@ -183,7 +201,7 @@ In flight next:
 Truth: `PRD.md`, `TECH-STACK.md`, `IMPLEMENTATION-PLAN.md`, and
 `docs/{FFTLOG-V2,ENGINE,PERF-RUNNER,FIXTURES}.md`. Never modify `~/Projects/fft-legacy`.
 
-## Repository state
+## Repository state (HISTORICAL — morning audit snapshot, superseded by the wave boards above; kept for the discrepancy list's context)
 
 - `main` is still at `59639e2` (`origin/main`), the original PRD-only commit.
 - `PRD.md` is modified; essentially the entire implementation, docs, CI, fixtures, and perf
