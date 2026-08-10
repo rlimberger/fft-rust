@@ -162,7 +162,8 @@ impl Book {
         self.last_gap
     }
 
-    /// Cancel/Modify/Fill events that referenced unknown order ids.
+    /// Cancel/Modify/Fill events that referenced unknown order ids, including
+    /// sideless Fills that could not be attributed to book flow.
     pub fn unknown_ref_events(&self) -> u64 {
         self.unknown_refs
     }

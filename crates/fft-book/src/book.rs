@@ -426,38 +426,45 @@ impl Book {
             "fft-book: Fill with size 0 (id {})",
             ev.order_id.0
         );
-        assert!(
-            ev.side == Side::Bid || ev.side == Side::Ask,
-            "fft-book: Fill without resting side: {ev:?}"
-        );
+        let id = ev.order_id.0;
+        let order = self
+            .index
+            .get(&id)
+            .map(|&slot| self.orders[slot as usize].clone());
+        if let Some(o) = &order {
+            assert!(
+                ev.side == Side::None || ev.side == o.side,
+                "fft-book: Fill side {:?} != resting side {:?} (id {id})",
+                ev.side,
+                o.side
+            );
+        }
+        let side = match (ev.side, &order) {
+            (Side::None, Some(o)) => o.side,
+            (side, _) => side,
+        };
         let price = self.to_ticks(ev.price);
-        let aggressor = if ev.side == Side::Bid {
-            Side::Ask
-        } else {
-            Side::Bid
+        let aggressor = match side {
+            Side::Bid => Side::Ask,
+            Side::Ask => Side::Bid,
+            Side::None => Side::None,
         };
         self.last_trade = Some((price, fill, aggressor));
-        self.tai.on_fill(price, fill, ev.side);
-        let flow_side = if ev.side == Side::Bid {
-            &mut self.bids
-        } else {
-            &mut self.asks
+        self.tai.on_fill(price, fill, side);
+        let flow_side = match side {
+            Side::Bid => Some(&mut self.bids),
+            Side::Ask => Some(&mut self.asks),
+            Side::None => None,
         };
-        flow_side.prepare_for(price, self.now);
-        flow_side.level_entry(price).flow.record_traded(ts, fill);
+        if let Some(flow_side) = flow_side {
+            flow_side.prepare_for(price, self.now);
+            flow_side.level_entry(price).flow.record_traded(ts, fill);
+        }
 
-        let id = ev.order_id.0;
-        let Some(&slot) = self.index.get(&id) else {
+        let Some(o) = order else {
             self.unknown_refs += 1;
             return;
         };
-        let o = self.orders[slot as usize].clone();
-        assert!(
-            ev.side == Side::None || ev.side == o.side,
-            "fft-book: Fill side {:?} != resting side {:?} (id {id})",
-            ev.side,
-            o.side
-        );
         if price != o.price {
             self.refresh.note_fill_off_display();
         }
