@@ -42,10 +42,20 @@ event load → structural UI/engine stall, not data volume. Evidence:
 file from the earlier session is empty — that run died before writing; rerun wanted).
 Caveats: desk display is 60 Hz (240 Hz box per PERF-RUNNER still unprovisioned); run was
 launched unattended — focus flapping can throttle animation frames to ~30 fps and would
-look exactly like this. **Next track: FRAME-STALL-DIAGNOSIS** — rerun focused with
-`--trace`, bucket miss timestamps, correlate against glyph-cache sweeps, per-frame
-`visible_rows` aggregation cost, engine publish cadence, and compositor logs before
-touching any code.
+look exactly like this. **RESOLVED by FRAME-STALL-DIAGNOSIS** (cursor CLI worker, evidence-only): the 466-miss
+signature is **GPUI's unfocused ~30 fps animation throttle**, not app paint cost — blank
+window unfocused shows p50=50 ms/87 % miss with zero content; checkpoint frames cannot
+occur inside the gate window (first at +60 s event time; forward replay skips checkpoint
+frames); glyph sweeps ~2×/run. The m4 FAIL is **invalidated as a focus artifact**; app
+paint is unindicted. Next: **GPUI-THROTTLE-OPT-OUT** (orchestrator — patch the pinned rev
+or upstream opt-out per TECH-STACK §2 known-constraint), then an **attended** re-gate
+(window focused 60 s) before any paint-cost work.
+
+Wave 3 additions: **UI-THEME-CATPPUCCIN accepted** (`2c6b972`, grok CLI worker) —
+theme.rs Palette (26 roles, official Mocha/Latte), JB Mono root family, grep-clean, 64
+tests. Standing order (`9450d97`, AGENTS.md): external CLI workers always pin Grok 4.5
+high (`grok -m grok-4.5 --effort high` / `cursor-agent --model cursor-grok-4.5-high`);
+this wave's two launches predated the order and ran default models.
 
 
 
