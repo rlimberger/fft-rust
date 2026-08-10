@@ -46,11 +46,35 @@ parent). condition.json = `available` all five days ⇒ holes are filter artifac
 not loss. Policy frozen in FFTLOG-V2 §4 "Batch gap policy": regression-only Gap
 synthesis for batch, `seq_holes_ignored` counted loudly; live gaps at gateway (M6).
 
+Accepted + pushed (2026-08-10, later still): **BOOK-SNAPSHOT-LOAD** (`ac03cca`) —
+snapshot-load apply + BOOK/FLOW/REFRESH split + fresh-flow eviction; SESSION(6)
+pends on the profile track. Full-Wed headless replay then advanced from event #755's
+old seq-panic to a NEW blocker at the same spot: **Fill semantics** — frozen in
+FFTLOG-V2 §4 (Fill never mutates the book; companion Cancel/Modify is book truth;
+execution price may differ from displayed price). Synthetic M1 fixtures encoded the
+wrong assumption; real data caught it.
+
+Profile investigation (Opus subagent, evidence-grade): audit claim 6 CONFIRMED in
+full — RTH letters silently run N/O over 15:00–16:00 CT; PV gap marker lands on the
+wrong period (cursor is trade-driven, not event-time-driven); backward-period ts
+panics are reachable on the frozen stream (TsReset legalizes backward ts); PLUS two
+new findings: ingest keeps [17:00, 17:00) but the profile session is [17:00, 16:00)
+— a kept event in the 16:00–17:00 CT hour panics the lattice (fixture margins are
+30–530 ms); and fft-profile has zero SNAPSHOT-flag awareness — accidentally safe
+only because fft-book's apply runs first. SESSION split inventory: fields 2-5
+(session_count, trade_date, current_eth_period, period_gap) → SESSION(6); clock
+boundaries live in code, not bytes.
+
+External workforce (2026-08-10): cursor-Grok (busy: INGEST-GAP-POLICY), GPT 5.6 Sol
+(idle → BOOK-FILL-SEMANTICS), xai-Grok 4.5 (idle → PROFILE-WAVE). Orchestrator
+subagents: profile investigation done; UI-GATE-EVIDENCE in flight.
+
 In flight next:
-- **INGEST-GAP-POLICY** (Grok, fft-ingest): implement the batch gap policy;
-  re-ingest Wed → v3.
-- **BOOK-SNAPSHOT-LOAD** (Codex/Sol, fft-book): snapshot-load apply semantics + the
-  audit's fft-book wave (six-section split per ENGINE.md §4, fresh-flow eviction fix).
+- **INGEST-GAP-POLICY** (cursor-Grok, fft-ingest): batch gap policy; re-ingest Wed v3.
+- **BOOK-FILL-SEMANTICS** (Sol, fft-book): Fill per frozen FFTLOG-V2 §4.
+- **PROFILE-WAVE** (xai-Grok, fft-profile): claims A/B/C fixes + SESSION(6) split +
+  snapshot-flag guard, per orchestrator brief.
+- **UI-GATE-EVIDENCE** (Opus subagent, fft-ui): coverage exit line + --gate-out JSON.
 - Audit spot-checks: claims 1, 7, 8 CONFIRMED (7 approved+documented in PRD, 8 fixed);
   claim 6 plausible (fft-profile wave pending); claim 10 REFUTED with tests.
 

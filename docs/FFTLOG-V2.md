@@ -86,6 +86,15 @@ Fixed 32-byte records after decompression:
 - **Gap records** are first-class events: `price` = expected seq, `order_id` = observed
   seq. Downstream consumers (book, native-refresh classifier) must transition to their
   gap states; classification across a gap reads *unavailable*, never false (PRD §4.4).
+- **Fill semantics (frozen 2026-08-10): Fill records do not mutate the book.** The
+  pinned source contract (dbn 0.65.0 `Action::Fill`: "An existing order was filled.
+  Does not affect the book") and the observed stream agree — e.g. the Wed 17:00:00.601
+  opening auction: Add 3 @ 7467.75 → Fill 2 @ 7468.00 → Cancel **3** @ 7467.75; the
+  venue's companion Cancel/Modify carries all size/removal truth, and a fill's
+  execution price may legally differ from the displayed price (opening auction,
+  market-with-protection). Consumers use Fill for the tape, cB/cA, and native-refresh
+  depletion accounting only; a displayed-vs-execution price difference is **counted
+  loudly, never a panic and never a book mutation**.
 - **Batch gap policy (frozen 2026-08-10):** Databento batch files are symbol-filtered
   (the sample job is `ES.FUT` parent), so **forward channel-seq holes are expected
   filtering artifacts, never gaps** — completeness authority for batch data is the
