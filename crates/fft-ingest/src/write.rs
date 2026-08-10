@@ -15,7 +15,7 @@ use fft_core::{CanonicalEvent, EventKind, InstrumentMeta, Price};
 use fft_log::LogWriter;
 use jiff::civil::Date;
 
-use crate::decode::{DecodedEvent, IngestError, open_zstd_file};
+use crate::decode::{DecodedEvent, GapDetector, IngestError, open_zstd_file};
 use crate::session::{self, TradeDateBucketer};
 
 /// Default CME ES front-month instrument id for the sample week (ESU6).
@@ -144,6 +144,9 @@ pub fn write_fftlog(config: &WriteConfig) -> Result<WriteStats, IngestError> {
 
     let meta = config.build_meta(&dataset, symbol);
     let mut writer = LogWriter::create(&config.output, &meta)?;
+    // Shared across the ordered input list: Globex day files are one continuous
+    // channel sequence. A fresh GapDetector per file would miss boundary gaps.
+    let mut gaps = GapDetector::default();
     let mut bucketer = TradeDateBucketer::default();
     let mut batch: Vec<CanonicalEvent> = Vec::with_capacity(config.batch_size);
     let mut stats = WriteStats {
@@ -155,6 +158,7 @@ pub fn write_fftlog(config: &WriteConfig) -> Result<WriteStats, IngestError> {
 
     for path in &config.inputs {
         let mut decoder = open_zstd_file(path)?;
+        decoder.set_gap_detector(std::mem::take(&mut gaps));
         while let Some(ev) = decoder.next_event()? {
             if !keep_event(&ev, config.instrument_id, config.trade_date, &mut bucketer) {
                 continue;
@@ -169,6 +173,7 @@ pub fn write_fftlog(config: &WriteConfig) -> Result<WriteStats, IngestError> {
                 flush_batch(&mut writer, &mut batch, &mut stats)?;
             }
         }
+        gaps = decoder.into_gap_detector();
     }
     if !batch.is_empty() {
         flush_batch(&mut writer, &mut batch, &mut stats)?;

@@ -290,12 +290,33 @@ impl<R: io::Read> CanonicalDecoder<R> {
         }
     }
 
+    /// Install shared gap state so multi-file stitch continues sequence accounting
+    /// across input boundaries (Globex day files are one continuous channel).
+    pub fn set_gap_detector(&mut self, gaps: GapDetector) {
+        self.gaps = gaps;
+    }
+
+    /// Take gap state after a file is exhausted (for the next input in a stitch).
+    ///
+    /// # Panics
+    /// Panics if a gap event is still pending delivery — callers must drain
+    /// [`next_event`](Self::next_event) to `None` first.
+    pub fn into_gap_detector(self) -> GapDetector {
+        assert!(
+            self.pending.is_none(),
+            "fft-ingest: into_gap_detector with a pending event; drain next_event first"
+        );
+        self.gaps
+    }
+
     /// The DBN file metadata (dataset, query window, symbology mappings).
     pub fn metadata(&self) -> &Metadata {
         self.inner.metadata()
     }
 
-    /// Sequence gaps synthesized so far.
+    /// Sequence gaps synthesized so far **in this decoder instance** (not cumulative
+    /// across a multi-file stitch that reuses [`GapDetector`] via
+    /// [`set_gap_detector`](Self::set_gap_detector)).
     pub fn gap_count(&self) -> u64 {
         self.gap_count
     }
