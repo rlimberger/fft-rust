@@ -27,8 +27,8 @@ Accepted + committed this wave (diff-reviewed, workspace fmt/clippy/test re-veri
 - **MP-PANE** (`c3c2e4a`, fft-ui): WT profile as one custom Element + linked two-pane
   shell; 14 pure tests; zero entity.update. Follow-ups owed: (a) `ProfileSessionRender`
   needs a session open-price field (engine crate) before the session-open hairline can
-  draw; (b) hovered-pane 1/2/4 routing is provisional — PRD §5 still specifies 1/2/4=MP,
-  Shift=DOM; M5 keyboard track must reconcile (ask René which wins); (c) hand-rolled
+  draw; (b) RESOLVED (`4157013`): René ruled hover-routing canon — 1/2/4 set the hovered pane,
+  `t` syncs the other pane to it; PRD §5 updated, Shift chords dead; (c) hand-rolled
   `civil_from_days` in mp_view.rs duplicates jiff — fold into the theme/polish wave.
 - **LOG-POLISH-PERF-CI** report reviewed post-hoc (already landed as `f854f7f`); its
   PERF-RUNNER.md staleness findings fixed by orchestrator (evidence-file section added).
