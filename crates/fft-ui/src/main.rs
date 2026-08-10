@@ -2,8 +2,8 @@
 //! replay into linked WindoTrader profile + Daytradr DOM custom elements.
 //!
 //! ```text
-//! fft [--gate <seconds>] [--trace <path>] [--replay <fftlog>] [--gate-out <path>]
-//!     [--manifest <path>] [--conditions <text>]
+//! fft [--gate <seconds>] [--trace <path>] [--replay <fftlog>] [--replay-at <ts>]
+//!     [--gate-out <path>] [--manifest <path>] [--conditions <text>]
 //! ```
 //!
 //! Without `--replay`, the M0 blank/dark window + frame harness is unchanged. With
@@ -13,6 +13,10 @@
 //! engine's final coverage counters are printed and, with `--gate`, a nonzero dropped
 //! count fails the process (`docs/ENGINE.md` §3). An engine-thread panic is recorded in the
 //! evidence and fails the process — it never pre-empts the write.
+//!
+//! `--replay-at <ts>` seeks to an event timestamp before Play (PRD §6 sim-live anchor).
+//! Accepted forms: all-digits nanoseconds UTC, or `YYYY-MM-DDTHH:MM:SSZ` (UTC, second
+//! resolution). Requires `--replay`.
 //!
 //! `--gate-out` writes the run's self-identifying JSON evidence (git SHA + dirty, pinned
 //! `gpui` rev, replay path, frame-time distribution, coverage) — on `FAIL` as well as
@@ -29,6 +33,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use fft_engine::EngineHandle;
+use fft_ui::datetime::parse_replay_at;
 use fft_ui::gate_report::{CoverageReport, GateOut, GateReport, GitInfo, RunMeta};
 use fft_ui::harness::Harness;
 use fft_ui::shell::Shell;
@@ -38,6 +43,10 @@ struct Args {
     gate: Option<Duration>,
     trace: Option<PathBuf>,
     replay: Option<PathBuf>,
+    /// Seek target in nanoseconds UTC; requires `--replay`.
+    replay_at: Option<u64>,
+    /// Original `--replay-at` argument text for gate provenance.
+    replay_at_arg: Option<String>,
     gate_out: Option<PathBuf>,
     /// Perf-runner manifest path — validated at startup, recorded verbatim in evidence.
     manifest: Option<PathBuf>,
@@ -50,6 +59,8 @@ fn parse_args() -> Args {
     let mut gate = None;
     let mut trace = None;
     let mut replay = None;
+    let mut replay_at = None;
+    let mut replay_at_arg = None;
     let mut gate_out = None;
     let mut manifest = None;
     let mut conditions = None;
@@ -78,6 +89,14 @@ fn parse_args() -> Args {
                     .next()
                     .unwrap_or_else(|| usage("--replay requires <fftlog>"));
                 replay = Some(PathBuf::from(path));
+            }
+            "--replay-at" => {
+                let value = args
+                    .next()
+                    .unwrap_or_else(|| usage("--replay-at requires <ts>"));
+                let ts = parse_replay_at(&value).unwrap_or_else(|err| usage(&err));
+                replay_at = Some(ts);
+                replay_at_arg = Some(value);
             }
             "--gate-out" => {
                 let path = args
@@ -109,10 +128,15 @@ fn parse_args() -> Args {
             other => usage(&format!("unknown argument: {other}")),
         }
     }
+    if replay_at.is_some() && replay.is_none() {
+        usage("--replay-at requires --replay");
+    }
     Args {
         gate,
         trace,
         replay,
+        replay_at,
+        replay_at_arg,
         gate_out,
         manifest,
         conditions,
@@ -122,7 +146,7 @@ fn parse_args() -> Args {
 fn usage(msg: &str) -> ! {
     eprintln!(
         "fft: {msg}\nusage: fft [--gate <seconds>] [--trace <path>] [--replay <fftlog>] \
-         [--gate-out <path>] [--manifest <path>] [--conditions <text>]"
+         [--replay-at <ts>] [--gate-out <path>] [--manifest <path>] [--conditions <text>]"
     );
     std::process::exit(2);
 }
@@ -133,9 +157,10 @@ fn gate_description(args: &Args) -> String {
         Some(gate) => format!("fft frame gate — {:.3} s", gate.as_secs_f64()),
         None => "fft frame harness (ungated)".to_string(),
     };
-    match &args.replay {
-        Some(path) => format!("{window}, replay {}", path.display()),
-        None => format!("{window}, blank window"),
+    match (&args.replay, &args.replay_at_arg) {
+        (Some(path), Some(at)) => format!("{window}, replay {} @ {at}", path.display()),
+        (Some(path), None) => format!("{window}, replay {}", path.display()),
+        (None, _) => format!("{window}, blank window"),
     }
 }
 
@@ -168,6 +193,7 @@ fn main() -> ExitCode {
     let engine_for_app = engine_slot.clone();
     let replaying = args.replay.is_some();
     let replay = args.replay;
+    let replay_at = args.replay_at;
 
     gpui_platform::application().run(move |cx: &mut App| {
         cx.on_window_closed(|cx, _| cx.quit()).detach();
@@ -177,7 +203,9 @@ fn main() -> ExitCode {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 ..Default::default()
             },
-            move |_, cx| cx.new(|cx| Shell::new(app_harness.clone(), replay, engine_for_app, cx)),
+            move |_, cx| {
+                cx.new(|cx| Shell::new(app_harness.clone(), replay, replay_at, engine_for_app, cx))
+            },
         )
         .expect("fft: failed to open window");
         cx.activate(true);

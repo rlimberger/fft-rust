@@ -1,6 +1,7 @@
 //! Panes (custom GPUI Elements) + the frame pump. Also hosts the frame-time measurement
 //! harness used by the perf gate.
 
+pub mod datetime;
 pub mod dom_input;
 pub mod dom_ladder;
 pub mod dom_view;

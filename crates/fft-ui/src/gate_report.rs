@@ -291,19 +291,7 @@ pub fn rfc3339_utc(unix_secs: u64) -> String {
     )
 }
 
-/// Days since the Unix epoch to `(year, month, day)` (Hinnant's `civil_from_days`).
-pub(crate) fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    (year, month, day)
-}
+pub(crate) use crate::datetime::civil_from_days;
 
 /// Command line for the `binary` field: `argv[0]` reduced to its file name.
 pub fn command_line<I: IntoIterator<Item = String>>(argv: I) -> String {

@@ -42,6 +42,8 @@ pub struct Shell {
     snapshots: Option<SnapshotSlot>,
     replay_ready: Rc<RefCell<Option<ReplayResources>>>,
     pending_replay: Option<PathBuf>,
+    /// Optional seek target (ns UTC) applied after SetSource, before Play.
+    replay_at: Option<u64>,
     engine_slot: Rc<RefCell<Option<EngineHandle>>>,
     wake_dirty: Arc<AtomicBool>,
     frame_snapshot: Arc<RenderSnapshot>,
@@ -58,6 +60,7 @@ impl Shell {
     pub fn new(
         harness: Rc<RefCell<Harness>>,
         pending_replay: Option<PathBuf>,
+        replay_at: Option<u64>,
         engine_slot: Rc<RefCell<Option<EngineHandle>>>,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -66,6 +69,7 @@ impl Shell {
             snapshots: None,
             replay_ready: Rc::new(RefCell::new(None)),
             pending_replay,
+            replay_at,
             engine_slot,
             wake_dirty: Arc::new(AtomicBool::new(false)),
             frame_snapshot: Arc::new(RenderSnapshot::default()),
@@ -92,10 +96,11 @@ impl Shell {
         let Some(path) = self.pending_replay.take() else {
             return;
         };
+        let replay_at = self.replay_at.take();
         let replay_ready = Rc::clone(&self.replay_ready);
         let engine_slot = Rc::clone(&self.engine_slot);
         window.on_next_frame(move |window, _| {
-            let (handle, snapshots, wake_dirty) = spawn_replay_engine(path);
+            let (handle, snapshots, wake_dirty) = spawn_replay_engine(path, replay_at);
             *engine_slot.borrow_mut() = Some(handle);
             *replay_ready.borrow_mut() = Some(ReplayResources {
                 snapshots,
@@ -448,7 +453,10 @@ fn scroll_rows(delta: ScrollDelta, row_height: f32) -> f32 {
     }
 }
 
-fn spawn_replay_engine(path: PathBuf) -> (EngineHandle, SnapshotSlot, Arc<AtomicBool>) {
+fn spawn_replay_engine(
+    path: PathBuf,
+    replay_at: Option<u64>,
+) -> (EngineHandle, SnapshotSlot, Arc<AtomicBool>) {
     let wake_dirty = Arc::new(AtomicBool::new(false));
     let wake = Arc::clone(&wake_dirty);
     let handle = EngineService::spawn(
@@ -463,6 +471,14 @@ fn spawn_replay_engine(path: PathBuf) -> (EngineHandle, SnapshotSlot, Arc<Atomic
     handle
         .send(EngineCmd::SetSource(Source::Replay { path }))
         .unwrap_or_else(|err| panic!("fft: SetSource failed: {err}"));
+    // Seek pauses; Play must follow. Generation 1 is the first valid UI seek after
+    // SetSource resets latest_seek to 0. No fft-ui scrub Seek path exists yet — when
+    // one lands, its counter must start at ≥ 2 so it cannot collide with this Seek.
+    if let Some(ts) = replay_at {
+        handle
+            .send(EngineCmd::Seek { ts, generation: 1 })
+            .unwrap_or_else(|err| panic!("fft: Seek failed: {err}"));
+    }
     handle
         .send(EngineCmd::Play)
         .unwrap_or_else(|err| panic!("fft: Play failed: {err}"));
