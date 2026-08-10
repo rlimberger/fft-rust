@@ -19,9 +19,6 @@ pub(crate) const MAX_SPAN_TICKS: i64 = 1_000_000;
 /// Period bitsets are `u64`; a 23-hour ETH lettering window has 46 periods, so
 /// every valid index fits. Exceeding this means the clock produced garbage.
 const MAX_PERIOD_BIT: u32 = 63;
-/// Databento `flags::SNAPSHOT` (dbn 0.65.0). Local so fft-profile owns the check.
-const DATABENTO_SNAPSHOT_FLAG: u16 = 1 << 5;
-
 /// Per-price render row. `eth_periods` letters run continuously from the
 /// Globex open (bit 0 = ETH A) across the whole session; `rth_periods`
 /// restarts at A at the RTH open. Both are maintained for every trade — the
@@ -152,7 +149,7 @@ impl SessionProfile {
     /// Add). Trades accumulate; a Gap marks the developing period's PV after the
     /// period cursor advances; every other kind advances the cursor only.
     pub fn apply(&mut self, ev: &CanonicalEvent) {
-        if ev.flags & DATABENTO_SNAPSHOT_FLAG != 0 {
+        if ev.is_snapshot() {
             // FFTLOG-V2 §4: the block's leading Clear is venue reset framing;
             // the profile ignores snapshot records entirely, Clear included.
             assert!(

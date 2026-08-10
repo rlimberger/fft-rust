@@ -3,11 +3,122 @@
 mod common;
 
 use common::*;
+use fft_core::{CanonicalEvent, EventKind, OrderId, Price, Seq, Side, Ts};
 use fft_engine::{EngineCmd, Source};
+use fft_log::LogWriter;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
+
+/// Panic payload as text, for asserting on a panic that crossed the engine-thread join.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|msg| (*msg).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| panic!("engine panic payload was neither &str nor String"))
+}
+
+/// Six Adds: channel seqs 10, 11, then a snapshot block replaying original order-entry
+/// seqs 500, 499, 498 (regressing, as Databento delivers them), then channel seq 12.
+fn write_snapshot_block_log(path: &Path) {
+    let meta = es_meta();
+    let mut writer = LogWriter::create(path, &meta).expect("create log");
+    let add = |order_id: u64, seq: u32, index: u64, flags: u16| CanonicalEvent {
+        kind: EventKind::Add,
+        side: if order_id.is_multiple_of(2) {
+            Side::Bid
+        } else {
+            Side::Ask
+        },
+        flags,
+        size: 3,
+        ts: Ts(SESSION_OPEN_NS + index * 1_000_000),
+        seq: Seq(seq),
+        price: Price(if order_id.is_multiple_of(2) {
+            (20_000 - 1) * TICK
+        } else {
+            (20_000 + 1) * TICK
+        }),
+        order_id: OrderId(order_id),
+    };
+    let snapshot = fft_core::DATABENTO_SNAPSHOT_FLAG;
+    let events = [
+        add(10, 10, 0, 0),
+        add(11, 11, 1, 0),
+        add(500, 500, 2, snapshot),
+        add(499, 499, 3, snapshot),
+        add(498, 498, 4, snapshot),
+        add(12, 12, 5, 0),
+    ];
+    writer.append_events(&events).expect("append");
+    writer.close().expect("close");
+}
+
+#[test]
+fn snapshot_seqs_never_move_the_applied_watermark() {
+    let tmp = temp_path("snapshot-seqs");
+    write_snapshot_block_log(tmp.path());
+    let wakes = Arc::new(AtomicU64::new(0));
+    let handle = spawn_engine(wakes.clone());
+
+    handle
+        .send(EngineCmd::SetSource(Source::Replay {
+            path: tmp.path().to_path_buf(),
+        }))
+        .unwrap();
+    handle.send(EngineCmd::SetSpeed(1_000_000.0)).unwrap();
+    handle.send(EngineCmd::Play).unwrap();
+
+    wait_until(Duration::from_secs(5), || {
+        handle.snapshots().load().coverage.events_applied == 6
+    });
+
+    let exit = handle.shutdown().expect("join");
+    // FFTLOG-V2 §4: the regressing snapshot seqs 500/499/498 are not channel sequencing,
+    // so the watermark tracks only the channel events and ends at the last of them.
+    assert_eq!(exit.watermarks.applied_seq, 12);
+    assert_eq!(exit.watermarks.published_seq, 12);
+    assert_eq!(exit.coverage.events_read, 6);
+    assert_eq!(exit.coverage.events_applied, 6);
+}
+
+#[test]
+fn seek_without_checkpoints_panics_with_the_fft_checkpoint_remediation() {
+    let tmp = temp_path("no-checkpoints");
+    write_event_only_log(tmp.path(), 200, 1_000_000);
+    let wakes = Arc::new(AtomicU64::new(0));
+    let mut handle = spawn_engine(wakes);
+
+    handle
+        .send(EngineCmd::SetSource(Source::Replay {
+            path: tmp.path().to_path_buf(),
+        }))
+        .unwrap();
+    handle
+        .send(EngineCmd::Seek {
+            ts: SESSION_OPEN_NS + 100 * 1_000_000,
+            generation: 1,
+        })
+        .unwrap();
+
+    // ENGINE.md §4(3): replaying from frame zero is forbidden, so the engine thread dies.
+    let payload = handle
+        .join()
+        .expect("engine join handle")
+        .expect_err("seek against a checkpoint-less log must panic");
+    let message = panic_message(&*payload);
+    assert!(
+        message.contains("zero checkpoints") && message.contains("fft-checkpoint"),
+        "unexpected panic message: {message}"
+    );
+    assert!(
+        message.contains(&tmp.path().display().to_string()),
+        "panic message must name the log: {message}"
+    );
+}
 
 #[test]
 fn latest_wins_coalesces_seek_batch() {

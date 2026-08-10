@@ -9,8 +9,9 @@
 //! `--replay`, the dedicated engine thread is spawned, `SetSource(Replay)` + `Play` are
 //! sent, and each animation frame loads exactly one `Arc<RenderSnapshot>` from the
 //! latest-value slot (zero `entity.update` calls on the snapshot path); after the run the
-//! final snapshot's coverage counters are printed and, with `--gate`, a nonzero dropped
-//! count fails the process (`docs/ENGINE.md` §3).
+//! engine's final coverage counters are printed and, with `--gate`, a nonzero dropped
+//! count fails the process (`docs/ENGINE.md` §3). An engine-thread panic is recorded in the
+//! evidence and fails the process — it never pre-empts the write.
 //!
 //! `--gate-out` writes the run's self-identifying JSON evidence (git SHA + dirty, replay
 //! path, frame-time distribution, coverage) — on `FAIL` as well as `PASS`.
@@ -142,14 +143,17 @@ fn main() -> ExitCode {
 
     // Keep the slot alive across shutdown: the engine may publish once more while draining.
     let snapshots = engine_slot.borrow().as_ref().map(EngineHandle::snapshots);
-    if let Some(handle) = engine_slot.borrow_mut().take() {
-        handle
-            .shutdown()
-            .unwrap_or_else(|err| panic!("fft: engine thread panicked: {err:?}"));
-    }
+    // Held, not unwrapped: an engine panic must not cost a 60 s measured run its evidence
+    // file, so the result is decided only after the report is on disk.
+    let engine_exit = engine_slot.borrow_mut().take().map(EngineHandle::shutdown);
 
-    let coverage = snapshots.map(|slot| {
-        let counters = slot.load().coverage;
+    let counters = engine_exit
+        .as_ref()
+        .and_then(|exit| exit.as_ref().ok())
+        .map(|exit| exit.coverage)
+        // The engine died: the last publication is all that survives of what it applied.
+        .or_else(|| snapshots.map(|slot| slot.load().coverage));
+    let coverage = counters.map(|counters| {
         CoverageReport::new(
             counters.events_read,
             counters.events_applied,
@@ -165,18 +169,35 @@ fn main() -> ExitCode {
     }
 
     let result = harness.borrow_mut().finish();
-    let report = GateReport::new(
+    let mut report = GateReport::new(
         &meta,
         fft_ui::gate_report::now_rfc3339_utc(),
         result,
         coverage,
     );
+    let engine_panic = engine_exit.and_then(Result::err);
+    if let Some(err) = &engine_panic {
+        report.record_engine_panic(&panic_message(&**err));
+    }
     if let Some(out) = gate_out {
         out.write(&report);
+    }
+    if let Some(err) = engine_panic {
+        eprintln!("fft: ENGINE THREAD PANICKED: {err:?}");
+        return ExitCode::FAILURE;
     }
     if fft_ui::gate_report::gate_failed(harness.borrow().gating(), report.verdict) {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// Panic payload as text. `panic!` produces `&str` or `String`; anything else is opaque.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|msg| (*msg).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "non-string panic payload".to_string())
 }

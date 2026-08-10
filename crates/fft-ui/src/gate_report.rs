@@ -184,6 +184,14 @@ impl GateReport {
             coverage,
         }
     }
+
+    /// Record that the engine thread died. The frame times measured before the death are
+    /// kept — they are still evidence — but the run is a `FAIL` whatever they say, and the
+    /// panic payload lands in `notes` so the JSON explains its own verdict.
+    pub fn record_engine_panic(&mut self, detail: &str) {
+        self.verdict = Verdict::Fail;
+        self.notes = Some(format!("engine thread panicked: {detail}"));
+    }
 }
 
 fn path_string(path: Option<&Path>) -> Option<String> {
@@ -377,6 +385,35 @@ mod tests {
         );
         // applied > read violates the engine invariant; it must not underflow.
         assert_eq!(CoverageReport::new(1, 5, 0).dropped, 0);
+    }
+
+    #[test]
+    fn engine_panic_fails_a_clean_run_and_is_noted() {
+        let meta = RunMeta {
+            gate: "fft frame gate — 60.000 s".to_string(),
+            binary: "fft --gate 60".to_string(),
+            git: GitInfo {
+                sha: "abc".to_string(),
+                dirty: Some(false),
+            },
+            replay: None,
+            trace: None,
+        };
+        let mut report = GateReport::new(
+            &meta,
+            rfc3339_utc(0),
+            Some(sample_result()),
+            Some(CoverageReport::new(1_000, 1_000, 0)),
+        );
+        assert_eq!(report.verdict, Verdict::Pass);
+        report.record_engine_panic("fft-engine replay failure: bad frame");
+        assert_eq!(report.verdict, Verdict::Fail);
+        assert_eq!(
+            report.notes.as_deref(),
+            Some("engine thread panicked: fft-engine replay failure: bad frame")
+        );
+        // The measured frames survive the panic — they are the evidence of the run.
+        assert!(report.result.is_some());
     }
 
     #[test]

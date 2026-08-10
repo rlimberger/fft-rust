@@ -132,9 +132,10 @@ Materialization (who writes CHECKPOINT frames):
    log and writes a checkpointed copy at 60 s **event-time** cadence through the same
    apply-then-serialize path. Ingest never writes checkpoints (it has no book/profile
    state).
-3. Gate inputs are checkpointed logs. `EngineCmd::Seek` against a source whose open
-   report shows zero checkpoints panics with the fft-checkpoint remediation — replaying
-   from frame zero is a forbidden silent-degraded path (doctrine rule 7).
+3. Gate inputs are checkpointed logs. `EngineCmd::Seek` against a source whose frame
+   index holds zero CHECKPOINT frames (`ReplaySource::checkpoint_count()`) panics with
+   the fft-checkpoint remediation — replaying from frame zero is a forbidden
+   silent-degraded path (doctrine rule 7).
 
 Command-batch semantics (closes the stale-seek/source-switch defect): commands in one
 drained batch apply **in order**; a `SetSource` discards any seek selected earlier in the

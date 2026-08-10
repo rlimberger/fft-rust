@@ -74,6 +74,9 @@ impl EventKind {
     }
 }
 
+/// Databento `flags::SNAPSHOT` in pinned dbn 0.65.0.
+pub const DATABENTO_SNAPSHOT_FLAG: u16 = 1 << 5;
+
 /// One canonical market event: the in-memory form of the frozen 32-byte wire record,
 /// with the frame-relative `ts_delta` already resolved to an absolute [`Ts`].
 ///
@@ -95,6 +98,14 @@ pub struct CanonicalEvent {
 }
 
 impl CanonicalEvent {
+    /// True for records replayed out of a Databento snapshot block. Snapshot records
+    /// carry the **original order-entry** ts and seq (`docs/FFTLOG-V2.md` §4), which are
+    /// neither channel-sequenced nor monotonic, so they are exempt from every form of
+    /// channel-seq accounting: watermarks, cursors, and gap detection ignore them.
+    pub fn is_snapshot(&self) -> bool {
+        self.flags & DATABENTO_SNAPSHOT_FLAG != 0
+    }
+
     /// Construct a gap record: the feed skipped from `expected` to `observed`.
     /// Downstream state machines must transition to their gap states (classification
     /// across a gap reads *unavailable*, never false — PRD §4.4).

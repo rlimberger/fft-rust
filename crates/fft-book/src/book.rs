@@ -11,10 +11,6 @@ use std::collections::HashMap;
 /// Events between dead-level / expired-tombstone sweeps.
 pub(crate) const GC_INTERVAL: u32 = 4096;
 
-/// Databento `flags::SNAPSHOT` in pinned dbn 0.65.0. Kept local so fft-book
-/// remains independent of the source-format crate.
-const DATABENTO_SNAPSHOT_FLAG: u16 = 1 << 5;
-
 /// L3 MBO book for one instrument. See the crate docs for the full contract.
 #[derive(Debug)]
 pub struct Book {
@@ -94,7 +90,7 @@ impl Book {
     /// Apply one canonical event. Panics (fail loudly) on malformed events,
     /// feed-contract violations, and unexplained sequence regressions.
     pub fn apply(&mut self, ev: &CanonicalEvent) {
-        if ev.flags & DATABENTO_SNAPSHOT_FLAG != 0 {
+        if ev.is_snapshot() {
             // FFTLOG-V2 §4: the block's leading Clear is venue reset framing —
             // merge semantics supersede clear-and-rebuild; ignore it loudly.
             if ev.kind == EventKind::Clear {

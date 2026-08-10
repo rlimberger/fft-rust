@@ -1,5 +1,6 @@
 use crate::command::{EngineCmd, Source};
 use crate::snapshot::{CoverageCounters, RenderSnapshot, SnapshotSlot, build_snapshot};
+use crate::watermarks::Watermarks;
 use fft_book::Book;
 use fft_core::EventKind;
 use fft_profile::MultiProfile;
@@ -13,48 +14,6 @@ use std::time::{Duration, Instant};
 const COMMAND_CAPACITY: usize = 64;
 const APPLY_BUDGET: Duration = Duration::from_millis(4);
 const IDLE_WAIT: Duration = Duration::from_millis(10);
-
-/// Sequence integrity accounting owned and advanced by the engine thread.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Watermarks {
-    /// Last source sequence accepted from the source.
-    pub received_seq: u64,
-    /// Last source sequence decoded to canonical form.
-    pub decoded_seq: u64,
-    /// Last source sequence applied to all derived state.
-    pub applied_seq: u64,
-    /// Last sequence durably present in the replay log.
-    pub logged_seq: u64,
-    /// Last sequence reflected by a published snapshot.
-    pub published_seq: u64,
-}
-
-impl Watermarks {
-    fn apply_forward(&mut self, seq: u64) {
-        if seq == 0 {
-            return;
-        }
-        assert!(
-            seq >= self.applied_seq,
-            "engine applied sequence regressed: {seq} < {}",
-            self.applied_seq
-        );
-        self.set_applied(seq);
-    }
-
-    /// Absolute watermark set used by seeks (time travel may move seq backward).
-    fn set_applied(&mut self, seq: u64) {
-        self.received_seq = seq;
-        self.decoded_seq = seq;
-        self.applied_seq = seq;
-        self.logged_seq = seq;
-    }
-
-    fn publish(&mut self) {
-        self.published_seq = self.applied_seq;
-        assert!(self.published_seq <= self.applied_seq);
-    }
-}
 
 /// Engine startup configuration.
 #[derive(Debug, Clone)]
@@ -84,6 +43,9 @@ pub struct EngineExit {
     pub publications: u64,
     /// Number of non-cancelled seeks executed.
     pub seeks_executed: u64,
+    /// Final event-coverage counters. The authoritative drop evidence for a run: it counts
+    /// everything applied after the last publication, which the last snapshot cannot.
+    pub coverage: CoverageCounters,
     /// Visible log-open warnings encountered while switching sources.
     pub source_warnings: Vec<String>,
 }
@@ -197,6 +159,7 @@ struct Runtime {
     publications: u64,
     seeks_executed: u64,
     source_warnings: Vec<String>,
+    source_path: Option<std::path::PathBuf>,
 }
 
 impl Runtime {
@@ -220,6 +183,7 @@ impl Runtime {
             publications: 0,
             seeks_executed: 0,
             source_warnings: Vec::new(),
+            source_path: None,
         }
     }
 
@@ -257,6 +221,7 @@ impl Runtime {
             watermarks: self.watermarks,
             publications: self.publications,
             seeks_executed: self.seeks_executed,
+            coverage: self.coverage,
             source_warnings: self.source_warnings,
         }
     }
@@ -280,6 +245,7 @@ impl Runtime {
                     self.book = Some(Book::new(meta.min_price_increment));
                     self.profile = Some(profile);
                     self.source = Some(source);
+                    self.source_path = Some(path);
                     self.playing = false;
                     self.watermarks = Watermarks::default();
                     self.coverage = CoverageCounters::default();
@@ -348,6 +314,7 @@ impl Runtime {
         backlog: &mut Vec<EngineCmd>,
     ) {
         self.playing = false;
+        self.assert_seekable();
         let source = self
             .source
             .as_mut()
@@ -392,6 +359,28 @@ impl Runtime {
         self.publish(generation);
     }
 
+    /// ENGINE.md §4: seeking a log with zero CHECKPOINT frames can only be served by
+    /// replaying from frame zero — a silent degraded path, so it is refused loudly.
+    fn assert_seekable(&self) {
+        let source = self
+            .source
+            .as_ref()
+            .expect("fft-engine Seek without replay source");
+        if source.checkpoint_count() > 0 {
+            return;
+        }
+        let path = self
+            .source_path
+            .as_ref()
+            .map_or_else(|| "<unknown log>".to_string(), |p| p.display().to_string());
+        panic!(
+            "fft-engine Seek against a log with zero checkpoints: {path}. \
+             Run `fft-checkpoint {path} <checkpointed.fftlog>` and replay that copy — \
+             serving the seek by replaying from frame zero is a forbidden degraded path \
+             (docs/ENGINE.md §4)"
+        );
+    }
+
     fn forward_work(&mut self) -> std::result::Result<bool, ReplayError> {
         let start = Instant::now();
         let mut applied = false;
@@ -418,7 +407,9 @@ impl Runtime {
             if event.kind == EventKind::Gap {
                 self.coverage.gap_records += 1;
             }
-            let seq = if event.seq.0 == 0 {
+            // Snapshot records carry original order-entry seqs (FFTLOG-V2 §4) — non-channel
+            // and freely regressing, so they retain the prior watermark like seq 0 does.
+            let seq = if event.seq.0 == 0 || event.is_snapshot() {
                 self.watermarks.applied_seq
             } else {
                 u64::from(event.seq.0)
@@ -433,12 +424,12 @@ impl Runtime {
     fn reset_pacing(&mut self) {
         // Anchor to the next event (not absolute applied_ts) so a cold Play at
         // session-open timestamps does not schedule a multi-year wall wait.
-        let origin = self
-            .source
-            .as_mut()
-            .and_then(|source| source.peek_event().ok().flatten())
-            .map(|event| event.ts.0)
-            .unwrap_or(self.applied_ts);
+        let next = match self.source.as_mut() {
+            // An empty source is legal; an unreadable one is not — never pace over it.
+            Some(source) => source.peek_event().unwrap_or_else(|e| replay_panic(e)),
+            None => None,
+        };
+        let origin = next.map(|event| event.ts.0).unwrap_or(self.applied_ts);
         self.pace_event_origin = origin;
         self.pace_wall_origin = Instant::now();
     }

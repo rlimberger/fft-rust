@@ -88,6 +88,17 @@ impl ReplaySource {
         self.reader.frame_count()
     }
 
+    /// Number of CHECKPOINT frames in the index. Zero means [`ReplaySource::seek`] can
+    /// only reach a target by replaying from frame zero; callers that must not take that
+    /// path (the engine, `docs/ENGINE.md` §4) check this before seeking.
+    pub fn checkpoint_count(&self) -> usize {
+        self.reader
+            .index()
+            .iter()
+            .filter(|entry| entry.kind == KIND_CHECKPOINT)
+            .count()
+    }
+
     /// Last source sequence applied by this cursor.
     pub fn applied_seq(&self) -> u64 {
         self.applied_seq
@@ -137,7 +148,9 @@ impl ReplaySource {
         };
         self.event += 1;
         apply(event, book, profile);
-        if event.seq.0 != 0 {
+        // Snapshot records carry original order-entry seqs (FFTLOG-V2 §4): non-channel,
+        // non-monotonic, and excluded from seq accounting.
+        if event.seq.0 != 0 && !event.is_snapshot() {
             self.applied_seq = u64::from(event.seq.0);
         }
         self.applied_ts = event.ts.0;
