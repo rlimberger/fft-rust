@@ -19,8 +19,9 @@ IMPLEMENTATION-PLAN M3 gate, PROCUREMENT-2026-08.md): frame gates run on the des
 machine under the quiet-box protocol (no concurrent builds — host load measurably
 injects 33 ms spikes); 240 Hz remains the design budget in time units; photon-level /
 high-refresh hardware validation is deferred and gates a release claim, never a merge.
-Open René action carried: submit the Databento licensing questionnaire (free) to close
-the one UNVERIFIED exchange-fee line before M6.
+Databento is parked entirely (René 2026-08-11, "stop worrying about DB"): no
+questionnaire, no quote, no purchase — it comes back only when René raises it or an M6
+track is actively briefed. Facts stay in PROCUREMENT-2026-08.md for that day.
 
 **Standing directive (René, this session): theme + font size follow the OS (Omarchy)
 system, live** — landed as UI-OS-THEME (`1caaabe`, PRD §5 same-commit). fc-match family
