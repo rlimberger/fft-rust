@@ -15,7 +15,7 @@ use crate::dom_view::DomView;
 use crate::glyph_cache::GlyphCache;
 use crate::layout::{COL_LABELS, format_price, format_size, header_h, max_visible_rows};
 use crate::mp_layout::max_rows as mp_max_rows;
-use crate::mp_view::{display_session, session_open_footer, visible_rows};
+use crate::mp_view::{current_session, session_open_footer, visible_rows};
 use crate::os_theme::ThemeSnapshot;
 use crate::theme::Palette;
 
@@ -205,7 +205,7 @@ pub fn collect_visible_glyph_jobs(
         }
     }
 
-    if let Some(session) = display_session(&snapshot.profile) {
+    if let Some(session) = current_session(&snapshot.profile) {
         let profile = visible_rows(
             session,
             snapshot.dom.tick_size,

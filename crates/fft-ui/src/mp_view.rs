@@ -30,8 +30,15 @@ pub struct VisibleProfile {
     pub rows: Vec<MpRow>,
 }
 
+/// Current (replay/live) session — always `sessions.last()` (ENGINE.md §2).
+pub fn current_session(profile: &ProfileRenderState) -> Option<&ProfileSessionRender> {
+    profile.sessions.last()
+}
+
+/// Compatibility alias; prefer [`current_session`].
+#[inline]
 pub fn display_session(profile: &ProfileRenderState) -> Option<&ProfileSessionRender> {
-    profile.sessions.first()
+    current_session(profile)
 }
 
 pub fn period_letter(index: usize) -> char {
@@ -163,7 +170,7 @@ pub fn check_pane_agreement(
     profile: &ProfileRenderState,
     dom: &DomRenderState,
 ) -> Result<usize, VolumeMismatch> {
-    let Some(session) = display_session(profile) else {
+    let Some(session) = current_session(profile) else {
         return Ok(0);
     };
     validate_rows(&session.rows);
@@ -378,6 +385,28 @@ mod tests {
         assert_eq!(session_open_footer(20_663), "07-28 18:00");
         // 1970-01-02 trade date rolls the footer into the prior year boundary safely.
         assert_eq!(session_open_footer(1), "01-01 18:00");
+    }
+
+    #[test]
+    fn current_session_is_last_not_first() {
+        let profile = ProfileRenderState {
+            sessions: vec![
+                ProfileSessionRender {
+                    trade_date: 1,
+                    rows: vec![row(100, 1)],
+                    ..Default::default()
+                },
+                ProfileSessionRender {
+                    trade_date: 2,
+                    rows: vec![row(200, 2)],
+                    ..Default::default()
+                },
+            ],
+        };
+        let current = current_session(&profile).unwrap();
+        assert_eq!(current.trade_date, 2);
+        assert_eq!(current.rows[0].price, Price(200));
+        assert!(std::ptr::eq(display_session(&profile).unwrap(), current));
     }
 
     #[test]

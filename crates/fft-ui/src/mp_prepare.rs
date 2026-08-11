@@ -85,6 +85,60 @@ pub(crate) fn prepare_tpos(
     );
 }
 
+/// Letters-only CP column for collapsed prior-session strips (no EP).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_cp_only(
+    cache: &mut GlyphCache,
+    window: &mut Window,
+    texts: &mut Vec<PreparedText>,
+    row: &MpRow,
+    cp: Strip,
+    y: f32,
+    palette: &Palette,
+    scale: f32,
+) {
+    let mut cp_eth = String::new();
+    let mut cp_rth = String::new();
+    for_each_tpo(
+        row.eth_periods,
+        row.rth_periods,
+        |_physical, letter, kind| match kind {
+            TpoKind::Eth => {
+                cp_eth.push(letter);
+                cp_rth.push(' ');
+            }
+            TpoKind::Rth => {
+                cp_rth.push(letter);
+                cp_eth.push(' ');
+            }
+        },
+    );
+    let cp_count = cp_eth.len().max(1);
+    let cp_font = px(((cp.w - 6.0) / cp_count as f32 / 0.62).clamp(5.0, 8.0) * scale);
+    prepare_line(
+        cache,
+        window,
+        texts,
+        cp_eth,
+        cp,
+        y,
+        cp_font,
+        palette.eth_tpo,
+        scale,
+    );
+    prepare_line(
+        cache,
+        window,
+        texts,
+        cp_rth,
+        cp,
+        y,
+        cp_font,
+        palette.rth_tpo,
+        scale,
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 fn prepare_line(
     cache: &mut GlyphCache,

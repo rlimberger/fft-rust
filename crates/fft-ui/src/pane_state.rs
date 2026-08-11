@@ -18,6 +18,10 @@ pub struct PaneState {
     pub center: Option<Price>,
     pub mp_scale: u8,
     pub dom_scale: u8,
+    /// Horizontal strip pan in px (content-space; positive reveals older sessions).
+    pub mp_pan_px: f32,
+    /// Horizontal strip zoom factor (0.5..=3.0); 1.0 matches today's widths.
+    pub mp_zoom: f32,
     pub hovered: Option<Pane>,
     pub splitter: SplitterState,
 }
@@ -28,6 +32,8 @@ impl Default for PaneState {
             center: None,
             mp_scale: 1,
             dom_scale: 1,
+            mp_pan_px: 0.0,
+            mp_zoom: 1.0,
             hovered: None,
             splitter: SplitterState::default(),
         }

@@ -14,10 +14,13 @@ use gpui::{
 use crate::glyph_cache::GlyphCache;
 use crate::layout::format_price;
 use crate::layout::format_size;
-use crate::mp_layout::{MpStrips, mp_footer_h, mp_row_h, row_y, strips};
+use crate::mp_layout::{SessionBlock, SessionLayout, mp_footer_h, mp_row_h, row_y, session_layout};
 use crate::mp_paint::{paint_dividers, paint_period_cursor, paint_rows, paint_semantic_lines};
 use crate::mp_prepare::prepare_tpos;
-use crate::mp_view::{VisibleProfile, display_session, session_open_footer, visible_rows};
+use crate::mp_sessions::{
+    is_prior, paint_prior_va_vpoc, paint_session_dividers, prepare_prior_session, prior_markers,
+};
+use crate::mp_view::{VisibleProfile, current_session, session_open_footer, visible_rows};
 use crate::theme::Palette;
 
 pub struct MarketProfile {
@@ -27,6 +30,8 @@ pub struct MarketProfile {
     glyph_cache: Rc<RefCell<GlyphCache>>,
     palette: Rc<Palette>,
     scale: f32,
+    pan_px: f32,
+    zoom: f32,
 }
 
 impl MarketProfile {
@@ -45,7 +50,16 @@ impl MarketProfile {
             glyph_cache,
             palette,
             scale,
+            pan_px: 0.0,
+            zoom: 1.0,
         }
+    }
+
+    /// Inject horizontal strip pan/zoom from `PaneState` without changing shell.rs.
+    pub fn with_pan_zoom(mut self, pan_px: f32, zoom: f32) -> Self {
+        self.pan_px = pan_px;
+        self.zoom = zoom;
+        self
     }
 }
 
@@ -85,6 +99,8 @@ pub struct MpPrepaint {
     pub(crate) max_pv: u64,
     pub(crate) max_sv: u64,
     pub(crate) markers: Markers,
+    pub(crate) layout: SessionLayout,
+    pub(crate) prior_markers: Vec<(usize, Markers)>,
 }
 
 impl Element for MarketProfile {
@@ -125,22 +141,34 @@ impl Element for MarketProfile {
         let footer_h = mp_footer_h(scale);
         let width = f32::from(bounds.size.width);
         let height = f32::from(bounds.size.height);
-        let cols = strips(f32::from(bounds.origin.x), width);
-        let Some(session) = display_session(&self.snapshot.profile) else {
+        let origin_x = f32::from(bounds.origin.x);
+        let Some(current) = current_session(&self.snapshot.profile) else {
             return MpPrepaint {
                 texts: Vec::new(),
                 profile: VisibleProfile::default(),
                 max_pv: 0,
                 max_sv: 0,
                 markers: Markers::default(),
+                layout: session_layout(origin_x, width, 1, 0.0, 1.0, scale),
+                prior_markers: Vec::new(),
             };
         };
+        let sessions = &self.snapshot.profile.sessions;
+        let layout = session_layout(
+            origin_x,
+            width,
+            sessions.len(),
+            self.pan_px,
+            self.zoom,
+            scale,
+        );
+        let max_rows = crate::mp_layout::max_rows(height, scale);
         let profile = visible_rows(
-            session,
+            current,
             self.snapshot.dom.tick_size,
             self.tick_scale,
             self.center,
-            crate::mp_layout::max_rows(height, scale),
+            max_rows,
         );
         let max_pv = profile
             .rows
@@ -154,11 +182,50 @@ impl Element for MarketProfile {
             .map(|row| row.session_volume)
             .max()
             .unwrap_or(0);
-        let mut texts = Vec::with_capacity(profile.rows.len() * 7 + 1);
+        let prior_count = sessions.len().saturating_sub(1);
+        let mut texts =
+            Vec::with_capacity(profile.rows.len() * (7 + prior_count * 2) + sessions.len());
         let mut cache = self.glyph_cache.borrow_mut();
-        prepare_rows(
+        let body_h = (height - footer_h).max(0.0);
+
+        // Prior sessions: letters-only CP + footer (oldest leftmost).
+        let mut prior_markers_out = Vec::with_capacity(prior_count);
+        for block in layout.blocks.iter().filter(|b| is_prior(b)) {
+            let session = &sessions[block.session_index];
+            // Reuse the current window's price ladder; lettering comes from this session's rows.
+            let prior_profile = visible_rows(
+                session,
+                self.snapshot.dom.tick_size,
+                self.tick_scale,
+                self.center,
+                max_rows,
+            );
+            prepare_prior_session(
+                session,
+                &prior_profile,
+                block,
+                &layout,
+                bounds,
+                body_h,
+                window,
+                &mut cache,
+                &mut texts,
+                &self.palette,
+                scale,
+            );
+            prior_markers_out.push((block.session_index, prior_markers(session)));
+        }
+
+        // Current session: full CP→EP→PV→SV + axis.
+        let current_block = layout
+            .blocks
+            .iter()
+            .find(|b| b.session_index + 1 == sessions.len())
+            .expect("current session block present");
+        prepare_current_rows(
             &profile,
-            cols,
+            current_block,
+            &layout,
             bounds,
             window,
             &mut cache,
@@ -166,25 +233,28 @@ impl Element for MarketProfile {
             &self.palette,
             scale,
         );
-        let footer = session_open_footer(session.trade_date);
+        let footer = session_open_footer(current.trade_date);
         let line = cache.get_or_shape(window, footer, self.palette.text, px(11.0 * scale));
-        texts.push(PreparedText {
-            line,
-            origin: point(
-                px(f32::from(bounds.origin.x) + 6.0),
-                px(f32::from(bounds.origin.y) + height - footer_h + 4.0 * scale),
-            ),
-            align_width: px((width - 12.0).max(0.0)),
-            align: TextAlign::Left,
-            line_height: px(footer_h - 4.0 * scale),
-            clip: Bounds::new(
-                point(
-                    bounds.origin.x,
-                    px(f32::from(bounds.origin.y) + height - footer_h),
+        let footer_x = current_block.x.max(layout.strip_viewport.x);
+        let footer_right = (current_block.x + current_block.w)
+            .min(layout.strip_viewport.x + layout.strip_viewport.w);
+        let footer_w = (footer_right - footer_x).max(0.0);
+        if footer_w > 0.0 {
+            texts.push(PreparedText {
+                line,
+                origin: point(
+                    px(footer_x + 6.0),
+                    px(f32::from(bounds.origin.y) + height - footer_h + 4.0 * scale),
                 ),
-                size(bounds.size.width, px(footer_h)),
-            ),
-        });
+                align_width: px((footer_w - 12.0).max(0.0)),
+                align: TextAlign::Left,
+                line_height: px(footer_h - 4.0 * scale),
+                clip: Bounds::new(
+                    point(px(footer_x), px(f32::from(bounds.origin.y) + body_h)),
+                    size(px(footer_w), px(footer_h)),
+                ),
+            });
+        }
         drop(cache);
         MpPrepaint {
             texts,
@@ -192,16 +262,18 @@ impl Element for MarketProfile {
             max_pv,
             max_sv,
             markers: Markers {
-                open: session.open,
-                vpoc: session.vpoc,
-                vah: session.vah,
-                val: session.val,
-                ib_low: session.ib_low,
-                ib_high: session.ib_high,
+                open: current.open,
+                vpoc: current.vpoc,
+                vah: current.vah,
+                val: current.val,
+                ib_low: current.ib_low,
+                ib_high: current.ib_high,
                 current_price: self.snapshot.dom.last_trade.map(|trade| trade.price),
-                current_period: session.current_period,
-                period_gap: session.period_gap,
+                current_period: current.current_period,
+                period_gap: current.period_gap,
             },
+            layout,
+            prior_markers: prior_markers_out,
         }
     }
 
@@ -219,11 +291,8 @@ impl Element for MarketProfile {
         let footer_h = mp_footer_h(scale);
         let palette = &*self.palette;
         window.paint_quad(fill(bounds, palette.base));
-        let width = f32::from(bounds.size.width);
         let height = f32::from(bounds.size.height);
-        let origin_x = f32::from(bounds.origin.x);
         let origin_y = f32::from(bounds.origin.y);
-        let cols = strips(origin_x, width);
         let body_h = (height - footer_h).max(0.0);
         let footer = Bounds::new(
             point(bounds.origin.x, px(origin_y + body_h)),
@@ -231,10 +300,40 @@ impl Element for MarketProfile {
         );
         window.paint_quad(fill(footer, palette.footer_bg));
 
+        let layout = &prepaint.layout;
+        let current_block = layout
+            .blocks
+            .last()
+            .expect("session layout has a current block");
+        let mut cols = current_block.strips;
+        cols.axis = layout.axis;
+
         paint_period_cursor(bounds, body_h, cols, prepaint.markers, palette, window);
         paint_rows(bounds, cols, prepaint, palette, scale, window);
+        // Current-session semantic lines span the full pane (axis included).
         paint_semantic_lines(bounds, body_h, prepaint, palette, scale, window);
+        // Prior VA/VPOC hairlines, subtle, clipped to each prior block.
+        for block in layout.blocks.iter().filter(|b| is_prior(b)) {
+            if let Some((_, markers)) = prepaint
+                .prior_markers
+                .iter()
+                .find(|(idx, _)| *idx == block.session_index)
+            {
+                paint_prior_va_vpoc(
+                    body_h,
+                    block,
+                    layout,
+                    &prepaint.profile,
+                    *markers,
+                    palette,
+                    scale,
+                    origin_y,
+                    window,
+                );
+            }
+        }
         paint_dividers(bounds, body_h, cols, palette, window);
+        paint_session_dividers(bounds, layout, palette, window);
 
         for prepared in prepaint.texts.drain(..) {
             window
@@ -259,9 +358,10 @@ impl Element for MarketProfile {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn prepare_rows(
+fn prepare_current_rows(
     profile: &VisibleProfile,
-    cols: MpStrips,
+    block: &SessionBlock,
+    layout: &SessionLayout,
     bounds: Bounds<Pixels>,
     window: &mut Window,
     cache: &mut GlyphCache,
@@ -271,8 +371,13 @@ fn prepare_rows(
 ) {
     let origin_y = f32::from(bounds.origin.y);
     let rh = mp_row_h(scale);
+    let strip_left = layout.strip_viewport.x;
+    let strip_right = layout.strip_viewport.x + layout.strip_viewport.w;
+    let mut cols = block.strips;
+    cols.axis = layout.axis;
     for (from_top, row) in profile.rows.iter().rev().enumerate() {
         let y = row_y(origin_y, from_top, scale) + 1.0 * scale;
+        let before = texts.len();
         prepare_tpos(cache, window, texts, row, cols, y, palette, scale);
         prepare_number(
             cache,
@@ -294,6 +399,17 @@ fn prepare_rows(
             palette.text,
             scale,
         );
+        // Clip CP/EP/PV/SV glyphs to the strip viewport (axis stays unclipped).
+        for prepared in &mut texts[before..] {
+            let left = f32::from(prepared.clip.origin.x).max(strip_left);
+            let right = (f32::from(prepared.clip.origin.x) + f32::from(prepared.clip.size.width))
+                .min(strip_right);
+            let w = (right - left).max(0.0);
+            prepared.clip = Bounds::new(
+                point(px(left), prepared.clip.origin.y),
+                size(px(w), prepared.clip.size.height),
+            );
+        }
         let line = cache.get_or_shape(
             window,
             format_price(row.price.0),

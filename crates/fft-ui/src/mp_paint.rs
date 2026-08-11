@@ -18,6 +18,14 @@ pub(crate) fn paint_rows(
 ) {
     let origin_y = f32::from(bounds.origin.y);
     let rh = mp_row_h(scale);
+    let strip_left = prepaint.layout.strip_viewport.x;
+    let strip_right = prepaint.layout.strip_viewport.x + prepaint.layout.strip_viewport.w;
+    let current_left = prepaint
+        .layout
+        .blocks
+        .last()
+        .map(|b| b.x.max(strip_left))
+        .unwrap_or(strip_left);
     for (from_top, row) in prepaint.profile.rows.iter().rev().enumerate() {
         let y = row_y(origin_y, from_top, scale);
         let bucket_high = row
@@ -31,34 +39,42 @@ pub(crate) fn paint_rows(
             .zip(prepaint.markers.vah)
             .is_some_and(|(low, high)| bucket_high >= low.0 && row.price.0 <= high.0)
         {
-            window.paint_quad(fill(
-                Bounds::new(
-                    point(bounds.origin.x, px(y)),
-                    size(px(cols.axis.x - f32::from(bounds.origin.x)), px(rh)),
-                ),
-                palette.va_bg,
-            ));
+            let left = current_left;
+            let right = cols.axis.x.min(strip_right);
+            let w = (right - left).max(0.0);
+            if w > 0.0 {
+                window.paint_quad(fill(
+                    Bounds::new(point(px(left), px(y)), size(px(w), px(rh))),
+                    palette.va_bg,
+                ));
+            }
         }
         let pv_w = volume_width(row.period_volume, prepaint.max_pv, cols.pv.w - 4.0);
         if pv_w > 0.0 {
-            window.paint_quad(fill(
-                Bounds::new(
-                    point(px(cols.pv.x + 2.0), px(y + 3.0 * scale)),
-                    size(px(pv_w), px(rh - 6.0 * scale)),
-                ),
-                palette.pv_bar,
-            ));
+            let x = cols.pv.x + 2.0;
+            if x < strip_right && x + pv_w > strip_left {
+                window.paint_quad(fill(
+                    Bounds::new(
+                        point(px(x), px(y + 3.0 * scale)),
+                        size(px(pv_w), px(rh - 6.0 * scale)),
+                    ),
+                    palette.pv_bar,
+                ));
+            }
         }
         // SV = session volume-at-price TOTAL only (René 2026-08-11). No aggressor split.
         let total_w = volume_width(row.session_volume, prepaint.max_sv, cols.sv.w - 4.0);
         if total_w > 0.0 {
-            window.paint_quad(fill(
-                Bounds::new(
-                    point(px(cols.sv.x + 2.0), px(y + 4.0 * scale)),
-                    size(px(total_w), px(rh - 8.0 * scale)),
-                ),
-                palette.sv_total,
-            ));
+            let x = cols.sv.x + 2.0;
+            if x < strip_right && x + total_w > strip_left {
+                window.paint_quad(fill(
+                    Bounds::new(
+                        point(px(x), px(y + 4.0 * scale)),
+                        size(px(total_w), px(rh - 8.0 * scale)),
+                    ),
+                    palette.sv_total,
+                ));
+            }
         }
     }
 }
@@ -72,7 +88,7 @@ pub(crate) fn paint_period_cursor(
     window: &mut Window,
 ) {
     let period = usize::try_from(markers.current_period).expect("MP period fits usize");
-    if period < ETH_PERIOD_COUNT {
+    if period < ETH_PERIOD_COUNT && cols.ep.w > 0.0 {
         let step = cols.ep.w / ETH_PERIOD_COUNT as f32;
         window.paint_quad(fill(
             Bounds::new(
@@ -82,7 +98,7 @@ pub(crate) fn paint_period_cursor(
             palette.period_cursor,
         ));
     }
-    if markers.period_gap {
+    if markers.period_gap && cols.pv.w > 0.0 {
         window.paint_quad(fill(
             Bounds::new(
                 point(px(cols.pv.x), bounds.origin.y),
