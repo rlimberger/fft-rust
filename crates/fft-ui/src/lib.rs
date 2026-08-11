@@ -19,6 +19,7 @@ mod mp_sessions;
 pub mod mp_view;
 pub mod os_theme;
 pub mod pane_state;
+pub mod prefs;
 pub mod shell;
 mod shell_panes;
 pub mod theme;

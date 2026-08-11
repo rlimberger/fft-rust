@@ -3,6 +3,8 @@
 use fft_core::Price;
 use fft_engine::DomRenderState;
 
+use crate::prefs::Prefs;
+
 pub const SPLITTER_WIDTH: f32 = 6.0;
 const MIN_PANE_WIDTH: f32 = 180.0;
 
@@ -40,7 +42,48 @@ impl Default for PaneState {
     }
 }
 
+/// Fields of [`PaneState`] that survive across runs (prefs v1).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PanePrefsSnapshot {
+    pub mp_scale: u8,
+    pub dom_scale: u8,
+    pub splitter_ratio: f32,
+    pub mp_zoom: f32,
+}
+
 impl PaneState {
+    /// Construct pane state from loaded prefs (clamped values already applied).
+    pub fn from_prefs(prefs: &Prefs) -> Self {
+        let mut state = Self::default();
+        state.apply_prefs_snapshot(&PanePrefsSnapshot {
+            mp_scale: prefs.mp_scale,
+            dom_scale: prefs.dom_scale,
+            splitter_ratio: prefs.splitter_ratio,
+            mp_zoom: prefs.mp_zoom,
+        });
+        state
+    }
+
+    /// Snapshot of persisted pane fields for quit-time write.
+    pub fn prefs_snapshot(&self) -> PanePrefsSnapshot {
+        PanePrefsSnapshot {
+            mp_scale: self.mp_scale,
+            dom_scale: self.dom_scale,
+            splitter_ratio: self.splitter.ratio(),
+            mp_zoom: self.mp_zoom,
+        }
+    }
+
+    /// Apply a prefs snapshot (scales must be 1/2/4; ratio/zoom trusted as clamped).
+    pub fn apply_prefs_snapshot(&mut self, snap: &PanePrefsSnapshot) {
+        validate_scale(snap.mp_scale);
+        validate_scale(snap.dom_scale);
+        self.mp_scale = snap.mp_scale;
+        self.dom_scale = snap.dom_scale;
+        self.mp_zoom = snap.mp_zoom;
+        self.splitter.set_ratio(snap.splitter_ratio);
+    }
+
     pub fn effective_center(&self, dom: &DomRenderState) -> Option<Price> {
         self.center.or_else(|| raw_follow_center(dom))
     }
@@ -135,6 +178,15 @@ impl Default for SplitterState {
 impl SplitterState {
     pub fn ratio(&self) -> f32 {
         self.ratio
+    }
+
+    /// Set the split ratio directly (prefs restore; not for drag).
+    pub fn set_ratio(&mut self, ratio: f32) {
+        assert!(
+            ratio.is_finite() && (0.0..=1.0).contains(&ratio),
+            "splitter ratio must be finite in [0, 1]"
+        );
+        self.ratio = ratio;
     }
 
     pub fn begin(&mut self, x: f32) {

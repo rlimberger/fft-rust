@@ -23,6 +23,7 @@ use crate::mp_view::check_pane_agreement;
 use crate::mp_view::display_session;
 use crate::os_theme::{ThemeSlot, resolve_font_family, spawn_theme_watcher};
 use crate::pane_state::PaneState;
+use crate::prefs::{Prefs, ShellPrefsHandles};
 use crate::shell_panes;
 use crate::theme::Palette;
 use crate::theme_warmup::{
@@ -42,8 +43,10 @@ pub struct Shell {
     snapshots: Option<SnapshotSlot>,
     replay_ready: Rc<RefCell<Option<ReplayResources>>>,
     pending_replay: Option<PathBuf>,
-    /// Optional seek target (ns UTC) applied after SetSource, before Play.
+    /// Seek target (ns UTC) after SetSource, before Play.
     replay_at: Option<u64>,
+    /// Prior-day logs, oldest-first after Play (`--prior`, ENGINE.md §2).
+    prior_sessions: Vec<PathBuf>,
     engine_slot: Rc<RefCell<Option<EngineHandle>>>,
     wake_dirty: Arc<AtomicBool>,
     frame_snapshot: Arc<RenderSnapshot>,
@@ -52,20 +55,15 @@ pub struct Shell {
     mp_input: Rc<RefCell<DomInput>>,
     glyph_cache: Rc<RefCell<GlyphCache>>,
     palette: Rc<Palette>,
-    /// OS theme scale (`base_size / 12`); applied to row heights and font sizes.
+    /// OS theme scale (`base_size / 12`).
     scale: f32,
     theme_slot: Arc<ThemeSlot>,
-    /// Last ThemeSlot generation we have reacted to (detect ≠ adopt).
     slot_seen_generation: u64,
-    /// Incoming theme waiting for glyph warm-up before adoption.
     pending_theme: Option<PendingTheme>,
-    /// Resolved once before the window opens; live family switching is out of scope.
     font_family: String,
     focus: FocusHandle,
     focus_once: bool,
-    /// Replay transport (`r` strip + keys). RefCell so key/mouse handlers avoid entity.update.
     transport: Rc<RefCell<TransportState>>,
-    /// Scrub track window-space geometry (updated each strip paint).
     scrub_track: Rc<RefCell<ScrubTrackGeom>>,
 }
 
@@ -74,26 +72,30 @@ impl Shell {
         harness: Rc<RefCell<Harness>>,
         pending_replay: Option<PathBuf>,
         replay_at: Option<u64>,
+        prior_sessions: Vec<PathBuf>,
         engine_slot: Rc<RefCell<Option<EngineHandle>>>,
         cx: &mut Context<Self>,
     ) -> Self {
-        // Family is fixed at startup (fc-match); palette/scale follow the OS theme live.
         let font_family = resolve_font_family();
         let theme_slot = spawn_theme_watcher();
         let snap = theme_slot.load();
         let slot_seen_generation = snap.generation;
         let palette = Rc::new(snap.palette);
         let scale = snap.scale;
+        let prefs = Prefs::load();
+        let panes = Rc::new(RefCell::new(PaneState::from_prefs(&prefs)));
+        let transport = Rc::new(RefCell::new(TransportState::from_prefs(&prefs)));
         Self {
             harness,
             snapshots: None,
             replay_ready: Rc::new(RefCell::new(None)),
             pending_replay,
             replay_at,
+            prior_sessions,
             engine_slot,
             wake_dirty: Arc::new(AtomicBool::new(false)),
             frame_snapshot: Arc::new(RenderSnapshot::default()),
-            panes: Rc::new(RefCell::new(PaneState::default())),
+            panes,
             dom_input: Rc::new(RefCell::new(DomInput::default())),
             mp_input: Rc::new(RefCell::new(DomInput::default())),
             glyph_cache: Rc::new(RefCell::new(GlyphCache::default())),
@@ -105,12 +107,16 @@ impl Shell {
             font_family,
             focus: cx.focus_handle().tab_stop(true),
             focus_once: true,
-            transport: Rc::new(RefCell::new(TransportState::default())),
+            transport,
             scrub_track: Rc::new(RefCell::new(ScrubTrackGeom::default())),
         }
     }
 
-    /// Map pure transport commands onto the engine (non-blocking bounded send).
+    /// Quit-time prefs handles (main holds these across `app.run`).
+    pub fn prefs_handles(&self) -> ShellPrefsHandles {
+        ShellPrefsHandles::new(Rc::clone(&self.panes), Rc::clone(&self.transport))
+    }
+
     fn dispatch_transport(engine: &Option<EngineHandle>, commands: &[TransportCommand]) {
         let Some(handle) = engine.as_ref() else {
             return;
@@ -131,7 +137,6 @@ impl Shell {
         }
     }
 
-    /// Drain at most one scrub Seek per frame (latest-wins).
     fn drain_scrub_seek(&self) {
         let cmd = self.transport.borrow_mut().take_coalesced_seek();
         if let Some(cmd) = cmd {
@@ -139,10 +144,7 @@ impl Shell {
         }
     }
 
-    /// Phase 1 — detect only. Never adopts; render keeps the previous palette/scale.
-    ///
-    /// GlyphCache keys include color bits and font size ([`crate::glyph_cache`]), so
-    /// palette-only and scale changes both miss cold — both take the pending path.
+    /// Phase 1 — detect only (palette/scale stay on the pending path until warm).
     fn detect_theme_slot(&mut self) {
         let theme_slot = Arc::clone(&self.theme_slot);
         let advanced = note_theme_slot_advance(
@@ -160,7 +162,7 @@ impl Shell {
         }
     }
 
-    /// Phase 2 — after this frame's element tree is built at the OLD theme, warm then adopt.
+    /// Phase 2 — warm at the OLD theme, then adopt.
     fn warm_and_maybe_adopt_theme(&mut self, window: &mut Window) {
         if self.pending_theme.is_none() {
             return;
@@ -175,7 +177,6 @@ impl Shell {
             )
         };
         if let Some(pend) = self.pending_theme.as_mut() {
-            // Install once; keep cursor progress across frames. Empty → retry later.
             let queue = collect_visible_glyph_jobs(
                 &self.frame_snapshot,
                 center,
@@ -202,8 +203,6 @@ impl Shell {
                 warm_frames_used,
                 warmed_entries,
             } => {
-                // Adopt the snapshot we warmed — never re-load the slot here.
-                // A concurrent publish is picked up next frame as a new pending.
                 self.palette = Rc::new(snap.palette);
                 self.scale = snap.scale;
                 eprintln!(
@@ -227,10 +226,13 @@ impl Shell {
             return;
         };
         let replay_at = self.replay_at.take();
+        let priors = std::mem::take(&mut self.prior_sessions);
         let replay_ready = Rc::clone(&self.replay_ready);
         let engine_slot = Rc::clone(&self.engine_slot);
+        let speed = self.transport.borrow().speed();
         window.on_next_frame(move |window, _| {
-            let (handle, snapshots, wake_dirty) = spawn_replay_engine(path, replay_at);
+            let (handle, snapshots, wake_dirty) =
+                spawn_replay_engine(path, replay_at, &priors, speed);
             *engine_slot.borrow_mut() = Some(handle);
             *replay_ready.borrow_mut() = Some(ReplayResources {
                 snapshots,
@@ -258,7 +260,6 @@ impl Render for Shell {
         }
         self.start_replay_after_first_paint(window);
         if self.snapshots.is_none() {
-            // Warm against whatever snapshot exists (may be empty early on).
             self.warm_and_maybe_adopt_theme(window);
             return div()
                 .size_full()
@@ -281,7 +282,6 @@ impl Render for Shell {
             );
         }
 
-        // One scrub Seek max per frame from the latest drag position.
         self.drain_scrub_seek();
 
         let viewport_width = f32::from(window.viewport_size().width);
@@ -297,7 +297,6 @@ impl Render for Shell {
             let panes = self.panes.borrow();
             (panes.mp_scale, panes.dom_scale, panes.splitter.ratio())
         };
-        // OLD theme for this frame while a pending warm-up is in flight.
         let ui_scale = self.scale;
         let mp = MarketProfile::new(
             Arc::clone(&self.frame_snapshot),
@@ -362,7 +361,6 @@ impl Render for Shell {
             None
         };
 
-        // After the tree is built at the old theme: warm the incoming glyph set, then adopt.
         self.warm_and_maybe_adopt_theme(window);
 
         let panes_row = div()
@@ -377,7 +375,6 @@ impl Render for Shell {
         div()
             .id("fft-two-pane-shell")
             .size_full()
-            // Family fixed at startup; live family switching is out of scope.
             .font_family(font_family)
             .flex()
             .flex_col()
@@ -387,7 +384,6 @@ impl Render for Shell {
                     return;
                 }
                 let key = event.keystroke.key.as_str();
-                // Pane scale / recenter first (unchanged hover-routing).
                 let (pane_handled, pane_refresh) = {
                     let mut panes = key_panes.borrow_mut();
                     match key {
@@ -448,20 +444,21 @@ impl Render for Shell {
     }
 }
 
-/// Scrub range: session open…+24h from profile trade_date (engine has no log extent on snapshot).
+/// Scrub range: session open…+24h from trade_date (snapshot has no log extent).
 fn scrub_range_from_snapshot(snap: &RenderSnapshot) -> (u64, u64) {
     if let Some(session) = display_session(&snap.profile)
         && session.trade_date > 0
     {
         return session_range_ns(session.trade_date);
     }
-    // Empty snapshot: degenerate range so pure math still clamps.
     (0, 1)
 }
 
 fn spawn_replay_engine(
     path: PathBuf,
     replay_at: Option<u64>,
+    prior_sessions: &[PathBuf],
+    speed: f64,
 ) -> (EngineHandle, SnapshotSlot, Arc<AtomicBool>) {
     let wake_dirty = Arc::new(AtomicBool::new(false));
     let wake = Arc::clone(&wake_dirty);
@@ -477,9 +474,8 @@ fn spawn_replay_engine(
     handle
         .send(EngineCmd::SetSource(Source::Replay { path }))
         .unwrap_or_else(|err| panic!("fft: SetSource failed: {err}"));
-    // Seek pauses; Play must follow. Generation 1 is the first valid UI seek after
-    // SetSource resets latest_seek to 0. Transport scrub/step counter starts at 2
-    // (`TransportState` / FIRST_UI_SEEK_GENERATION) so it cannot collide with this Seek.
+    // Seek pauses; Play follows. Gen 1 is the UI's first seek after SetSource (0).
+    // Transport scrub/step starts at 2 (`FIRST_UI_SEEK_GENERATION`).
     if let Some(ts) = replay_at {
         handle
             .send(EngineCmd::Seek { ts, generation: 1 })
@@ -488,6 +484,19 @@ fn spawn_replay_engine(
     handle
         .send(EngineCmd::Play)
         .unwrap_or_else(|err| panic!("fft: Play failed: {err}"));
+    if (speed - 1.0).abs() > f64::EPSILON {
+        handle
+            .send(EngineCmd::SetSpeed(speed))
+            .unwrap_or_else(|err| panic!("fft: SetSpeed failed: {err}"));
+    }
+    // ENGINE.md §2: one LoadPriorSession per prior, oldest-first (CLI order).
+    for prior in prior_sessions {
+        handle
+            .send(EngineCmd::LoadPriorSession {
+                path: prior.clone(),
+            })
+            .unwrap_or_else(|err| panic!("fft: LoadPriorSession failed: {err}"));
+    }
     let snapshots = handle.snapshots();
     (handle, snapshots, wake_dirty)
 }

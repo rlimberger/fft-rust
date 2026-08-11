@@ -6,6 +6,8 @@
 use jiff::Timestamp;
 use jiff::civil::Date;
 
+use crate::prefs::Prefs;
+
 /// Fixed speed ladder (PRD speeds via `[` / `]`).
 pub const SPEED_LADDER: &[f64] = &[0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 64.0];
 
@@ -85,7 +87,35 @@ impl Default for TransportState {
     }
 }
 
+/// Fields of [`TransportState`] that survive across runs (prefs v1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TransportPrefsSnapshot {
+    pub speed_index: usize,
+}
+
 impl TransportState {
+    /// Construct transport state from loaded prefs (index already clamped).
+    pub fn from_prefs(prefs: &Prefs) -> Self {
+        let mut state = Self::default();
+        state.apply_prefs_snapshot(&TransportPrefsSnapshot {
+            speed_index: prefs.transport_speed_index,
+        });
+        state
+    }
+
+    /// Snapshot of persisted transport fields for quit-time write.
+    pub fn prefs_snapshot(&self) -> TransportPrefsSnapshot {
+        TransportPrefsSnapshot {
+            speed_index: self.speed_index,
+        }
+    }
+
+    /// Apply a prefs snapshot (index clamped to the ladder).
+    pub fn apply_prefs_snapshot(&mut self, snap: &TransportPrefsSnapshot) {
+        let max = SPEED_LADDER.len().saturating_sub(1);
+        self.speed_index = snap.speed_index.min(max);
+    }
+
     /// Current ladder speed.
     pub fn speed(&self) -> f64 {
         SPEED_LADDER[self.speed_index]
