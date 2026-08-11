@@ -1,0 +1,57 @@
+{
+  "gate": "M2 seek gate — IDENTITY-ONLY (soak concurrent — latencies not claimable)",
+  "date": "2026-08-11T13:51:48Z",
+  "binary": "./target/release/m2-gate --log /tmp/esu6-wed-v3-ckpt.fftlog --seeks 100 --verify 100 --seed 0x4d325345454b --label IDENTITY-ONLY (soak concurrent — latencies not claimable) --out perf-runner/results/2026-08-11-m2-bit-identity-100.json",
+  "git_sha": "2929cd3cf2bf44e27ab72bbdb49681420d558cca",
+  "git_dirty": true,
+  "label": "IDENTITY-ONLY (soak concurrent — latencies not claimable)",
+  "log": {
+    "path": "/tmp/esu6-wed-v3-ckpt.fftlog",
+    "event_count": 21419657,
+    "checkpoint_count": 1393,
+    "frame_count": 4670,
+    "first_ts": 1785276000000000000,
+    "last_ts": 1785362399999689777,
+    "event_time_span_s": 86399.999689777
+  },
+  "seed": 84878540752203,
+  "seeks": 100,
+  "methodology": "COLD: for each target ts sampled uniformly in [first_ts, last_ts] via xorshift64*(seed), open one long-lived ReplaySource on the checkpointed log; allocate fresh Book+MultiProfile; wall-time ReplaySource::seek(target, book, profile, || false) — checkpoint restore + tail through target_ts (events with ts ≤ target). WARM: immediately re-seek the same target on the same source into a second fresh Book+MultiProfile (mmap/checkpoint pages hot; no process restart). Bit-identity: for the first --verify targets, independent seek vs forward-from-open to the same target_ts; compare serialize_book/flow/refresh + MultiProfile::serialize (PROFILE/CVD/SESSION) byte vectors; any mismatch is FAIL with the first differing section named. Throughput: one full apply_next pass; realtime_multiple = (last_ts-first_ts)/wall. Harness requires checkpoint_count > 0 (mirrors engine loud reject).",
+  "cold": {
+    "n": 100,
+    "p50_ms": 1.788703,
+    "p95_ms": 5.831904,
+    "p99_ms": 8.522228,
+    "max_ms": 8.827342999999999,
+    "min_ms": 0.364305,
+    "mean_ms": 2.417144270000001
+  },
+  "warm": {
+    "n": 100,
+    "p50_ms": 1.8421130000000001,
+    "p95_ms": 6.018279,
+    "p99_ms": 8.566519999999999,
+    "max_ms": 8.818147,
+    "min_ms": 0.346953,
+    "mean_ms": 2.4564381600000003
+  },
+  "verify": {
+    "count": 100,
+    "passed": 100,
+    "failed": 0,
+    "mismatch": null
+  },
+  "throughput": {
+    "events": 21401139,
+    "wall_s": 2.747291736,
+    "events_per_sec": 7789904.04242966,
+    "event_time_span_s": 86399.999689777,
+    "realtime_multiple": 31449.15356371057
+  },
+  "budgets": {
+    "seek_p95_ms": 250.0,
+    "realtime_multiple": 60.0
+  },
+  "verdict": "PASS",
+  "notes": null
+}
