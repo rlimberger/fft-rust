@@ -15,6 +15,7 @@ use crate::dom_ladder::DomLadder;
 use crate::dom_view::DomView;
 use crate::glyph_cache::GlyphCache;
 use crate::harness::Harness;
+use crate::header::{FrameCadence, HeaderArgs, contract_context, header_strip};
 use crate::mp_element::MarketProfile;
 #[cfg(debug_assertions)]
 use crate::mp_view::check_pane_agreement;
@@ -46,6 +47,7 @@ pub struct Shell {
     replay_at: Option<u64>,
     /// Prior-day logs, oldest-first after Play (`--prior`, ENGINE.md §2).
     prior_sessions: Vec<PathBuf>,
+    discover_priors: bool,
     engine_slot: Rc<RefCell<Option<EngineHandle>>>,
     wake_dirty: Arc<AtomicBool>,
     frame_snapshot: Arc<RenderSnapshot>,
@@ -62,6 +64,7 @@ pub struct Shell {
     font_family: String,
     focus: FocusHandle,
     focus_once: bool,
+    frame_cadence: FrameCadence,
     transport: Rc<RefCell<TransportState>>,
     scrub_track: Rc<RefCell<ScrubTrackGeom>>,
 }
@@ -72,6 +75,7 @@ impl Shell {
         pending_replay: Option<PathBuf>,
         replay_at: Option<u64>,
         prior_sessions: Vec<PathBuf>,
+        discover_priors: bool,
         engine_slot: Rc<RefCell<Option<EngineHandle>>>,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -91,6 +95,7 @@ impl Shell {
             pending_replay,
             replay_at,
             prior_sessions,
+            discover_priors,
             engine_slot,
             wake_dirty: Arc::new(AtomicBool::new(false)),
             frame_snapshot: Arc::new(RenderSnapshot::default()),
@@ -106,6 +111,7 @@ impl Shell {
             font_family,
             focus: cx.focus_handle().tab_stop(true),
             focus_once: true,
+            frame_cadence: FrameCadence::default(),
             transport,
             scrub_track: Rc::new(RefCell::new(ScrubTrackGeom::default())),
         }
@@ -226,12 +232,13 @@ impl Shell {
         };
         let replay_at = self.replay_at.take();
         let priors = std::mem::take(&mut self.prior_sessions);
+        let discover_priors = self.discover_priors;
         let replay_ready = Rc::clone(&self.replay_ready);
         let engine_slot = Rc::clone(&self.engine_slot);
         let speed = self.transport.borrow().speed();
         window.on_next_frame(move |window, _| {
             let (handle, snapshots, wake_dirty) =
-                spawn_replay_engine(path, replay_at, &priors, speed);
+                spawn_replay_engine(path, replay_at, &priors, discover_priors, speed);
             *engine_slot.borrow_mut() = Some(handle);
             *replay_ready.borrow_mut() = Some(ReplayResources {
                 snapshots,
@@ -255,7 +262,9 @@ impl Render for Shell {
             crate::startup_trace::note_first_interactive();
         }
         self.glyph_cache.borrow_mut().begin_frame();
-        let keep_going = self.harness.borrow_mut().on_frame(Instant::now());
+        let frame_now = Instant::now();
+        let fps = self.frame_cadence.record(frame_now);
+        let keep_going = self.harness.borrow_mut().on_frame(frame_now);
         if crate::startup_trace::complete() || !keep_going {
             cx.defer(|cx| cx.quit());
         } else {
@@ -264,9 +273,27 @@ impl Render for Shell {
         self.start_replay_after_first_paint(window);
         if self.snapshots.is_none() {
             self.warm_and_maybe_adopt_theme(window);
+            let header = header_strip(HeaderArgs {
+                palette: Rc::clone(&self.palette),
+                scale: self.scale,
+                contract: contract_context(&self.frame_snapshot),
+                applied_ts: self.frame_snapshot.applied_ts,
+                fps,
+            });
             return div()
+                .id("fft-empty-shell")
                 .size_full()
-                .bg(self.palette.blank_window)
+                .font_family(self.font_family.clone())
+                .flex()
+                .flex_col()
+                .child(header)
+                .child(
+                    div()
+                        .flex_1()
+                        .w_full()
+                        .min_h_0()
+                        .bg(self.palette.blank_window),
+                )
                 .into_any_element();
         }
         if self.focus_once {
@@ -348,6 +375,13 @@ impl Render for Shell {
         let split_end = Rc::clone(&self.panes);
         let split_end_out = Rc::clone(&self.panes);
         let font_family = self.font_family.clone();
+        let header = header_strip(HeaderArgs {
+            palette: Rc::clone(&self.palette),
+            scale: ui_scale,
+            contract: contract_context(&self.frame_snapshot),
+            applied_ts: self.frame_snapshot.applied_ts,
+            fps,
+        });
         let transport_on = self.transport.borrow().mode_on;
         let strip = if transport_on {
             Some(transport_strip(TransportStripArgs {
@@ -441,6 +475,7 @@ impl Render for Shell {
             .on_mouse_up_out(MouseButton::Left, move |_, _, _| {
                 split_end_out.borrow_mut().splitter.end();
             })
+            .child(header)
             .child(panes_row)
             .children(strip)
             .into_any_element()
