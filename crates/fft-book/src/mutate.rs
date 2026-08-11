@@ -82,13 +82,7 @@ impl Book {
             &mut self.asks
         };
         self.index.remove(&order.id);
-        unlink(sb, &mut self.orders, slot);
-        if let Some(ts) = cancelled_ts {
-            sb.level_mut(order.price)
-                .expect("fft-book invariant: level missing for live order")
-                .flow
-                .record_cancelled(ts, order.size);
-        }
+        unlink(sb, &mut self.orders, slot, cancelled_ts);
         sb.note_remove(order.price);
         self.orders.remove(slot as usize);
         self.refresh
@@ -179,26 +173,18 @@ impl Book {
                 self.orders[slot as usize].size = new_size;
             } else {
                 let grow = new_size - o.size;
-                unlink(sb, &mut self.orders, slot);
+                unlink(sb, &mut self.orders, slot, None);
                 let ord = &mut self.orders[slot as usize];
                 ord.size = new_size;
                 ord.ts = ts;
                 ord.origin = OrderOrigin::Live;
-                link_tail(sb, &mut self.orders, slot);
-                sb.level_mut(o.price)
-                    .expect("fft-book invariant: level missing for live order")
-                    .flow
-                    .record_added(ts, grow);
+                link_tail(sb, &mut self.orders, slot, Some((ts, grow)));
             }
             self.refresh.on_book_change(id);
             return;
         }
 
-        unlink(sb, &mut self.orders, slot);
-        sb.level_mut(o.price)
-            .expect("fft-book invariant: level missing for live order")
-            .flow
-            .record_cancelled(ts, o.size);
+        unlink(sb, &mut self.orders, slot, Some(ts));
         sb.note_remove(o.price);
         sb.prepare_for(new_price, now);
         let ord = &mut self.orders[slot as usize];
@@ -206,8 +192,7 @@ impl Book {
         ord.size = new_size;
         ord.ts = ts;
         ord.origin = OrderOrigin::Live;
-        link_tail(sb, &mut self.orders, slot);
-        sb.level_entry(new_price).flow.record_added(ts, new_size);
+        link_tail(sb, &mut self.orders, slot, Some((ts, new_size)));
         sb.note_add(new_price);
         self.refresh.on_book_change(id);
     }

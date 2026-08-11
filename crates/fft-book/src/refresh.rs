@@ -58,6 +58,10 @@ pub(crate) struct RefreshTracker {
     pub gap_epoch: u32,
     /// Fill executions whose price differed from their order's displayed price.
     pub fills_off_display: u64,
+    /// Lower bound on the earliest event time at which any retained tombstone
+    /// expires ([`gc`] is a no-op before it); `u64::MAX` when none can expire.
+    /// Pure GC-skip accounting — never observable in serialized bytes.
+    pub(crate) next_tombstone_expiry: u64,
 }
 
 impl Default for RefreshTracker {
@@ -69,6 +73,7 @@ impl Default for RefreshTracker {
             per_price: BTreeMap::new(),
             gap_epoch: 0,
             fills_off_display: 0,
+            next_tombstone_expiry: u64::MAX,
         }
     }
 }
@@ -194,6 +199,10 @@ impl RefreshTracker {
                     hidden,
                 },
             );
+            let expiry = depleted_ts.saturating_add(REFRESH_WINDOW_NS);
+            if expiry < self.next_tombstone_expiry {
+                self.next_tombstone_expiry = expiry;
+            }
         }
     }
 
@@ -224,13 +233,33 @@ impl RefreshTracker {
         self.live.clear();
         self.tombstones.clear();
         self.fills.clear();
+        self.next_tombstone_expiry = u64::MAX;
     }
 
     /// Drop tombstones past the refresh window — their ids can no longer
-    /// classify, so keeping them would only grow memory.
+    /// classify, so keeping them would only grow memory. Called every apply;
+    /// the expiry watermark makes the common no-expiry case one compare
+    /// (`retain` walks the whole table capacity) with identical semantics:
+    /// the watermark is a lower bound on the first real expiry, so skipped
+    /// calls are exactly the calls where `retain` would remove nothing.
     pub fn gc(&mut self, now: u64) {
+        if now <= self.next_tombstone_expiry {
+            return;
+        }
         self.tombstones
             .retain(|_, t| now.saturating_sub(t.depleted_ts) <= REFRESH_WINDOW_NS);
+        self.recompute_next_expiry();
+    }
+
+    /// Recompute the tombstone-expiry watermark from current contents
+    /// (after bulk mutation: GC sweep or checkpoint restore).
+    pub(crate) fn recompute_next_expiry(&mut self) {
+        self.next_tombstone_expiry = self
+            .tombstones
+            .values()
+            .map(|t| t.depleted_ts.saturating_add(REFRESH_WINDOW_NS))
+            .min()
+            .unwrap_or(u64::MAX);
     }
 
     /// Classification read for a live order placed under `order_epoch`.

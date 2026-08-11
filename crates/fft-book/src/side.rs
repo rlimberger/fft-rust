@@ -303,7 +303,14 @@ impl SideBook {
 }
 
 /// Append the order in `slot` to the tail of its price level FIFO.
-pub(crate) fn link_tail(sb: &mut SideBook, orders: &mut Slab<Order>, slot: u32) {
+/// `flow_added` folds the caller's added-flow record into the single level
+/// lookup: `Some((ts, qty))` ≡ `level.flow.record_added(ts, qty)` after link.
+pub(crate) fn link_tail(
+    sb: &mut SideBook,
+    orders: &mut Slab<Order>,
+    slot: u32,
+    flow_added: Option<(u64, u32)>,
+) {
     let price = orders[slot as usize].price;
     let size = orders[slot as usize].size;
     let level = sb.level_entry(price);
@@ -314,6 +321,9 @@ pub(crate) fn link_tail(sb: &mut SideBook, orders: &mut Slab<Order>, slot: u32) 
     }
     level.total_size += u64::from(size);
     level.order_count += 1;
+    if let Some((ts, qty)) = flow_added {
+        level.flow.record_added(ts, qty);
+    }
     let became_populated = level.order_count == 1;
     if tail != NIL {
         orders[tail as usize].next = slot;
@@ -359,29 +369,40 @@ pub(crate) fn link_snapshot(sb: &mut SideBook, orders: &mut Slab<Order>, slot: u
     }
 }
 
-/// Detach the order in `slot` from its price level FIFO.
-pub(crate) fn unlink(sb: &mut SideBook, orders: &mut Slab<Order>, slot: u32) {
-    let o = orders[slot as usize].clone();
-    if o.prev != NIL {
-        orders[o.prev as usize].next = o.next;
+/// Detach the order in `slot` from its price level FIFO. `cancelled_ts` folds
+/// the caller's pulled-flow record into the single level lookup:
+/// `Some(ts)` ≡ `level.flow.record_cancelled(ts, order.size)` after unlink.
+pub(crate) fn unlink(
+    sb: &mut SideBook,
+    orders: &mut Slab<Order>,
+    slot: u32,
+    cancelled_ts: Option<u64>,
+) {
+    let o = &orders[slot as usize];
+    let (prev, next, price, size) = (o.prev, o.next, o.price, o.size);
+    if prev != NIL {
+        orders[prev as usize].next = next;
     }
-    if o.next != NIL {
-        orders[o.next as usize].prev = o.prev;
+    if next != NIL {
+        orders[next as usize].prev = prev;
     }
     let level = sb
-        .level_mut(o.price)
+        .level_mut(price)
         .expect("fft-book invariant: level missing for linked order");
     if level.head == slot {
-        level.head = o.next;
+        level.head = next;
     }
     if level.tail == slot {
-        level.tail = o.prev;
+        level.tail = prev;
     }
     if level.snapshot_tail == slot {
-        level.snapshot_tail = o.prev;
+        level.snapshot_tail = prev;
     }
-    level.total_size -= u64::from(o.size);
+    level.total_size -= u64::from(size);
     level.order_count -= 1;
+    if let Some(ts) = cancelled_ts {
+        level.flow.record_cancelled(ts, size);
+    }
     let became_empty = level.order_count == 0;
     orders[slot as usize].prev = NIL;
     orders[slot as usize].next = NIL;

@@ -174,11 +174,7 @@ impl Book {
             "fft-book: Add without side: {ev:?}"
         );
         assert!(ev.size > 0, "fft-book: Add with size 0: {ev:?}");
-        assert!(
-            !self.index.contains_key(&ev.order_id.0),
-            "fft-book: duplicate Add for live order {}: {ev:?}",
-            ev.order_id.0
-        );
+        // Duplicate-id detection lives in `insert_order` (single hash lookup).
         let price = self.to_ticks(ev.price);
         self.insert_order(ev.order_id.0, ev.side, price, ev.size, ts);
     }
@@ -253,15 +249,18 @@ impl Book {
             next: NIL,
         };
         let slot = u32::try_from(self.orders.insert(o)).expect("fft-book: order slot exceeds u32");
-        self.index.insert(id, slot);
+        let prev = self.index.insert(id, slot);
+        assert!(
+            prev.is_none(),
+            "fft-book: duplicate Add/placement for live order {id}"
+        );
         let sb = if side == Side::Bid {
             &mut self.bids
         } else {
             &mut self.asks
         };
         sb.prepare_for(price, self.now);
-        link_tail(sb, &mut self.orders, slot);
-        sb.level_entry(price).flow.record_added(ts, size);
+        link_tail(sb, &mut self.orders, slot, Some((ts, size)));
         sb.note_add(price);
     }
 

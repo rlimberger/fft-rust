@@ -100,6 +100,7 @@ pub(super) fn restore(bytes: &[u8]) -> Result<RefreshTracker, RestoreError> {
     read_fills(&mut reader, &mut tracker)?;
     read_aggregates(&mut reader, &mut tracker)?;
     reader.finish()?;
+    tracker.recompute_next_expiry();
     Ok(tracker)
 }
 

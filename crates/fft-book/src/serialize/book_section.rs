@@ -265,7 +265,7 @@ fn read_order(
     if index.insert(id, slot).is_some() {
         return Err(reader.corrupt("duplicate order id"));
     }
-    link_tail(side_book, orders, slot);
+    link_tail(side_book, orders, slot, None);
     if origin == OrderOrigin::Snapshot {
         side_book
             .level_mut(price)
