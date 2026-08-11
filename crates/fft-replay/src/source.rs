@@ -14,6 +14,13 @@ use std::time::{Duration, Instant};
 
 const CANCEL_BUDGET: Duration = Duration::from_millis(5);
 
+/// Poll `work_budget` every N applied events (and at loop entry). Measured
+/// M1-APPLY-PROFILE: `start.elapsed()` / `Instant::now` on every event cost
+/// ~0.41 s over 21.4 M events. Budget remains a TIME budget (doctrine rule 4);
+/// only the poll frequency changes. At ~8 M ev/s, 256 events ≈ 32 µs — fine
+/// for the 2 ms prior-build slice and other callers (see apply_forward docs).
+const BUDGET_POLL_INTERVAL: u64 = 256;
+
 /// Result of applying forward events.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ForwardProgress {
@@ -148,10 +155,15 @@ impl ReplaySource {
         while self.frame < self.reader.frame_count() {
             let frame = self.frame;
             self.frame += 1;
-            self.frame_events = self
-                .reader
-                .events(frame..frame + 1)
-                .collect::<std::result::Result<Vec<_>, _>>()?;
+            // Reuse the persistent buffer (clear + push) instead of a fresh
+            // collect::<Vec<_>> per frame (M1-APPLY-PROFILE: ~0.3–0.5 s over Wed).
+            // Seek/prepare_prior_build call `reset_cursor`, which clears the
+            // buffer and zeroes `event` before any restore-tail load — no
+            // cross-restore alias. Callers only see Copy peeks (`CanonicalEvent`).
+            self.frame_events.clear();
+            for item in self.reader.events(frame..frame + 1) {
+                self.frame_events.push(item?);
+            }
             self.event = 0;
             if !self.frame_events.is_empty() {
                 return Ok(true);
@@ -193,6 +205,15 @@ impl ReplaySource {
     }
 
     /// Apply up to `max_events`, stopping once `work_budget` elapses.
+    ///
+    /// `work_budget` is still a TIME budget; it is polled every
+    /// [`BUDGET_POLL_INTERVAL`] events (and at loop entry) rather than per
+    /// event. Callers and granularity:
+    /// - `fft-engine` prior-build: `PRIOR_BUILD_BUDGET` = 2 ms
+    ///   (`service.rs` `advance_prior_build`) — 256 events ≈ 32 µs at ~8 M ev/s.
+    /// - `m1-gate`: `APPLY_BUDGET` = 3600 s (oneshot / differential drains).
+    /// - Engine live forward_work uses `apply_next` + its own 4 ms APPLY_BUDGET
+    ///   loop, not this path.
     pub fn apply_forward(
         &mut self,
         book: &mut Book,
@@ -202,7 +223,11 @@ impl ReplaySource {
     ) -> Result<ForwardProgress> {
         let start = Instant::now();
         let mut events = 0u64;
-        while events < max_events as u64 && start.elapsed() < work_budget {
+        // Poll elapsed at entry and every BUDGET_POLL_INTERVAL events.
+        while events < max_events as u64 {
+            if events.is_multiple_of(BUDGET_POLL_INTERVAL) && start.elapsed() >= work_budget {
+                break;
+            }
             if self.apply_next(book, profile)?.is_none() {
                 return Ok(ForwardProgress {
                     events,
