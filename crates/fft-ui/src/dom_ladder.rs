@@ -11,10 +11,14 @@ use gpui::{
     Pixels, Point, ShapedLine, Style, TextAlign, Window, fill, point, px, relative, size,
 };
 
+use crate::dom_badges::{
+    IcebergSide, format_reload_count, iceberg_badge_bounds, iceberg_badge_visible,
+    reload_count_text_origin,
+};
 use crate::dom_view::{AggregatedDom, DomView, DomViewRow};
 use crate::glyph_cache::GlyphCache;
 use crate::layout::{
-    COL_LABELS, column_rects, depth_block_width, format_price, format_size, header_h,
+    COL_LABELS, ColRect, column_rects, depth_block_width, format_price, format_size, header_h,
     is_inside_market, max_visible_rows, row_h, row_top_y,
 };
 use crate::theme::Palette;
@@ -80,6 +84,68 @@ fn max_side_sizes(rows: &[DomViewRow]) -> (u64, u64, u64) {
     (max_bid, max_ask, max_vol)
 }
 
+struct ReloadCountArgs<'a> {
+    texts: &'a mut Vec<PreparedText>,
+    glyph_cache: &'a mut GlyphCache,
+    window: &'a mut Window,
+    side: IcebergSide,
+    col: ColRect,
+    row_y: f32,
+    count: u32,
+    color: gpui::Hsla,
+    font_size: Pixels,
+    scale: f32,
+}
+
+fn push_reload_count(args: ReloadCountArgs<'_>) {
+    let ReloadCountArgs {
+        texts,
+        glyph_cache,
+        window,
+        side,
+        col,
+        row_y,
+        count,
+        color,
+        font_size,
+        scale,
+    } = args;
+    let (badge_x, _, badge_w, _) = iceberg_badge_bounds(side, col, row_y, row_h(scale), scale);
+    let label = format_reload_count(count);
+    let line = glyph_cache.get_or_shape(window, label, color, font_size);
+    let text_w = f32::from(line.width());
+    let Some((x, y, avail)) =
+        reload_count_text_origin(side, col, badge_x, badge_w, row_y, scale, text_w)
+    else {
+        return;
+    };
+    let align = match side {
+        IcebergSide::Bid => TextAlign::Right,
+        IcebergSide::Ask => TextAlign::Left,
+    };
+    texts.push(PreparedText {
+        line,
+        origin: point(px(x), px(y)),
+        align_width: px(avail),
+        align,
+    });
+}
+
+fn paint_iceberg_badge(
+    window: &mut Window,
+    side: IcebergSide,
+    col: ColRect,
+    row_y: f32,
+    scale: f32,
+    color: gpui::Hsla,
+) {
+    let (x, y, w, h) = iceberg_badge_bounds(side, col, row_y, row_h(scale), scale);
+    window.paint_quad(fill(
+        Bounds::new(point(px(x), px(y)), size(px(w), px(h))),
+        color,
+    ));
+}
+
 impl Element for DomLadder {
     type RequestLayoutState = ();
     type PrepaintState = Prepaint;
@@ -126,7 +192,7 @@ impl Element for DomLadder {
         let body_h = (height - hh).max(0.0);
         let max_rows = max_visible_rows(body_h, scale);
         let row_range = self.view.window_range(&dom, max_rows);
-        let mut texts = Vec::with_capacity(6 + row_range.len() * 6);
+        let mut texts = Vec::with_capacity(6 + row_range.len() * 8);
         let mut glyph_cache = self.glyph_cache.borrow_mut();
         let text = self.palette.text;
         let subtext = self.palette.subtext;
@@ -165,6 +231,38 @@ impl Element for DomLadder {
                     origin: point(px(col.x + 4.0), px(y)),
                     align_width: px(col.w - 8.0),
                     align,
+                });
+            }
+
+            // Hidden volume stays off the VOL column — too tight at scale 1
+            // (COL_FRACTIONS[1]=0.14 already hosts session volume + depth bar;
+            // a secondary right-aligned figure collides). Hover/tooltip track owns it.
+            if iceberg_badge_visible(row.refresh_bid_count) {
+                push_reload_count(ReloadCountArgs {
+                    texts: &mut texts,
+                    glyph_cache: &mut glyph_cache,
+                    window,
+                    side: IcebergSide::Bid,
+                    col: cols[2],
+                    row_y: row_top_y(origin_y, from_top, scale),
+                    count: row.refresh_bid_count,
+                    color: subtext,
+                    font_size,
+                    scale,
+                });
+            }
+            if iceberg_badge_visible(row.refresh_ask_count) {
+                push_reload_count(ReloadCountArgs {
+                    texts: &mut texts,
+                    glyph_cache: &mut glyph_cache,
+                    window,
+                    side: IcebergSide::Ask,
+                    col: cols[5],
+                    row_y: row_top_y(origin_y, from_top, scale),
+                    count: row.refresh_ask_count,
+                    color: subtext,
+                    font_size,
+                    scale,
                 });
             }
         }
@@ -247,6 +345,13 @@ impl Element for DomLadder {
                     ),
                     palette.ask_depth,
                 ));
+            }
+
+            if iceberg_badge_visible(row.refresh_bid_count) {
+                paint_iceberg_badge(window, IcebergSide::Bid, cols[2], y, scale, palette.iceberg);
+            }
+            if iceberg_badge_visible(row.refresh_ask_count) {
+                paint_iceberg_badge(window, IcebergSide::Ask, cols[5], y, scale, palette.iceberg);
             }
 
             window.paint_quad(fill(

@@ -41,6 +41,8 @@ pub struct Palette {
     pub sell: Hsla,
     pub bid_depth: Hsla,
     pub ask_depth: Hsla,
+    /// Native-refresh (iceberg) badge — subtle accent unused by other roles.
+    pub iceberg: Hsla,
     pub inside_band: Hsla,
     pub blank_window: Hsla,
 }
@@ -76,6 +78,7 @@ impl Palette {
             ask_depth: solid(c.red),
             buy: solid(c.bright_cyan),
             sell: solid(c.bright_red),
+            iceberg: alpha(c.bright_magenta, 0.80),
         }
     }
 
@@ -86,6 +89,7 @@ impl Palette {
         const YELLOW: u32 = 0xf9e2af;
         const TEAL: u32 = 0x94e2d5;
         const LAVENDER: u32 = 0xb4befe;
+        const MAUVE: u32 = 0xcba6f7;
         const SAPPHIRE: u32 = 0x74c7ec;
         const BLUE: u32 = 0x89b4fa;
         const RED: u32 = 0xf38ba8;
@@ -129,6 +133,7 @@ impl Palette {
             ask_depth: solid(RED),
             inside_band: solid(SURFACE0),
             blank_window: solid(CRUST),
+            iceberg: alpha(MAUVE, 0.80),
         }
     }
 
@@ -139,6 +144,7 @@ impl Palette {
         const YELLOW: u32 = 0xdf8e1d;
         const TEAL: u32 = 0x179299;
         const LAVENDER: u32 = 0x7287fd;
+        const MAUVE: u32 = 0x8839ef;
         const SAPPHIRE: u32 = 0x209fb5;
         const BLUE: u32 = 0x1e66f5;
         const RED: u32 = 0xd20f39;
@@ -182,6 +188,7 @@ impl Palette {
             ask_depth: solid(RED),
             inside_band: solid(SURFACE0),
             blank_window: solid(CRUST),
+            iceberg: alpha(MAUVE, 0.80),
         }
     }
 }
@@ -218,20 +225,26 @@ mod tests {
         assert_eq!(mocha.ib.a, 0.45);
         assert_eq!(mocha.vah_val.a, 0.55);
         assert_eq!(mocha.va_bg.a, 0.55);
+        assert_eq!(mocha.iceberg.a, 0.80);
+        assert_eq!(mocha.iceberg.h, solid(0xcba6f7).h);
         assert_ne!(mocha.session_open, mocha.current_price);
         assert_ne!(mocha.session_open, mocha.vpoc);
         assert_ne!(mocha.session_open, mocha.vah_val);
         assert_ne!(mocha.session_open, mocha.ib);
+        assert_ne!(mocha.iceberg.h, mocha.session_open.h);
 
         assert_eq!(latte.base, solid(0xeff1f5));
         assert_eq!(latte.text, solid(0x4c4f69));
         assert_eq!(latte.bid_depth, solid(0x1e66f5));
         assert_eq!(latte.ask_depth, solid(0xd20f39));
+        assert_eq!(latte.iceberg.a, 0.80);
+        assert_eq!(latte.iceberg.h, solid(0x8839ef).h);
 
         assert_ne!(mocha.base, latte.base);
         assert_ne!(mocha.text, latte.text);
         assert_ne!(mocha.buy, latte.buy);
         assert_ne!(mocha.sell, latte.sell);
+        assert_ne!(mocha.iceberg.h, latte.iceberg.h);
     }
 
     #[test]
@@ -297,5 +310,7 @@ bright_magenta = "#bb9af7"
         assert_eq!(p.vpoc.h, solid(0xeb927b).h);
         assert_eq!(p.current_price.h, solid(0xa9b1d6).h);
         assert_eq!(p.session_open.h, solid(0xad8ee6).h);
+        assert!((p.iceberg.a - 0.80).abs() < 1e-5);
+        assert_eq!(p.iceberg.h, solid(0xbb9af7).h);
     }
 }
