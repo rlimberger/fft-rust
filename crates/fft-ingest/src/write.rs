@@ -8,15 +8,20 @@
 //! sections are the engine's job (`docs/FFTLOG-V2.md` §5). `LogWriter` does not require
 //! checkpoints; a clean `close()` with EVENTS frames + footer is a valid session log.
 
+mod admit;
+mod args;
+
 use std::path::{Path, PathBuf};
 
 use dbn::Metadata;
-use fft_core::{CanonicalEvent, EventKind, InstrumentMeta, Price};
+use fft_core::{CanonicalEvent, InstrumentMeta, Price};
 use fft_log::LogWriter;
 use jiff::civil::Date;
 
 use crate::decode::{DecodedEvent, GapDetector, IngestError, open_zstd_file};
 use crate::session::{self, TradeDateBucketer};
+
+use admit::{FileAdmission, admit_event};
 
 /// Default CME ES front-month instrument id for the sample week (ESU6).
 pub const DEFAULT_INSTRUMENT_ID: u32 = 42_140_870;
@@ -29,6 +34,8 @@ pub const DEFAULT_BATCH_SIZE: usize = 8_192;
 pub const ES_HELP_TICK: i64 = 250_000_000;
 pub const ES_HELP_UOM_QTY: i64 = 50_000_000_000;
 pub const ES_HELP_DISPLAY_FACTOR: i64 = 1;
+
+pub use args::{parse_write_args, write_usage};
 
 /// Inputs and explicit header meta for one fftlog write.
 #[derive(Debug, Clone)]
@@ -85,141 +92,6 @@ pub fn id_for_symbol(metadata: &Metadata, symbol: &str) -> Option<u32> {
         }
     }
     None
-}
-
-fn is_snapshot(ev: &DecodedEvent) -> bool {
-    ev.event.kind != EventKind::Gap && ev.event.flags & u16::from(dbn::flags::SNAPSHOT) != 0
-}
-
-/// Live (non-snapshot, non-gap) events for `instrument_id` must bucket to `trade_date`.
-/// Gaps are channel-wide and keep when their observing ts buckets to `trade_date`.
-fn keep_live_or_gap(
-    ev: &DecodedEvent,
-    instrument_id: u32,
-    trade_date: Date,
-    bucketer: &mut TradeDateBucketer,
-) -> bool {
-    match ev.event.kind {
-        EventKind::Gap => bucketer.bucket(ev.event.ts) == trade_date,
-        _ if ev.instrument_id != instrument_id => false,
-        _ => bucketer.bucket(ev.event.ts) == trade_date,
-    }
-}
-
-/// Per-file snapshot admission (`docs/FFTLOG-V2.md` §4): a file's SNAPSHOT block for the
-/// selected instrument is admitted iff the file's **first non-snapshot** event (any
-/// instrument, or a synthesized Gap which can only appear after a non-snapshot observe)
-/// buckets to `trade_date`. Pending snapshots are held until that decision; stale blocks
-/// are dropped and counted.
-struct FileAdmission {
-    trade_date: Date,
-    instrument_id: u32,
-    /// `None` until the first non-snapshot record in this file is seen.
-    admit_snapshots: Option<bool>,
-    pending_snapshots: Vec<DecodedEvent>,
-}
-
-impl FileAdmission {
-    fn new(instrument_id: u32, trade_date: Date) -> Self {
-        Self {
-            trade_date,
-            instrument_id,
-            admit_snapshots: None,
-            pending_snapshots: Vec::new(),
-        }
-    }
-
-    fn decide(&mut self, ts: fft_core::Ts, bucketer: &mut TradeDateBucketer) -> bool {
-        let admit = bucketer.bucket(ts) == self.trade_date;
-        self.admit_snapshots = Some(admit);
-        admit
-    }
-
-    /// Flush buffered snapshots after the admission decision is known.
-    fn flush_pending(&mut self, out: &mut impl FnMut(DecodedEvent), stats: &mut WriteStats) {
-        let admit = self
-            .admit_snapshots
-            .expect("flush_pending without decision");
-        let pending = std::mem::take(&mut self.pending_snapshots);
-        if admit {
-            for ev in pending {
-                stats.snapshots_kept += 1;
-                out(ev);
-            }
-        } else {
-            stats.snapshots_dropped += pending.len() as u64;
-        }
-    }
-
-    /// End-of-file: any still-pending snapshots mean the file had no non-snapshot event
-    /// to establish admission — drop them (vacuous reject) and count.
-    fn finish(&mut self, stats: &mut WriteStats) {
-        if !self.pending_snapshots.is_empty() {
-            stats.snapshots_dropped += self.pending_snapshots.len() as u64;
-            self.pending_snapshots.clear();
-        }
-    }
-}
-
-/// Consume one decoded event under §4 admission + live trade-date filter. Calls `out`
-/// for each event that should be written.
-///
-/// `forward_hole` is true when this live event revealed a forward channel-seq hole
-/// (batch filter artifact). Counted on `seq_holes_ignored` when the observing ts buckets
-/// to the target trade date — same keep rule Gaps used under the prior policy.
-fn admit_event(
-    ev: DecodedEvent,
-    admission: &mut FileAdmission,
-    bucketer: &mut TradeDateBucketer,
-    stats: &mut WriteStats,
-    forward_hole: bool,
-    out: &mut impl FnMut(DecodedEvent),
-) {
-    // Gap ⇒ decoder already observed a non-snapshot; decide from the gap's ts (the
-    // observing record's ts) before applying the keep filter.
-    if ev.event.kind == EventKind::Gap {
-        if admission.admit_snapshots.is_none() {
-            admission.decide(ev.event.ts, bucketer);
-            admission.flush_pending(out, stats);
-        }
-        if keep_live_or_gap(&ev, admission.instrument_id, admission.trade_date, bucketer) {
-            stats.gaps_kept += 1;
-            out(ev);
-        }
-        return;
-    }
-
-    if is_snapshot(&ev) {
-        if ev.instrument_id != admission.instrument_id {
-            return;
-        }
-        match admission.admit_snapshots {
-            None => admission.pending_snapshots.push(ev),
-            Some(true) => {
-                stats.snapshots_kept += 1;
-                out(ev);
-            }
-            Some(false) => {
-                stats.snapshots_dropped += 1;
-            }
-        }
-        return;
-    }
-
-    // Forward hole accounting uses observing-ts trade-date (channel-wide), matching
-    // prior gaps_kept scoping — not the instrument keep filter.
-    if forward_hole && bucketer.bucket(ev.event.ts) == admission.trade_date {
-        stats.seq_holes_ignored += 1;
-    }
-
-    // First non-snapshot live record in this file establishes snapshot admission.
-    if admission.admit_snapshots.is_none() {
-        admission.decide(ev.event.ts, bucketer);
-        admission.flush_pending(out, stats);
-    }
-    if keep_live_or_gap(&ev, admission.instrument_id, admission.trade_date, bucketer) {
-        out(ev);
-    }
 }
 
 impl WriteConfig {
@@ -333,157 +205,6 @@ fn flush_batch(
     Ok(())
 }
 
-/// Help text for the `write` subcommand (ES values are reference only).
-pub fn write_usage() -> &'static str {
-    "write <out.fftlog> <path.dbn.zst>... --trade-date YYYY-MM-DD \
-     --tick N --uom-qty N --display-factor N [--instrument-id N] [--symbol SYM] [--batch-size N]\n  \
-     tick fields are required (mbo files have no definition schema).\n  \
-     ES reference (pass explicitly; never assumed): \
-     --tick 250000000 --uom-qty 50000000000 --display-factor 1\n  \
-     default --instrument-id 42140870 (ESU6 sample week); default --batch-size 8192\n  \
-     checkpoints are not written (engine owns book/profile sections)"
-}
-
-/// Parse `write` argv (tokens after the `write` subcommand).
-pub fn parse_write_args(args: &[String]) -> Result<WriteConfig, IngestError> {
-    if args.len() < 2 {
-        return Err(IngestError::Cli(write_usage().into()));
-    }
-    let output = PathBuf::from(&args[0]);
-    let mut inputs: Vec<PathBuf> = Vec::new();
-    let mut trade_date: Option<Date> = None;
-    let mut tick: Option<i64> = None;
-    let mut uom_qty: Option<i64> = None;
-    let mut display_factor: Option<i64> = None;
-    let mut instrument_id = DEFAULT_INSTRUMENT_ID;
-    let mut instrument_id_set = false;
-    let mut symbol: Option<String> = None;
-    let mut batch_size = DEFAULT_BATCH_SIZE;
-
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--trade-date" => {
-                let v = expect_val(args, &mut i, "--trade-date")?;
-                trade_date = Some(parse_date(&v)?);
-            }
-            "--tick" => {
-                let v = expect_val(args, &mut i, "--tick")?;
-                tick = Some(parse_i64(&v, "--tick")?);
-            }
-            "--uom-qty" => {
-                let v = expect_val(args, &mut i, "--uom-qty")?;
-                uom_qty = Some(parse_i64(&v, "--uom-qty")?);
-            }
-            "--display-factor" => {
-                let v = expect_val(args, &mut i, "--display-factor")?;
-                display_factor = Some(parse_i64(&v, "--display-factor")?);
-            }
-            "--instrument-id" => {
-                let v = expect_val(args, &mut i, "--instrument-id")?;
-                instrument_id = v
-                    .parse::<u32>()
-                    .map_err(|_| IngestError::Cli(format!("invalid --instrument-id value: {v}")))?;
-                instrument_id_set = true;
-            }
-            "--symbol" => {
-                symbol = Some(expect_val(args, &mut i, "--symbol")?);
-            }
-            "--batch-size" => {
-                let v = expect_val(args, &mut i, "--batch-size")?;
-                batch_size = v
-                    .parse::<usize>()
-                    .map_err(|_| IngestError::Cli(format!("invalid --batch-size value: {v}")))?;
-            }
-            flag if flag.starts_with("--") => {
-                return Err(IngestError::Cli(format!("unknown write flag: {flag}")));
-            }
-            path => inputs.push(PathBuf::from(path)),
-        }
-        i += 1;
-    }
-
-    if inputs.is_empty() {
-        return Err(IngestError::Cli(
-            "write requires at least one input path".into(),
-        ));
-    }
-    let trade_date = trade_date
-        .ok_or_else(|| IngestError::Cli("write requires --trade-date YYYY-MM-DD".into()))?;
-    let tick = tick.ok_or_else(|| {
-        IngestError::Cli(format!(
-            "write requires --tick N (ES reference {ES_HELP_TICK}; never assumed)"
-        ))
-    })?;
-    let uom_qty = uom_qty.ok_or_else(|| {
-        IngestError::Cli(format!(
-            "write requires --uom-qty N (ES reference {ES_HELP_UOM_QTY}; never assumed)"
-        ))
-    })?;
-    let display_factor = display_factor.ok_or_else(|| {
-        IngestError::Cli(format!(
-            "write requires --display-factor N (ES reference {ES_HELP_DISPLAY_FACTOR}; never assumed)"
-        ))
-    })?;
-
-    // Optional: --symbol alone resolves instrument_id from the first input's mappings.
-    if let Some(sym) = symbol.as_deref()
-        && !instrument_id_set
-    {
-        let decoder = open_zstd_file(&inputs[0])?;
-        instrument_id = id_for_symbol(decoder.metadata(), sym).ok_or_else(|| {
-            IngestError::UnknownInstrument {
-                instrument_id: 0,
-                hint: format!("symbol {sym} not found in DBN metadata mappings"),
-            }
-        })?;
-    }
-
-    Ok(WriteConfig {
-        output,
-        inputs,
-        instrument_id,
-        symbol,
-        trade_date,
-        min_price_increment: Price(tick),
-        unit_of_measure_qty: uom_qty,
-        display_factor,
-        batch_size,
-    })
-}
-
-fn expect_val(args: &[String], i: &mut usize, flag: &str) -> Result<String, IngestError> {
-    let v = args
-        .get(*i + 1)
-        .ok_or_else(|| IngestError::Cli(format!("{flag} requires a value")))?;
-    *i += 1;
-    Ok(v.clone())
-}
-
-fn parse_i64(s: &str, flag: &str) -> Result<i64, IngestError> {
-    s.parse::<i64>()
-        .map_err(|_| IngestError::Cli(format!("invalid {flag} value: {s}")))
-}
-
-fn parse_date(s: &str) -> Result<Date, IngestError> {
-    let parts: Vec<&str> = s.split('-').collect();
-    if parts.len() != 3 {
-        return Err(IngestError::Cli(format!(
-            "invalid --trade-date {s}; expected YYYY-MM-DD"
-        )));
-    }
-    let y: i16 = parts[0]
-        .parse()
-        .map_err(|_| IngestError::Cli(format!("invalid --trade-date year: {s}")))?;
-    let m: i8 = parts[1]
-        .parse()
-        .map_err(|_| IngestError::Cli(format!("invalid --trade-date month: {s}")))?;
-    let d: i8 = parts[2]
-        .parse()
-        .map_err(|_| IngestError::Cli(format!("invalid --trade-date day: {s}")))?;
-    Date::new(y, m, d).map_err(|err| IngestError::Cli(format!("invalid --trade-date {s}: {err}")))
-}
-
 /// Decode path with the same §4 admission + filter as [`write_fftlog`] — used by tests.
 pub fn decode_filtered(
     path: &Path,
@@ -517,52 +238,4 @@ pub fn decode_filtered(
     }
     admission.finish(&mut stats);
     Ok(out)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use jiff::civil::date;
-
-    #[test]
-    fn parse_requires_tick_fields() {
-        let args = ["out.fftlog".into(), "in.dbn.zst".into()];
-        let err = parse_write_args(&args).unwrap_err().to_string();
-        assert!(err.contains("--trade-date"), "{err}");
-    }
-
-    #[test]
-    fn parse_full_es_explicit() {
-        let args: Vec<String> = [
-            "out.fftlog",
-            "a.dbn.zst",
-            "b.dbn.zst",
-            "--trade-date",
-            "2026-07-29",
-            "--tick",
-            "250000000",
-            "--uom-qty",
-            "50000000000",
-            "--display-factor",
-            "1",
-            "--instrument-id",
-            "42140870",
-            "--symbol",
-            "ESU6",
-        ]
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
-        let cfg = parse_write_args(&args).unwrap();
-        assert_eq!(cfg.inputs.len(), 2);
-        assert_eq!(cfg.instrument_id, DEFAULT_INSTRUMENT_ID);
-        assert_eq!(cfg.symbol.as_deref(), Some("ESU6"));
-        assert_eq!(cfg.trade_date, date(2026, 7, 29));
-        assert_eq!(cfg.min_price_increment, Price(ES_HELP_TICK));
-        assert_eq!(cfg.unit_of_measure_qty, ES_HELP_UOM_QTY);
-        assert_eq!(cfg.display_factor, ES_HELP_DISPLAY_FACTOR);
-        let meta = cfg.build_meta("GLBX.MDP3", "ESU6".into());
-        assert_eq!(meta.session_open, session::session_open(date(2026, 7, 29)));
-        assert_eq!(meta.trade_date, session::trade_date_days(date(2026, 7, 29)));
-    }
 }
