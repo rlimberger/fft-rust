@@ -28,8 +28,12 @@ fn usage(msg: &str) -> ! {
          usage: m7-soak --replay <ckpt.fftlog> --prior <fftlog>... --out <metrics.jsonl> \
          [--speed F] [--cycle-secs N] [--max-cycles N] [--max-hours F] \
          [--scrub-seeks N] [--leak-window N] [--leak-pct F] [--label TEXT]\n\
-         0 for --max-cycles / --max-hours / --cycle-secs = unbounded (EOF for cycle)\n\
-         --prior: other-day logs oldest-first (Wed current → Mon,Tue,Thu,Fri; later dates skip)"
+         --max-cycles 0 / --max-hours 0 = unbounded soak wall;\n\
+         --cycle-secs 0 = play until source EOF (not a blind day). Finite safety deadline =\n\
+         (session_span_ns / speed) × 2 + 120 s slack (first_ts/last_ts from the replay log);\n\
+         cycle ends at EOF-stable or that deadline, whichever first;\n\
+         full-week shape: Fri current + Mon–Thu --prior oldest-first (ENGINE.md §2);\n\
+         later-or-equal trade dates are expected skips, never accepted priors"
     );
     exit(2)
 }
@@ -131,7 +135,7 @@ pub fn parse_args() -> Args {
         usage(&format!("replay log not found: {}", replay.display()));
     }
     if priors.is_empty() {
-        usage("need at least one --prior (full week: four other days)");
+        usage("need at least one --prior (full week: Mon–Thu with Fri current)");
     }
     Args {
         replay,
