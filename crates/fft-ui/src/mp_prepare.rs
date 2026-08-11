@@ -4,10 +4,11 @@ use gpui::{Bounds, Hsla, Pixels, TextAlign, Window, point, px, size};
 
 use crate::glyph_cache::GlyphCache;
 use crate::mp_element::PreparedText;
-use crate::mp_layout::{MP_ROW_H, MpStrips, Strip};
+use crate::mp_layout::{MpStrips, Strip, mp_row_h};
 use crate::mp_view::{ETH_PERIOD_COUNT, MpRow, TpoKind, for_each_tpo};
 use crate::theme::Palette;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_tpos(
     cache: &mut GlyphCache,
     window: &mut Window,
@@ -16,6 +17,7 @@ pub(crate) fn prepare_tpos(
     cols: MpStrips,
     y: f32,
     palette: &Palette,
+    scale: f32,
 ) {
     let mut cp_eth = String::new();
     let mut cp_rth = String::new();
@@ -35,8 +37,8 @@ pub(crate) fn prepare_tpos(
         },
     );
     let cp_count = cp_eth.len().max(1);
-    let cp_font = px(((cols.cp.w - 6.0) / cp_count as f32 / 0.62).clamp(5.0, 8.0));
-    let ep_font = px((cols.ep.w / ETH_PERIOD_COUNT as f32 / 0.62).clamp(5.0, 9.0));
+    let cp_font = px(((cols.cp.w - 6.0) / cp_count as f32 / 0.62).clamp(5.0, 8.0) * scale);
+    let ep_font = px((cols.ep.w / ETH_PERIOD_COUNT as f32 / 0.62).clamp(5.0, 9.0) * scale);
     prepare_line(
         cache,
         window,
@@ -46,6 +48,7 @@ pub(crate) fn prepare_tpos(
         y,
         cp_font,
         palette.eth_tpo,
+        scale,
     );
     prepare_line(
         cache,
@@ -56,6 +59,7 @@ pub(crate) fn prepare_tpos(
         y,
         cp_font,
         palette.rth_tpo,
+        scale,
     );
     prepare_line(
         cache,
@@ -66,6 +70,7 @@ pub(crate) fn prepare_tpos(
         y,
         ep_font,
         palette.eth_tpo,
+        scale,
     );
     prepare_line(
         cache,
@@ -76,6 +81,7 @@ pub(crate) fn prepare_tpos(
         y,
         ep_font,
         palette.rth_tpo,
+        scale,
     );
 }
 
@@ -89,20 +95,22 @@ fn prepare_line(
     y: f32,
     font_size: Pixels,
     color: Hsla,
+    scale: f32,
 ) {
     if text.trim().is_empty() {
         return;
     }
+    let rh = mp_row_h(scale);
     let line = cache.get_or_shape(window, text, color, font_size);
     texts.push(PreparedText {
         line,
         origin: point(px(strip.x + 3.0), px(y)),
         align_width: px((strip.w - 6.0).max(0.0)),
         align: TextAlign::Left,
-        line_height: px(MP_ROW_H - 1.0),
+        line_height: px(rh - 1.0 * scale),
         clip: Bounds::new(
-            point(px(strip.x), px(y - 1.0)),
-            size(px(strip.w), px(MP_ROW_H)),
+            point(px(strip.x), px(y - 1.0 * scale)),
+            size(px(strip.w), px(rh)),
         ),
     });
 }

@@ -14,8 +14,8 @@ use gpui::{
 use crate::dom_view::{AggregatedDom, DomView, DomViewRow};
 use crate::glyph_cache::GlyphCache;
 use crate::layout::{
-    COL_LABELS, HEADER_H, ROW_H, column_rects, depth_block_width, format_price, format_size,
-    is_inside_market, max_visible_rows, row_top_y,
+    COL_LABELS, column_rects, depth_block_width, format_price, format_size, header_h,
+    is_inside_market, max_visible_rows, row_h, row_top_y,
 };
 use crate::theme::Palette;
 
@@ -25,6 +25,7 @@ pub struct DomLadder {
     view: DomView,
     glyph_cache: Rc<RefCell<GlyphCache>>,
     palette: Rc<Palette>,
+    scale: f32,
 }
 
 impl DomLadder {
@@ -33,12 +34,14 @@ impl DomLadder {
         view: DomView,
         glyph_cache: Rc<RefCell<GlyphCache>>,
         palette: Rc<Palette>,
+        scale: f32,
     ) -> Self {
         Self {
             snapshot,
             view,
             glyph_cache,
             palette,
+            scale,
         }
     }
 }
@@ -111,15 +114,17 @@ impl Element for DomLadder {
         window: &mut Window,
         _cx: &mut App,
     ) -> Self::PrepaintState {
+        let scale = self.scale;
         let dom = self.view.aggregate(&self.snapshot.dom);
-        let font_size = px(12.);
+        let font_size = px(12.0 * scale);
         let origin_x = f32::from(bounds.origin.x);
         let origin_y = f32::from(bounds.origin.y);
         let width = f32::from(bounds.size.width);
         let height = f32::from(bounds.size.height);
         let cols = column_rects(origin_x, width);
-        let body_h = (height - HEADER_H).max(0.0);
-        let max_rows = max_visible_rows(body_h);
+        let hh = header_h(scale);
+        let body_h = (height - hh).max(0.0);
+        let max_rows = max_visible_rows(body_h, scale);
         let row_range = self.view.window_range(&dom, max_rows);
         let mut texts = Vec::with_capacity(6 + row_range.len() * 6);
         let mut glyph_cache = self.glyph_cache.borrow_mut();
@@ -131,7 +136,7 @@ impl Element for DomLadder {
             let col = cols[i];
             texts.push(PreparedText {
                 line,
-                origin: point(px(col.x + 4.0), px(origin_y + 4.0)),
+                origin: point(px(col.x + 4.0), px(origin_y + 4.0 * scale)),
                 align_width: px(col.w - 8.0),
                 align: TextAlign::Left,
             });
@@ -140,7 +145,7 @@ impl Element for DomLadder {
         // Descending price: highest at top.
         let slice = &dom.rows[row_range.clone()];
         for (from_top, row) in slice.iter().rev().enumerate() {
-            let y = row_top_y(origin_y, from_top) + 2.0;
+            let y = row_top_y(origin_y, from_top, scale) + 2.0 * scale;
             let cells = [
                 (0usize, format_price(row.price.0), TextAlign::Right),
                 (1, format_size(row.session_volume), TextAlign::Right),
@@ -182,10 +187,13 @@ impl Element for DomLadder {
         window: &mut Window,
         cx: &mut App,
     ) {
+        let scale = self.scale;
+        let rh = row_h(scale);
+        let hh = header_h(scale);
         let palette = &*self.palette;
         window.paint_quad(fill(bounds, palette.base));
 
-        let header = Bounds::new(bounds.origin, size(bounds.size.width, px(HEADER_H)));
+        let header = Bounds::new(bounds.origin, size(bounds.size.width, px(hh)));
         window.paint_quad(fill(header, palette.mantle));
 
         let dom = &prepaint.dom;
@@ -199,10 +207,10 @@ impl Element for DomLadder {
         let best_ask = dom.best_ask.map(|price| price.0);
 
         for (from_top, row) in slice.iter().rev().enumerate() {
-            let y = row_top_y(origin_y, from_top);
+            let y = row_top_y(origin_y, from_top, scale);
             let row_bounds = Bounds::new(
                 point(bounds.origin.x, px(y)),
-                size(bounds.size.width, px(ROW_H)),
+                size(bounds.size.width, px(rh)),
             );
             if is_inside_market(row.price.0, best_bid, best_ask) {
                 window.paint_quad(fill(row_bounds, palette.inside_band));
@@ -212,8 +220,8 @@ impl Element for DomLadder {
             if vol_w > 0.0 {
                 window.paint_quad(fill(
                     Bounds::new(
-                        point(px(cols[1].x + 4.0), px(y + 3.0)),
-                        size(px(vol_w), px(ROW_H - 6.0)),
+                        point(px(cols[1].x + 4.0), px(y + 3.0 * scale)),
+                        size(px(vol_w), px(rh - 6.0 * scale)),
                     ),
                     palette.pv_bar,
                 ));
@@ -223,8 +231,8 @@ impl Element for DomLadder {
             if bid_w > 0.0 {
                 window.paint_quad(fill(
                     Bounds::new(
-                        point(px(cols[2].x + cols[2].w - bid_w - 2.0), px(y + 1.0)),
-                        size(px(bid_w), px(ROW_H - 2.0)),
+                        point(px(cols[2].x + cols[2].w - bid_w - 2.0), px(y + 1.0 * scale)),
+                        size(px(bid_w), px(rh - 2.0 * scale)),
                     ),
                     palette.bid_depth,
                 ));
@@ -234,8 +242,8 @@ impl Element for DomLadder {
             if ask_w > 0.0 {
                 window.paint_quad(fill(
                     Bounds::new(
-                        point(px(cols[5].x + 2.0), px(y + 1.0)),
-                        size(px(ask_w), px(ROW_H - 2.0)),
+                        point(px(cols[5].x + 2.0), px(y + 1.0 * scale)),
+                        size(px(ask_w), px(rh - 2.0 * scale)),
                     ),
                     palette.ask_depth,
                 ));
@@ -243,7 +251,7 @@ impl Element for DomLadder {
 
             window.paint_quad(fill(
                 Bounds::new(
-                    point(bounds.origin.x, px(y + ROW_H - 1.0)),
+                    point(bounds.origin.x, px(y + rh - 1.0)),
                     size(bounds.size.width, px(1.0)),
                 ),
                 palette.divider,
@@ -260,7 +268,7 @@ impl Element for DomLadder {
             ));
         }
 
-        let line_height = px(ROW_H - 2.0);
+        let line_height = px(rh - 2.0 * scale);
         for prepared in prepaint.texts.drain(..) {
             prepared
                 .line

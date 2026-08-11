@@ -12,14 +12,12 @@ use gpui::{
 };
 
 use crate::glyph_cache::GlyphCache;
-use crate::layout::{format_price, format_size};
-use crate::mp_layout::{
-    MP_FOOTER_H, MP_ROW_H, MpStrips, price_line_y, row_y, strips, volume_width,
-};
+use crate::layout::format_price;
+use crate::layout::format_size;
+use crate::mp_layout::{MpStrips, mp_footer_h, mp_row_h, row_y, strips};
+use crate::mp_paint::{paint_dividers, paint_period_cursor, paint_rows, paint_semantic_lines};
 use crate::mp_prepare::prepare_tpos;
-use crate::mp_view::{
-    ETH_PERIOD_COUNT, VisibleProfile, display_session, session_open_footer, visible_rows,
-};
+use crate::mp_view::{VisibleProfile, display_session, session_open_footer, visible_rows};
 use crate::theme::Palette;
 
 pub struct MarketProfile {
@@ -28,6 +26,7 @@ pub struct MarketProfile {
     tick_scale: u8,
     glyph_cache: Rc<RefCell<GlyphCache>>,
     palette: Rc<Palette>,
+    scale: f32,
 }
 
 impl MarketProfile {
@@ -37,6 +36,7 @@ impl MarketProfile {
         tick_scale: u8,
         glyph_cache: Rc<RefCell<GlyphCache>>,
         palette: Rc<Palette>,
+        scale: f32,
     ) -> Self {
         Self {
             snapshot,
@@ -44,6 +44,7 @@ impl MarketProfile {
             tick_scale,
             glyph_cache,
             palette,
+            scale,
         }
     }
 }
@@ -66,24 +67,24 @@ pub(crate) struct PreparedText {
 }
 
 #[derive(Clone, Copy, Default)]
-struct Markers {
-    open: Option<Price>,
-    vpoc: Option<Price>,
-    vah: Option<Price>,
-    val: Option<Price>,
-    ib_low: Option<Price>,
-    ib_high: Option<Price>,
-    current_price: Option<Price>,
-    current_period: u32,
-    period_gap: bool,
+pub(crate) struct Markers {
+    pub open: Option<Price>,
+    pub vpoc: Option<Price>,
+    pub vah: Option<Price>,
+    pub val: Option<Price>,
+    pub ib_low: Option<Price>,
+    pub ib_high: Option<Price>,
+    pub current_price: Option<Price>,
+    pub current_period: u32,
+    pub period_gap: bool,
 }
 
 pub struct MpPrepaint {
-    texts: Vec<PreparedText>,
-    profile: VisibleProfile,
-    max_pv: u64,
-    max_sv: u64,
-    markers: Markers,
+    pub(crate) texts: Vec<PreparedText>,
+    pub(crate) profile: VisibleProfile,
+    pub(crate) max_pv: u64,
+    pub(crate) max_sv: u64,
+    pub(crate) markers: Markers,
 }
 
 impl Element for MarketProfile {
@@ -120,6 +121,8 @@ impl Element for MarketProfile {
         window: &mut Window,
         _cx: &mut App,
     ) -> Self::PrepaintState {
+        let scale = self.scale;
+        let footer_h = mp_footer_h(scale);
         let width = f32::from(bounds.size.width);
         let height = f32::from(bounds.size.height);
         let cols = strips(f32::from(bounds.origin.x), width);
@@ -137,7 +140,7 @@ impl Element for MarketProfile {
             self.snapshot.dom.tick_size,
             self.tick_scale,
             self.center,
-            crate::mp_layout::max_rows(height),
+            crate::mp_layout::max_rows(height, scale),
         );
         let max_pv = profile
             .rows
@@ -161,24 +164,25 @@ impl Element for MarketProfile {
             &mut cache,
             &mut texts,
             &self.palette,
+            scale,
         );
         let footer = session_open_footer(session.trade_date);
-        let line = cache.get_or_shape(window, footer, self.palette.text, px(11.0));
+        let line = cache.get_or_shape(window, footer, self.palette.text, px(11.0 * scale));
         texts.push(PreparedText {
             line,
             origin: point(
                 px(f32::from(bounds.origin.x) + 6.0),
-                px(f32::from(bounds.origin.y) + height - MP_FOOTER_H + 4.0),
+                px(f32::from(bounds.origin.y) + height - footer_h + 4.0 * scale),
             ),
             align_width: px((width - 12.0).max(0.0)),
             align: TextAlign::Left,
-            line_height: px(MP_FOOTER_H - 4.0),
+            line_height: px(footer_h - 4.0 * scale),
             clip: Bounds::new(
                 point(
                     bounds.origin.x,
-                    px(f32::from(bounds.origin.y) + height - MP_FOOTER_H),
+                    px(f32::from(bounds.origin.y) + height - footer_h),
                 ),
-                size(bounds.size.width, px(MP_FOOTER_H)),
+                size(bounds.size.width, px(footer_h)),
             ),
         });
         drop(cache);
@@ -211,6 +215,8 @@ impl Element for MarketProfile {
         window: &mut Window,
         cx: &mut App,
     ) {
+        let scale = self.scale;
+        let footer_h = mp_footer_h(scale);
         let palette = &*self.palette;
         window.paint_quad(fill(bounds, palette.base));
         let width = f32::from(bounds.size.width);
@@ -218,16 +224,16 @@ impl Element for MarketProfile {
         let origin_x = f32::from(bounds.origin.x);
         let origin_y = f32::from(bounds.origin.y);
         let cols = strips(origin_x, width);
-        let body_h = (height - MP_FOOTER_H).max(0.0);
+        let body_h = (height - footer_h).max(0.0);
         let footer = Bounds::new(
             point(bounds.origin.x, px(origin_y + body_h)),
-            size(bounds.size.width, px(MP_FOOTER_H)),
+            size(bounds.size.width, px(footer_h)),
         );
         window.paint_quad(fill(footer, palette.footer_bg));
 
         paint_period_cursor(bounds, body_h, cols, prepaint.markers, palette, window);
-        paint_rows(bounds, cols, prepaint, palette, window);
-        paint_semantic_lines(bounds, body_h, prepaint, palette, window);
+        paint_rows(bounds, cols, prepaint, palette, scale, window);
+        paint_semantic_lines(bounds, body_h, prepaint, palette, scale, window);
         paint_dividers(bounds, body_h, cols, palette, window);
 
         for prepared in prepaint.texts.drain(..) {
@@ -252,6 +258,7 @@ impl Element for MarketProfile {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn prepare_rows(
     profile: &VisibleProfile,
     cols: MpStrips,
@@ -260,11 +267,13 @@ fn prepare_rows(
     cache: &mut GlyphCache,
     texts: &mut Vec<PreparedText>,
     palette: &Palette,
+    scale: f32,
 ) {
     let origin_y = f32::from(bounds.origin.y);
+    let rh = mp_row_h(scale);
     for (from_top, row) in profile.rows.iter().rev().enumerate() {
-        let y = row_y(origin_y, from_top) + 1.0;
-        prepare_tpos(cache, window, texts, row, cols, y, palette);
+        let y = row_y(origin_y, from_top, scale) + 1.0 * scale;
+        prepare_tpos(cache, window, texts, row, cols, y, palette, scale);
         prepare_number(
             cache,
             window,
@@ -273,6 +282,7 @@ fn prepare_rows(
             cols.pv,
             y,
             palette.text,
+            scale,
         );
         prepare_number(
             cache,
@@ -282,22 +292,29 @@ fn prepare_rows(
             cols.sv,
             y,
             palette.text,
+            scale,
         );
-        let line = cache.get_or_shape(window, format_price(row.price.0), palette.text, px(10.0));
+        let line = cache.get_or_shape(
+            window,
+            format_price(row.price.0),
+            palette.text,
+            px(10.0 * scale),
+        );
         texts.push(PreparedText {
             line,
             origin: point(px(cols.axis.x + 2.0), px(y)),
             align_width: px((cols.axis.w - 4.0).max(0.0)),
             align: TextAlign::Right,
-            line_height: px(MP_ROW_H - 1.0),
+            line_height: px(rh - 1.0 * scale),
             clip: Bounds::new(
-                point(px(cols.axis.x), px(y - 1.0)),
-                size(px(cols.axis.w), px(MP_ROW_H)),
+                point(px(cols.axis.x), px(y - 1.0 * scale)),
+                size(px(cols.axis.w), px(rh)),
             ),
         });
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn prepare_number(
     cache: &mut GlyphCache,
     window: &mut Window,
@@ -306,194 +323,23 @@ fn prepare_number(
     strip: crate::mp_layout::Strip,
     y: f32,
     color: gpui::Hsla,
+    scale: f32,
 ) {
     let text = format_size(value);
     if text.is_empty() {
         return;
     }
-    let line = cache.get_or_shape(window, text, color, px(9.0));
+    let rh = mp_row_h(scale);
+    let line = cache.get_or_shape(window, text, color, px(9.0 * scale));
     texts.push(PreparedText {
         line,
         origin: point(px(strip.x + 2.0), px(y)),
         align_width: px((strip.w - 4.0).max(0.0)),
         align: TextAlign::Right,
-        line_height: px(MP_ROW_H - 1.0),
+        line_height: px(rh - 1.0 * scale),
         clip: Bounds::new(
-            point(px(strip.x), px(y - 1.0)),
-            size(px(strip.w), px(MP_ROW_H)),
+            point(px(strip.x), px(y - 1.0 * scale)),
+            size(px(strip.w), px(rh)),
         ),
     });
-}
-
-fn paint_rows(
-    bounds: Bounds<Pixels>,
-    cols: MpStrips,
-    prepaint: &MpPrepaint,
-    palette: &Palette,
-    window: &mut Window,
-) {
-    let origin_y = f32::from(bounds.origin.y);
-    for (from_top, row) in prepaint.profile.rows.iter().rev().enumerate() {
-        let y = row_y(origin_y, from_top);
-        let bucket_high = row
-            .price
-            .0
-            .checked_add(prepaint.profile.scaled_tick.0 - 1)
-            .expect("MP bucket high overflows i64");
-        if prepaint
-            .markers
-            .val
-            .zip(prepaint.markers.vah)
-            .is_some_and(|(low, high)| bucket_high >= low.0 && row.price.0 <= high.0)
-        {
-            window.paint_quad(fill(
-                Bounds::new(
-                    point(bounds.origin.x, px(y)),
-                    size(px(cols.axis.x - f32::from(bounds.origin.x)), px(MP_ROW_H)),
-                ),
-                palette.va_bg,
-            ));
-        }
-        let pv_w = volume_width(row.period_volume, prepaint.max_pv, cols.pv.w - 4.0);
-        if pv_w > 0.0 {
-            window.paint_quad(fill(
-                Bounds::new(
-                    point(px(cols.pv.x + 2.0), px(y + 3.0)),
-                    size(px(pv_w), px(MP_ROW_H - 6.0)),
-                ),
-                palette.pv_bar,
-            ));
-        }
-        let total_w = volume_width(row.session_volume, prepaint.max_sv, cols.sv.w - 4.0);
-        if total_w > 0.0 {
-            window.paint_quad(fill(
-                Bounds::new(
-                    point(px(cols.sv.x + 2.0), px(y + 4.0)),
-                    size(px(total_w), px(MP_ROW_H - 8.0)),
-                ),
-                palette.sv_total,
-            ));
-        }
-        let half = (cols.sv.w - 4.0) / 2.0;
-        let center = cols.sv.x + cols.sv.w / 2.0;
-        let sell_w = volume_width(row.sell_volume, prepaint.max_sv, half);
-        let buy_w = volume_width(row.buy_volume, prepaint.max_sv, half);
-        if sell_w > 0.0 {
-            window.paint_quad(fill(
-                Bounds::new(
-                    point(px(center - sell_w), px(y + 2.0)),
-                    size(px(sell_w), px(MP_ROW_H - 4.0)),
-                ),
-                palette.sell,
-            ));
-        }
-        if buy_w > 0.0 {
-            window.paint_quad(fill(
-                Bounds::new(
-                    point(px(center), px(y + 2.0)),
-                    size(px(buy_w), px(MP_ROW_H - 4.0)),
-                ),
-                palette.buy,
-            ));
-        }
-    }
-}
-
-fn paint_period_cursor(
-    bounds: Bounds<Pixels>,
-    body_h: f32,
-    cols: MpStrips,
-    markers: Markers,
-    palette: &Palette,
-    window: &mut Window,
-) {
-    let period = usize::try_from(markers.current_period).expect("MP period fits usize");
-    if period < ETH_PERIOD_COUNT {
-        let step = cols.ep.w / ETH_PERIOD_COUNT as f32;
-        window.paint_quad(fill(
-            Bounds::new(
-                point(px(cols.ep.x + period as f32 * step), bounds.origin.y),
-                size(px(step.max(1.0)), px(body_h)),
-            ),
-            palette.period_cursor,
-        ));
-    }
-    if markers.period_gap {
-        window.paint_quad(fill(
-            Bounds::new(
-                point(px(cols.pv.x), bounds.origin.y),
-                size(px(cols.pv.w), px(body_h)),
-            ),
-            palette.period_gap,
-        ));
-    }
-}
-
-fn paint_semantic_lines(
-    bounds: Bounds<Pixels>,
-    body_h: f32,
-    prepaint: &MpPrepaint,
-    palette: &Palette,
-    window: &mut Window,
-) {
-    let Some(top) = prepaint.profile.rows.last().map(|row| row.price) else {
-        return;
-    };
-    let origin_y = f32::from(bounds.origin.y);
-    let mut line = |price: Option<Price>, color: gpui::Hsla, thickness: f32| {
-        let Some(y) = price.and_then(|price| {
-            let bucket = Price(
-                price
-                    .0
-                    .div_euclid(prepaint.profile.scaled_tick.0)
-                    .checked_mul(prepaint.profile.scaled_tick.0)
-                    .expect("MP marker bucket overflows i64"),
-            );
-            price_line_y(bucket.0, top.0, prepaint.profile.scaled_tick.0, origin_y)
-        }) else {
-            return;
-        };
-        if y >= origin_y && y < origin_y + body_h {
-            window.paint_quad(fill(
-                Bounds::new(
-                    point(bounds.origin.x, px(y - thickness / 2.0)),
-                    size(bounds.size.width, px(thickness)),
-                ),
-                color,
-            ));
-        }
-    };
-    // Open first (lowest priority); every other marker overdraws it.
-    line(prepaint.markers.open, palette.session_open, 1.0);
-    line(prepaint.markers.vah, palette.vah_val, 1.0);
-    line(prepaint.markers.val, palette.vah_val, 1.0);
-    line(prepaint.markers.ib_high, palette.ib, 1.0);
-    line(prepaint.markers.ib_low, palette.ib, 1.0);
-    line(prepaint.markers.vpoc, palette.vpoc, 1.5);
-    line(prepaint.markers.current_price, palette.current_price, 1.0);
-}
-
-fn paint_dividers(
-    bounds: Bounds<Pixels>,
-    body_h: f32,
-    cols: MpStrips,
-    palette: &Palette,
-    window: &mut Window,
-) {
-    for x in [cols.ep.x, cols.pv.x, cols.sv.x, cols.axis.x] {
-        window.paint_quad(fill(
-            Bounds::new(
-                point(px(x), bounds.origin.y),
-                size(px(1.0), bounds.size.height),
-            ),
-            palette.divider,
-        ));
-    }
-    window.paint_quad(fill(
-        Bounds::new(
-            point(bounds.origin.x, px(f32::from(bounds.origin.y) + body_h)),
-            size(bounds.size.width, px(1.0)),
-        ),
-        palette.divider,
-    ));
 }

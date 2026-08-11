@@ -10,27 +10,20 @@ use std::time::Instant;
 use fft_engine::{
     EngineCmd, EngineConfig, EngineHandle, EngineService, RenderSnapshot, SnapshotSlot, Source,
 };
-use gpui::{
-    AnyElement, Context, FocusHandle, MouseButton, Render, ScrollDelta, Window, div, prelude::*,
-    px, relative,
-};
+use gpui::{Context, FocusHandle, MouseButton, Render, Window, div, prelude::*};
 
 use crate::dom_input::DomInput;
 use crate::dom_ladder::DomLadder;
 use crate::dom_view::DomView;
 use crate::glyph_cache::GlyphCache;
 use crate::harness::Harness;
-use crate::layout::{HEADER_H, ROW_H};
 use crate::mp_element::MarketProfile;
-use crate::mp_layout::MP_ROW_H;
 #[cfg(debug_assertions)]
 use crate::mp_view::check_pane_agreement;
-use crate::mp_view::{display_session, pan_center};
-use crate::pane_state::{Pane, PaneState, SPLITTER_WIDTH};
+use crate::os_theme::{ThemeSlot, resolve_font_family, spawn_theme_watcher};
+use crate::pane_state::PaneState;
+use crate::shell_panes;
 use crate::theme::Palette;
-
-/// Installed family name (`fc-list`); not the bare "JetBrains Mono".
-const FONT_FAMILY: &str = "JetBrainsMono Nerd Font";
 
 struct ReplayResources {
     snapshots: SnapshotSlot,
@@ -52,6 +45,12 @@ pub struct Shell {
     mp_input: Rc<RefCell<DomInput>>,
     glyph_cache: Rc<RefCell<GlyphCache>>,
     palette: Rc<Palette>,
+    /// OS theme scale (`base_size / 12`); applied to row heights and font sizes.
+    scale: f32,
+    theme_slot: Arc<ThemeSlot>,
+    theme_generation: u64,
+    /// Resolved once before the window opens; live family switching is out of scope.
+    font_family: String,
     focus: FocusHandle,
     focus_once: bool,
 }
@@ -64,6 +63,13 @@ impl Shell {
         engine_slot: Rc<RefCell<Option<EngineHandle>>>,
         cx: &mut Context<Self>,
     ) -> Self {
+        // Family is fixed at startup (fc-match); palette/scale follow the OS theme live.
+        let font_family = resolve_font_family();
+        let theme_slot = spawn_theme_watcher();
+        let snap = theme_slot.load();
+        let theme_generation = snap.generation;
+        let palette = Rc::new(snap.palette);
+        let scale = snap.scale;
         Self {
             harness,
             snapshots: None,
@@ -77,10 +83,26 @@ impl Shell {
             dom_input: Rc::new(RefCell::new(DomInput::default())),
             mp_input: Rc::new(RefCell::new(DomInput::default())),
             glyph_cache: Rc::new(RefCell::new(GlyphCache::default())),
-            palette: Rc::new(Palette::from_env()),
+            palette,
+            scale,
+            theme_slot,
+            theme_generation,
+            font_family,
             focus: cx.focus_handle().tab_stop(true),
             focus_once: true,
         }
+    }
+
+    /// Per-frame u64 load + compare; no entity.update / notify.
+    fn pickup_theme_if_changed(&mut self) {
+        let next = self.theme_slot.generation();
+        if next == self.theme_generation {
+            return;
+        }
+        let snap = self.theme_slot.load();
+        self.theme_generation = snap.generation;
+        self.palette = Rc::new(snap.palette);
+        self.scale = snap.scale;
     }
 
     fn adopt_replay(&mut self) {
@@ -113,6 +135,7 @@ impl Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.pickup_theme_if_changed();
         self.adopt_replay();
         if let Some(slot) = &self.snapshots {
             self.frame_snapshot = slot.load();
@@ -160,12 +183,14 @@ impl Render for Shell {
             let panes = self.panes.borrow();
             (panes.mp_scale, panes.dom_scale, panes.splitter.ratio())
         };
+        let ui_scale = self.scale;
         let mp = MarketProfile::new(
             Arc::clone(&self.frame_snapshot),
             center,
             mp_scale,
             Rc::clone(&self.glyph_cache),
             Rc::clone(&self.palette),
+            ui_scale,
         );
         let dom = DomLadder::new(
             Arc::clone(&self.frame_snapshot),
@@ -175,32 +200,37 @@ impl Render for Shell {
             },
             Rc::clone(&self.glyph_cache),
             Rc::clone(&self.palette),
+            ui_scale,
         );
 
-        let mp_pane = mp_pane(
+        let mp_pane = shell_panes::mp_pane(
             mp,
             ratio,
             Arc::clone(&self.frame_snapshot),
             Rc::clone(&self.panes),
             Rc::clone(&self.mp_input),
+            ui_scale,
         );
-        let dom_pane = dom_pane(
+        let dom_pane = shell_panes::dom_pane(
             dom,
             1.0 - ratio,
             Arc::clone(&self.frame_snapshot),
             Rc::clone(&self.panes),
             Rc::clone(&self.dom_input),
+            ui_scale,
         );
-        let splitter = splitter(Rc::clone(&self.panes), Rc::clone(&self.palette));
+        let splitter = shell_panes::splitter(Rc::clone(&self.panes), Rc::clone(&self.palette));
         let key_panes = Rc::clone(&self.panes);
         let split_move = Rc::clone(&self.panes);
         let split_end = Rc::clone(&self.panes);
         let split_end_out = Rc::clone(&self.panes);
+        let font_family = self.font_family.clone();
 
         div()
             .id("fft-two-pane-shell")
             .size_full()
-            .font_family(FONT_FAMILY)
+            // Family fixed at startup; live family switching is out of scope.
+            .font_family(font_family)
             .flex()
             .flex_row()
             .track_focus(&self.focus)
@@ -242,214 +272,6 @@ impl Render for Shell {
             })
             .children([mp_pane, splitter, dom_pane])
             .into_any_element()
-    }
-}
-
-fn mp_pane(
-    profile: MarketProfile,
-    ratio: f32,
-    snapshot: Arc<RenderSnapshot>,
-    panes: Rc<RefCell<PaneState>>,
-    input: Rc<RefCell<DomInput>>,
-) -> AnyElement {
-    let hover = Rc::clone(&panes);
-    let drag_start = Rc::clone(&input);
-    let drag_split = Rc::clone(&panes);
-    let drag_move = Rc::clone(&input);
-    let drag_panes = Rc::clone(&panes);
-    let drag_snapshot = Arc::clone(&snapshot);
-    let drag_end = Rc::clone(&input);
-    let drag_end_out = Rc::clone(&input);
-    let wheel_input = Rc::clone(&input);
-    let wheel_panes = Rc::clone(&panes);
-    div()
-        .id("market-profile-pane")
-        .h_full()
-        .min_w_0()
-        .overflow_hidden()
-        .flex_shrink_1()
-        .flex_basis(relative(ratio))
-        .on_hover(move |hovered, _, _| {
-            hover
-                .borrow_mut()
-                .set_hovered(Pane::MarketProfile, *hovered);
-        })
-        .on_mouse_down(MouseButton::Left, move |event, _, _| {
-            if !drag_split.borrow().splitter.is_dragging() {
-                drag_start
-                    .borrow_mut()
-                    .begin_drag(f32::from(event.position.y));
-            }
-        })
-        .on_mouse_move(move |event, window, _| {
-            if !event.dragging() || drag_panes.borrow().splitter.is_dragging() {
-                drag_move.borrow_mut().end_drag();
-                return;
-            }
-            let delta = drag_move
-                .borrow_mut()
-                .drag_to(f32::from(event.position.y), MP_ROW_H);
-            if delta == 0 {
-                return;
-            }
-            let mut panes = drag_panes.borrow_mut();
-            if let Some(session) = display_session(&drag_snapshot.profile) {
-                panes.center = pan_center(
-                    session,
-                    drag_snapshot.dom.tick_size,
-                    panes.mp_scale,
-                    panes.effective_center(&drag_snapshot.dom),
-                    delta,
-                );
-                panes.clamp_center_to_dom(&drag_snapshot.dom);
-                drop(panes);
-                window.refresh();
-            }
-        })
-        .on_mouse_up(MouseButton::Left, move |_, _, _| {
-            drag_end.borrow_mut().end_drag();
-        })
-        .on_mouse_up_out(MouseButton::Left, move |_, _, _| {
-            drag_end_out.borrow_mut().end_drag();
-        })
-        .on_scroll_wheel(move |event, window, cx| {
-            if event.modifiers.modified() {
-                return;
-            }
-            let rows = scroll_rows(event.delta, MP_ROW_H);
-            let delta = wheel_input.borrow_mut().wheel(rows);
-            if delta != 0 {
-                let mut panes = wheel_panes.borrow_mut();
-                if let Some(session) = display_session(&snapshot.profile) {
-                    panes.center = pan_center(
-                        session,
-                        snapshot.dom.tick_size,
-                        panes.mp_scale,
-                        panes.effective_center(&snapshot.dom),
-                        delta,
-                    );
-                    panes.clamp_center_to_dom(&snapshot.dom);
-                    drop(panes);
-                    window.refresh();
-                }
-            }
-            cx.stop_propagation();
-        })
-        .child(profile)
-        .into_any_element()
-}
-
-fn dom_pane(
-    ladder: DomLadder,
-    ratio: f32,
-    snapshot: Arc<RenderSnapshot>,
-    panes: Rc<RefCell<PaneState>>,
-    input: Rc<RefCell<DomInput>>,
-) -> AnyElement {
-    let hover = Rc::clone(&panes);
-    let drag_start = Rc::clone(&input);
-    let drag_split = Rc::clone(&panes);
-    let drag_move = Rc::clone(&input);
-    let drag_panes = Rc::clone(&panes);
-    let drag_snapshot = Arc::clone(&snapshot);
-    let drag_end = Rc::clone(&input);
-    let drag_end_out = Rc::clone(&input);
-    let wheel_input = Rc::clone(&input);
-    let wheel_panes = Rc::clone(&panes);
-    div()
-        .id("dom-ladder-pane")
-        .h_full()
-        .min_w_0()
-        .overflow_hidden()
-        .flex_shrink_1()
-        .flex_basis(relative(ratio))
-        .on_hover(move |hovered, _, _| {
-            hover.borrow_mut().set_hovered(Pane::Dom, *hovered);
-        })
-        .on_mouse_down(MouseButton::Left, move |event, _, _| {
-            let mut input = drag_start.borrow_mut();
-            input.end_drag();
-            if !drag_split.borrow().splitter.is_dragging()
-                && f32::from(event.position.y) >= HEADER_H
-            {
-                input.begin_drag(f32::from(event.position.y));
-            }
-        })
-        .on_mouse_move(move |event, window, _| {
-            if !event.dragging() || drag_panes.borrow().splitter.is_dragging() {
-                drag_move.borrow_mut().end_drag();
-                return;
-            }
-            let delta = drag_move
-                .borrow_mut()
-                .drag_to(f32::from(event.position.y), ROW_H);
-            if delta == 0 {
-                return;
-            }
-            let changed = pan_dom(&drag_panes, &drag_snapshot, delta);
-            if changed {
-                window.refresh();
-            }
-        })
-        .on_mouse_up(MouseButton::Left, move |_, _, _| {
-            drag_end.borrow_mut().end_drag();
-        })
-        .on_mouse_up_out(MouseButton::Left, move |_, _, _| {
-            drag_end_out.borrow_mut().end_drag();
-        })
-        .on_scroll_wheel(move |event, window, cx| {
-            if event.modifiers.modified() {
-                return;
-            }
-            let delta = wheel_input
-                .borrow_mut()
-                .wheel(scroll_rows(event.delta, ROW_H));
-            if delta != 0 && pan_dom(&wheel_panes, &snapshot, delta) {
-                window.refresh();
-            }
-            cx.stop_propagation();
-        })
-        .child(ladder)
-        .into_any_element()
-}
-
-fn pan_dom(panes: &Rc<RefCell<PaneState>>, snapshot: &RenderSnapshot, delta: i64) -> bool {
-    let mut panes = panes.borrow_mut();
-    let mut view = DomView {
-        anchor: panes.effective_center(&snapshot.dom),
-        tick_scale: panes.dom_scale,
-    };
-    let dom = view.aggregate(&snapshot.dom);
-    if !view.pan_rows(&dom, delta) {
-        return false;
-    }
-    panes.center = view.anchor;
-    true
-}
-
-fn splitter(panes: Rc<RefCell<PaneState>>, palette: Rc<Palette>) -> AnyElement {
-    div()
-        .id("pane-splitter")
-        .w(px(SPLITTER_WIDTH))
-        .h_full()
-        .flex_none()
-        .bg(palette.splitter)
-        .cursor_col_resize()
-        .on_mouse_down(MouseButton::Left, move |event, window, cx| {
-            panes
-                .borrow_mut()
-                .splitter
-                .begin(f32::from(event.position.x));
-            window.refresh();
-            cx.stop_propagation();
-        })
-        .into_any_element()
-}
-
-fn scroll_rows(delta: ScrollDelta, row_height: f32) -> f32 {
-    match delta {
-        ScrollDelta::Lines(delta) => delta.y,
-        ScrollDelta::Pixels(delta) => f32::from(delta.y) / row_height,
     }
 }
 

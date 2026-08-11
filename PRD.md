@@ -97,11 +97,16 @@ mode (`r`) is on. Keys as in legacy PRD (`d`, `e`, `r`, space, `l`, arrows, `[`/
 Ctrl+wheel zoom), except tick scales are **hover-routed** (decision: René, 2026-08-10):
 `1`/`2`/`4` set the scale of the pane under the mouse; `t` copies the hovered pane's scale
 onto the other pane (sync). No hover → no-op. This supersedes the legacy `Shift+1/2/4`
-DOM chords. **Type: JetBrains Mono for all UI text** (family "JetBrainsMono Nerd
-Font" as installed; no other face anywhere). **Color: Catppuccin** — flavor from prefs,
-default Mocha; Latte serves light mode. Palette roles map once (base/surface/text/overlay +
-semantic accents for bid/ask/VA/VPOC/IB) and every draw call uses a role, never a raw hex.
-This supersedes the earlier OS-theme (Omarchy) derivation (decision: René, 2026-08-10).
+DOM chords. **Type + color follow the OS (Omarchy) theme system** (decision: René,
+2026-08-10 late, supersedes the same-day hardcoded-Catppuccin ruling): font family from
+fontconfig (`fc-match monospace`; JetBrainsMono Nerd Font on the reference box), font
+size from Omarchy's `[font] base-size` (user `~/.config/omarchy/shell.toml`, themed
+default 12; UI metrics scale as `base-size / 12`), colors from the active theme's
+`~/.local/state/omarchy/current/theme/colors.toml`. A system theme/size change is picked
+up live — no restart. Palette roles still map once (base/surface/text/overlay + semantic
+accents for bid/ask/VA/VPOC/IB) and every draw call uses a role, never a raw hex; the
+built-in Catppuccin Mocha palette remains solely as the loud-warning fallback when no
+Omarchy state exists (CI, non-Omarchy hosts) and as the unit-test fixture.
 
 ## 6. Data
 

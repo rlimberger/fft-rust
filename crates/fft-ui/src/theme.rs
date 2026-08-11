@@ -1,12 +1,14 @@
-//! Catppuccin palette roles for every paint path.
+//! Palette roles for every paint path.
 //!
-//! Flavors are hand-written from the official Catppuccin hex values
-//! (https://catppuccin.com/palette/). `FFT_THEME=latte` selects Latte; anything
-//! else or unset selects Mocha. Provisional until prefs land (M5).
+//! Production colors come from the host Omarchy theme via [`Palette::from_os_colors`].
+//! [`Palette::mocha`] / [`Palette::latte`] remain as the documented CI fallback and
+//! test fixtures (mocha is what the watcher publishes when Omarchy is absent).
 
 use gpui::{Hsla, Rgba, rgb};
 
-/// Official Catppuccin role colors used by panes and chrome.
+use crate::os_theme::OsColors;
+
+/// Official role colors used by panes and chrome.
 ///
 /// No `Option`s: every role is always present. Alpha is baked into the role
 /// where the prior paint path used translucent quads (period cursor/gap,
@@ -44,7 +46,40 @@ pub struct Palette {
 }
 
 impl Palette {
-    /// Catppuccin Mocha (default dark flavor).
+    /// Map Omarchy `colors.toml` roles onto FFT paint roles (orchestrator contract).
+    pub fn from_os_colors(c: &OsColors) -> Self {
+        Self {
+            base: solid(c.background),
+            mantle: solid(c.dark_background),
+            footer_bg: solid(c.dark_background),
+            blank_window: solid(c.darker_background),
+            surface: solid(c.selection),
+            inside_band: solid(c.selection),
+            overlay: solid(c.muted),
+            sv_total: solid(c.muted),
+            text: solid(c.foreground),
+            subtext: solid(c.dark_foreground),
+            eth_tpo: solid(c.dark_foreground),
+            divider: solid(c.selection),
+            splitter: solid(c.lighter_background),
+            pv_bar: solid(c.lighter_background),
+            va_bg: alpha(c.selection, 0.55),
+            vpoc: alpha(c.orange, 0.75),
+            ib: alpha(c.yellow, 0.45),
+            vah_val: alpha(c.cyan, 0.55),
+            current_price: alpha(c.foreground, 0.80),
+            session_open: alpha(c.magenta, 0.40),
+            period_cursor: alpha(c.orange, 0.16),
+            period_gap: alpha(c.red, 0.12),
+            rth_tpo: solid(c.orange),
+            bid_depth: solid(c.blue),
+            ask_depth: solid(c.red),
+            buy: solid(c.bright_cyan),
+            sell: solid(c.bright_red),
+        }
+    }
+
+    /// Catppuccin Mocha (default dark flavor; OS-theme fallback + test fixture).
     pub fn mocha() -> Self {
         // Official Mocha hex (catppuccin.com/palette).
         const PEACH: u32 = 0xfab387;
@@ -97,7 +132,7 @@ impl Palette {
         }
     }
 
-    /// Catppuccin Latte (light flavor).
+    /// Catppuccin Latte (light flavor; test fixture).
     pub fn latte() -> Self {
         // Official Latte hex (catppuccin.com/palette).
         const PEACH: u32 = 0xfe640b;
@@ -149,21 +184,6 @@ impl Palette {
             blank_window: solid(CRUST),
         }
     }
-
-    /// Read `FFT_THEME`. Provisional until prefs land (M5).
-    ///
-    /// - `FFT_THEME=latte` → Latte
-    /// - anything else or unset → Mocha
-    pub fn from_env() -> Self {
-        Self::select(std::env::var("FFT_THEME").ok().as_deref())
-    }
-
-    fn select(theme: Option<&str>) -> Self {
-        match theme {
-            Some("latte") => Self::latte(),
-            _ => Self::mocha(),
-        }
-    }
 }
 
 fn solid(hex: u32) -> Hsla {
@@ -178,6 +198,7 @@ fn alpha(hex: u32, a: f32) -> Hsla {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::os_theme::parse_colors_toml;
 
     #[test]
     fn mocha_and_latte_are_complete_and_differ() {
@@ -214,11 +235,67 @@ mod tests {
     }
 
     #[test]
-    fn from_env_selection() {
-        assert_eq!(Palette::select(None).base, Palette::mocha().base);
-        assert_eq!(Palette::select(Some("mocha")).base, Palette::mocha().base);
-        assert_eq!(Palette::select(Some("other")).base, Palette::mocha().base);
-        assert_eq!(Palette::select(Some("latte")).base, Palette::latte().base);
-        assert_eq!(Palette::select(Some("Latte")).base, Palette::mocha().base);
+    fn from_os_colors_tokyo_night_mapping() {
+        let text = r##"
+mode = "dark"
+accent = "#7aa2f7"
+selection = "#292e42"
+muted = "#414868"
+background = "#1a1b26"
+dark_background = "#13141c"
+darker_background = "#0e0e14"
+lighter_background = "#24283b"
+foreground = "#a9b1d6"
+dark_foreground = "#565f89"
+light_foreground = "#b4bee6"
+bright_foreground = "#c0caf5"
+red = "#f7768e"
+yellow = "#e0af68"
+orange = "#eb927b"
+green = "#9ece6a"
+cyan = "#449dab"
+blue = "#7aa2f7"
+magenta = "#ad8ee6"
+brown = "#75493d"
+bright_red = "#ff7a93"
+bright_yellow = "#ff9e64"
+bright_green = "#b9f27c"
+bright_cyan = "#0db9d7"
+bright_blue = "#7da6ff"
+bright_magenta = "#bb9af7"
+"##;
+        let os = parse_colors_toml(text).expect("fixture");
+        let p = Palette::from_os_colors(&os);
+        assert_eq!(p.base, solid(0x1a1b26));
+        assert_eq!(p.text, solid(0xa9b1d6));
+        assert_eq!(p.mantle, solid(0x13141c));
+        assert_eq!(p.footer_bg, solid(0x13141c));
+        assert_eq!(p.blank_window, solid(0x0e0e14));
+        assert_eq!(p.surface, solid(0x292e42));
+        assert_eq!(p.inside_band, solid(0x292e42));
+        assert_eq!(p.overlay, solid(0x414868));
+        assert_eq!(p.sv_total, solid(0x414868));
+        assert_eq!(p.subtext, solid(0x565f89));
+        assert_eq!(p.eth_tpo, solid(0x565f89));
+        assert_eq!(p.divider, solid(0x292e42));
+        assert_eq!(p.splitter, solid(0x24283b));
+        assert_eq!(p.pv_bar, solid(0x24283b));
+        assert_eq!(p.rth_tpo, solid(0xeb927b));
+        assert_eq!(p.bid_depth, solid(0x7aa2f7));
+        assert_eq!(p.ask_depth, solid(0xf7768e));
+        assert_eq!(p.buy, solid(0x0db9d7));
+        assert_eq!(p.sell, solid(0xff7a93));
+        assert!((p.va_bg.a - 0.55).abs() < 1e-5);
+        assert!((p.vpoc.a - 0.75).abs() < 1e-5);
+        assert!((p.ib.a - 0.45).abs() < 1e-5);
+        assert!((p.vah_val.a - 0.55).abs() < 1e-5);
+        assert!((p.current_price.a - 0.80).abs() < 1e-5);
+        assert!((p.session_open.a - 0.40).abs() < 1e-5);
+        assert!((p.period_cursor.a - 0.16).abs() < 1e-5);
+        assert!((p.period_gap.a - 0.12).abs() < 1e-5);
+        // Alpha roles share RGB with their solid source.
+        assert_eq!(p.vpoc.h, solid(0xeb927b).h);
+        assert_eq!(p.current_price.h, solid(0xa9b1d6).h);
+        assert_eq!(p.session_open.h, solid(0xad8ee6).h);
     }
 }

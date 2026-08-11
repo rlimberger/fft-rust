@@ -6,11 +6,23 @@ pub const COL_LABELS: [&str; 6] = ["PRICE", "VOL", "BID", "cB", "cA", "ASK"];
 /// Relative column widths; must sum to 1.0.
 pub const COL_FRACTIONS: [f32; 6] = [0.18, 0.14, 0.22, 0.10, 0.10, 0.26];
 
-/// Header strip height in logical pixels.
+/// Header strip height in logical pixels at scale 1.0.
 pub const HEADER_H: f32 = 22.0;
 
-/// One price-row height in logical pixels (tick scale 1).
+/// One price-row height in logical pixels (tick scale 1) at OS scale 1.0.
 pub const ROW_H: f32 = 18.0;
+
+/// Scaled header height: `HEADER_H * scale`.
+#[inline]
+pub fn header_h(scale: f32) -> f32 {
+    HEADER_H * scale
+}
+
+/// Scaled row height: `ROW_H * scale`.
+#[inline]
+pub fn row_h(scale: f32) -> f32 {
+    ROW_H * scale
+}
 
 /// Axis-aligned column strip: `x` origin and `width` within the ladder bounds.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -36,11 +48,12 @@ pub fn column_rects(origin_x: f32, width: f32) -> [ColRect; 6] {
 }
 
 /// How many body rows fit under the header inside `body_height`.
-pub fn max_visible_rows(body_height: f32) -> usize {
-    if body_height <= 0.0 || !body_height.is_finite() {
+pub fn max_visible_rows(body_height: f32, scale: f32) -> usize {
+    let rh = row_h(scale);
+    if body_height <= 0.0 || !body_height.is_finite() || rh <= 0.0 {
         return 0;
     }
-    (body_height / ROW_H).floor() as usize
+    (body_height / rh).floor() as usize
 }
 
 /// Inclusive-exclusive `[start, end)` window of ascending-price rows centered on
@@ -66,8 +79,8 @@ pub fn visible_row_window(
 }
 
 /// Top edge of the row drawn `row_from_top` rows below the header (row 0 = highest price).
-pub fn row_top_y(origin_y: f32, row_from_top: usize) -> f32 {
-    origin_y + HEADER_H + row_from_top as f32 * ROW_H
+pub fn row_top_y(origin_y: f32, row_from_top: usize, scale: f32) -> f32 {
+    origin_y + header_h(scale) + row_from_top as f32 * row_h(scale)
 }
 
 /// Map a price to a row index from the top of a descending ladder window.
@@ -86,12 +99,12 @@ pub fn price_to_row_from_top(price: i64, top_price: i64, tick: i64) -> Option<i6
 }
 
 /// Y coordinate of the top of the row for `price` within a descending window.
-pub fn price_to_y(price: i64, top_price: i64, tick: i64, origin_y: f32) -> Option<f32> {
+pub fn price_to_y(price: i64, top_price: i64, tick: i64, origin_y: f32, scale: f32) -> Option<f32> {
     let row = price_to_row_from_top(price, top_price, tick)?;
     if row < 0 {
         return None;
     }
-    Some(row_top_y(origin_y, row as usize))
+    Some(row_top_y(origin_y, row as usize, scale))
 }
 
 /// Depth-block width inside a side column, scaled to the window's max size on that side.
@@ -155,11 +168,24 @@ mod tests {
     fn price_to_y_descends_with_price() {
         let tick = 250_000_000;
         let top = 5_000_000_000_000;
-        let y0 = price_to_y(top, top, tick, 0.0).unwrap();
-        let y1 = price_to_y(top - tick, top, tick, 0.0).unwrap();
+        let y0 = price_to_y(top, top, tick, 0.0, 1.0).unwrap();
+        let y1 = price_to_y(top - tick, top, tick, 0.0, 1.0).unwrap();
         assert!((y0 - HEADER_H).abs() < 1e-4);
         assert!((y1 - (HEADER_H + ROW_H)).abs() < 1e-4);
         assert!(y1 > y0);
+    }
+
+    #[test]
+    fn scale_multiplies_row_metrics() {
+        assert!((row_h(1.0) - ROW_H).abs() < 1e-6);
+        assert!((row_h(1.5) - ROW_H * 1.5).abs() < 1e-6);
+        assert!((header_h(1.5) - HEADER_H * 1.5).abs() < 1e-6);
+        assert_eq!(max_visible_rows(180.0, 1.0), 10);
+        assert_eq!(max_visible_rows(180.0, 1.5), 6); // 180 / 27 = 6.66 → 6
+        let y1 = row_top_y(0.0, 1, 1.0);
+        let y15 = row_top_y(0.0, 1, 1.5);
+        assert!((y1 - (HEADER_H + ROW_H)).abs() < 1e-4);
+        assert!((y15 - (HEADER_H * 1.5 + ROW_H * 1.5)).abs() < 1e-4);
     }
 
     #[test]
