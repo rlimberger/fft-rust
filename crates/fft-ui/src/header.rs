@@ -65,7 +65,7 @@ pub fn format_ny_clock(ts_ns: u64) -> String {
     )
 }
 
-/// Contract slot until the engine publishes the symbol: honest placeholder + trade date.
+/// Contract slot: symbol from the current source header, else `--`, plus trade date.
 pub fn contract_context(snapshot: &RenderSnapshot) -> String {
     let Some(session) = display_session(&snapshot.profile) else {
         return "-- ---- --".to_string();
@@ -74,7 +74,12 @@ pub fn contract_context(snapshot: &RenderSnapshot) -> String {
         return "-- ---- --".to_string();
     }
     let (year, month, day) = civil_from_days(i64::from(session.trade_date));
-    format!("-- {year:04}-{month:02}-{day:02}")
+    let symbol = if snapshot.symbol.is_empty() {
+        "--"
+    } else {
+        snapshot.symbol.as_ref()
+    };
+    format!("{symbol} {year:04}-{month:02}-{day:02}")
 }
 
 pub struct HeaderArgs {
@@ -131,6 +136,7 @@ pub fn header_strip(args: HeaderArgs) -> AnyElement {
 mod tests {
     use super::*;
     use fft_engine::{ProfileRenderState, ProfileSessionRender};
+    use std::sync::Arc;
 
     #[test]
     fn ny_clock_pins_sim_live_anchor() {
@@ -192,5 +198,20 @@ mod tests {
             ..RenderSnapshot::default()
         };
         assert_eq!(contract_context(&snapshot), "-- 2026-07-29");
+    }
+
+    #[test]
+    fn contract_context_renders_symbol_with_trade_date() {
+        let snapshot = RenderSnapshot {
+            symbol: Arc::from("ESU6"),
+            profile: ProfileRenderState {
+                sessions: vec![ProfileSessionRender {
+                    trade_date: 20_663,
+                    ..ProfileSessionRender::default()
+                }],
+            },
+            ..RenderSnapshot::default()
+        };
+        assert_eq!(contract_context(&snapshot), "ESU6 2026-07-29");
     }
 }

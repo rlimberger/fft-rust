@@ -3,7 +3,7 @@ use fft_book::{Book, LastTrade};
 use fft_core::{Price, Side};
 use fft_profile::{CvdCandle, MultiProfile};
 use std::mem::size_of;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 /// Per-side native-refresh totals rendered at one price.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -131,8 +131,13 @@ pub struct CoverageCounters {
     pub gap_records: u64,
 }
 
+fn empty_symbol() -> Arc<str> {
+    static EMPTY: OnceLock<Arc<str>> = OnceLock::new();
+    EMPTY.get_or_init(|| Arc::from("")).clone()
+}
+
 /// One coherent generation consumed by both panes.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderSnapshot {
     /// Monotonic publication generation.
     pub generation: u64,
@@ -142,12 +147,33 @@ pub struct RenderSnapshot {
     pub applied_ts: u64,
     /// Seek generation answered, or zero for forward/live flow.
     pub seek_generation: u64,
+    /// Contract symbol from the current source header (`""` before `SetSource`).
+    ///
+    /// `Arc<str>` so publication clones are refcount bumps: `publish` builds a fresh
+    /// `RenderSnapshot` each time (`service.rs` → [`SnapshotSlot::publish`]), and the
+    /// symbol string itself is allocated once at `SetSource`.
+    pub symbol: Arc<str>,
     /// Bounded DOM state.
     pub dom: DomRenderState,
     /// Session profile state.
     pub profile: ProfileRenderState,
     /// Event-coverage accounting (M3 gate surface).
     pub coverage: CoverageCounters,
+}
+
+impl Default for RenderSnapshot {
+    fn default() -> Self {
+        Self {
+            generation: 0,
+            applied_seq: 0,
+            applied_ts: 0,
+            seek_generation: 0,
+            symbol: empty_symbol(),
+            dom: DomRenderState::default(),
+            profile: ProfileRenderState::default(),
+            coverage: CoverageCounters::default(),
+        }
+    }
 }
 
 impl RenderSnapshot {
@@ -258,7 +284,8 @@ pub fn build_snapshot(
         applied_seq,
         applied_ts,
         seek_generation,
-        // Stamped by the engine service at publication; build stays coverage-agnostic.
+        // Stamped by the engine service at publication; build stays symbol/coverage-agnostic.
+        symbol: empty_symbol(),
         coverage: CoverageCounters::default(),
         dom: DomRenderState {
             tick_size: tick,

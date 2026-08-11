@@ -174,6 +174,8 @@ struct Runtime {
     profile: Option<MultiProfile>,
     /// Current source instrument identity, used to validate prior-session loads.
     source_meta: Option<InstrumentMeta>,
+    /// Contract symbol cloned once at `SetSource` for snapshot publication.
+    symbol: Arc<str>,
     /// In-progress prior-day profile build; at most one at a time.
     prior_build: Option<PriorBuild>,
     playing: bool,
@@ -203,6 +205,7 @@ impl Runtime {
             book: None,
             profile: None,
             source_meta: None,
+            symbol: Arc::from(""),
             prior_build: None,
             playing: false,
             speed: 1.0,
@@ -388,6 +391,8 @@ impl Runtime {
         self.book = Some(Book::new(meta.min_price_increment));
         self.profile = Some(profile);
         self.source = Some(source);
+        // One heap alloc for the header symbol; publications only Arc-clone it.
+        self.symbol = Arc::<str>::from(meta.symbol.as_str());
         self.source_meta = Some(meta);
         self.source_path = Some(path);
         self.playing = false;
@@ -719,6 +724,7 @@ impl Runtime {
             self.book.as_ref().expect("publication without Book"),
             self.profile.as_ref().expect("publication without profile"),
         );
+        snapshot.symbol = self.symbol.clone();
         snapshot.coverage = self.coverage;
         assert!(
             snapshot.estimated_heap_bytes() <= 8 * 1024 * 1024,

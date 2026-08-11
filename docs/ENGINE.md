@@ -84,6 +84,9 @@ struct RenderSnapshot {
     applied_seq: u64,      // last source sequence reflected in this state
     applied_ts: u64,       // event time of that sequence, ns UTC
     seek_generation: u64,  // the seek this state answers (0 = live/forward flow)
+    symbol: Arc<str>,      // contract from the source's header meta (2026-08-11);
+                           // captured once at SetSource, refcount-cloned per publish,
+                           // empty before any source exists
     dom: DomRenderState,       // ladder window: per-price aggregates, flow counters,
                                // refresh badges, selected-order queue rank
     profile: ProfileRenderState, // per-session TPO/volume arrays, VA/IB/VPOC, CVD

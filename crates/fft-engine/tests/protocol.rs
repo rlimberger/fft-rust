@@ -223,6 +223,30 @@ fn shutdown_flushes_and_joins() {
 }
 
 #[test]
+fn published_snapshot_carries_log_header_symbol() {
+    let tmp = temp_path("header-symbol");
+    write_checkpointed_log(tmp.path(), 80, 40);
+    let wakes = Arc::new(AtomicU64::new(0));
+    let handle = spawn_engine(wakes);
+
+    handle
+        .send(EngineCmd::SetSource(Source::Replay {
+            path: tmp.path().to_path_buf(),
+        }))
+        .unwrap();
+    handle
+        .send(EngineCmd::Seek {
+            ts: SESSION_OPEN_NS + 40 * 1_000_000,
+            generation: 1,
+        })
+        .unwrap();
+    let snap = wait_for_seek(&handle, 1);
+    assert_eq!(snap.symbol.as_ref(), "ESU6");
+
+    let _ = handle.shutdown().expect("join");
+}
+
+#[test]
 fn watermark_invariants_hold_after_play() {
     let tmp = temp_path("watermarks");
     write_checkpointed_log(tmp.path(), 120, 60);
