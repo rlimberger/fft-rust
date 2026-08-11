@@ -38,6 +38,20 @@ M5 features landed this wave (all reviewed, committed, pushed):
   (Worker died mid-track once; resumed and completed — a worker "report" that is
   mid-work prose means the session ended, check the tree.)
 
+Wave 8 additions (2026-08-11, all pushed): auto prior-day pipeline complete —
+discovery (`4e008f5`) + auto-ingest from raw DBN (`0ea8746`: candidates from the DBN
+UTC range, params from the replay log's header, oldest-first progressive dispatch,
+functional proof under a passing 60 s gate); MP input remap (`a26dcf4`: wheel zooms,
+Ctrl optional; left-drag pans; DOM wheel-pan unchanged); header chrome (`587081d`:
+NY event-time clock + FPS; symbol placeholder — engine follow-up: plumb
+InstrumentMeta.symbol into RenderSnapshot); priors survive Seek (`817f904`,
+ENGINE.md §2 extended — defect found by the m7-soak rig's smoke); m7-soak rig
+(`f43dd29`); LOG-FUZZ clean bill 29,571 mutants (`e5eee19`); CI builds all gate bins,
+perf.yml modernized (`4f422af`); README + OPERATOR.md authored (`f5e2c38`); canonical
+subagent roster in AGENTS.md (`7de701b`). **24 h m7-soak RUNNING** on the desk box
+(out: /tmp/m7-soak-24h.jsonl; watchdog monitor alerts on leak/RSS/failure/summary).
+M7 remaining: soak clean → week soak decision, five-claim acceptance writeup, v1 tag.
+
 M5 measurables CLOSED (quiet-box evidence committed): cold start first-paint
 85–103 ms / interactive 103–122 ms over 5 runs (budgets 150/500 — PASS;
 --startup-trace instrumentation, normal runs unchanged); scrub burst 120 seeks
