@@ -71,6 +71,9 @@ pub struct SessionProfile {
     pub(crate) post_close_events: u64,
     /// Cross-period-backward timestamps (attributed to the current period).
     pub(crate) backward_ts_events: u64,
+    /// Zero-size Trade records (FFTLOG-V2 permits `size == 0`; counted loudly,
+    /// contribute no volume/TPO/CVD/PV). Runtime-only — not in SESSION v1.
+    pub(crate) zero_size_trades: u64,
     pub(crate) cvd: Cvd,
 }
 
@@ -103,6 +106,8 @@ impl PartialEq for SessionProfile {
             && self.period_gap == other.period_gap
             && self.post_close_events == other.post_close_events
             && self.backward_ts_events == other.backward_ts_events
+            // Runtime-only diagnostic: excluded from state equality because it is
+            // not in SESSION v1 (restore zeros it while forward keeps the count).
             && self.cvd == other.cvd
             && trimmed(self, &self.eth_periods) == trimmed(other, &other.eth_periods)
             && trimmed(self, &self.rth_periods) == trimmed(other, &other.rth_periods)
@@ -141,6 +146,7 @@ impl SessionProfile {
             period_gap: false,
             post_close_events: 0,
             backward_ts_events: 0,
+            zero_size_trades: 0,
             cvd: Cvd::default(),
         }
     }
@@ -170,7 +176,7 @@ impl SessionProfile {
         if self.clock.is_post_close(ts) {
             self.post_close_events += 1;
             match ev.kind {
-                EventKind::Trade => self.on_trade_post_close(ev.price, ev.size, ev.side, ts),
+                EventKind::Trade => self.on_trade_post_close(ev.price, ev.size, ev.side),
                 EventKind::Gap => {
                     // Volume-only window: no PV marker, no TPO. CVD touch honesty
                     // still tracks the gap for pane markers.
@@ -185,7 +191,7 @@ impl SessionProfile {
         self.advance_period(ts);
 
         match ev.kind {
-            EventKind::Trade => self.on_trade(ev.price, ev.size, ev.side, ts),
+            EventKind::Trade => self.on_trade(ev.price, ev.size, ev.side),
             EventKind::Gap => {
                 self.period_gap = true;
                 self.cvd.mark_gap();
@@ -211,8 +217,12 @@ impl SessionProfile {
     /// buy aggressor). Attribution uses the **current** period after
     /// [`advance_period`] (handles cross-period-backward). A sideless trade
     /// counts volume and TPO but carries no delta or touch-counter information.
-    fn on_trade(&mut self, price: Price, size: u32, aggressor: Side, ts: Ts) {
-        assert!(size > 0, "zero-size trade at {ts:?}");
+    /// Zero-size trades are permitted by FFTLOG-V2 §4: counted loudly, no volume.
+    fn on_trade(&mut self, price: Price, size: u32, aggressor: Side) {
+        if size == 0 {
+            self.zero_size_trades += 1;
+            return;
+        }
         let t = self.to_tick(price);
         let eth_p = self.current_eth_period;
         assert!(eth_p <= MAX_PERIOD_BIT, "period {eth_p} exceeds bitset");
@@ -256,8 +266,11 @@ impl SessionProfile {
     }
 
     /// Post-ETH volume-only window: session volume / spectrum / range, no TPO, no PV.
-    fn on_trade_post_close(&mut self, price: Price, size: u32, aggressor: Side, ts: Ts) {
-        assert!(size > 0, "zero-size trade at {ts:?}");
+    fn on_trade_post_close(&mut self, price: Price, size: u32, aggressor: Side) {
+        if size == 0 {
+            self.zero_size_trades += 1;
+            return;
+        }
         let t = self.to_tick(price);
         let idx = self.ensure(t);
         let sz = u64::from(size);
@@ -390,6 +403,12 @@ impl SessionProfile {
     /// Cross-period-backward timestamps attributed to the current period.
     pub fn backward_ts_events(&self) -> u64 {
         self.backward_ts_events
+    }
+
+    /// Zero-size Trade records counted loudly (no volume/TPO/CVD/PV contribution).
+    /// Runtime-only diagnostic — not persisted in SESSION section v1.
+    pub fn zero_size_trades(&self) -> u64 {
+        self.zero_size_trades
     }
 
     /// CVD candles, session delta components, and cB/cA touch counters.

@@ -109,9 +109,87 @@ fn spectrum_splits_aggressor_sides() {
 }
 
 #[test]
-#[should_panic(expected = "zero-size trade")]
-fn zero_size_trade_is_a_loud_bug() {
-    empty_profile().apply(&trade(20_000, 0, Side::Bid, SESSION_OPEN_NS));
+fn zero_size_trade_counts_loudly_without_volume() {
+    let mut p = empty_profile();
+    p.apply(&trade(20_000, 5, Side::Bid, SESSION_OPEN_NS));
+    let before_vol = p.total_volume();
+    let before_delta = p.session_delta();
+    let before_row = p.row(price(20_000));
+    let before_period = p.current_eth_period();
+    assert_eq!(p.zero_size_trades(), 0);
+
+    // Same-period zero-size Trade: time advances via apply/advance_period; no volume.
+    p.apply(&trade(20_001, 0, Side::Ask, SESSION_OPEN_NS + 1));
+    assert_eq!(p.zero_size_trades(), 1);
+    assert_eq!(p.total_volume(), before_vol);
+    assert_eq!(p.session_delta(), before_delta);
+    assert_eq!(p.row(price(20_000)), before_row);
+    assert_eq!(
+        p.row(price(20_001)),
+        fft_profile::ProfileRow::default(),
+        "zero-size must not open a TPO/volume row"
+    );
+    assert_eq!(p.current_eth_period(), before_period);
+
+    // Period-boundary zero-size still rolls the developing period.
+    p.apply(&trade(20_002, 0, Side::Bid, SESSION_OPEN_NS + PERIOD_NS));
+    assert_eq!(p.zero_size_trades(), 2);
+    assert_eq!(
+        p.current_eth_period(),
+        1,
+        "zero-size at boundary rolls period"
+    );
+    assert_eq!(p.total_volume(), before_vol);
+    assert_eq!(p.row(price(20_000)).period_volume, 0, "PV cleared on roll");
+    assert_eq!(p.row(price(20_000)).volume, 5, "SV unchanged");
+    assert_eq!(p.row(price(20_002)), fft_profile::ProfileRow::default());
+
+    // Sized trade after zero-size still accumulates normally.
+    p.apply(&trade(
+        20_000,
+        3,
+        Side::Bid,
+        SESSION_OPEN_NS + PERIOD_NS + 1,
+    ));
+    assert_eq!(p.zero_size_trades(), 2);
+    assert_eq!(p.total_volume(), before_vol + 3);
+    assert_eq!(p.row(price(20_000)).period_volume, 3);
+    assert_eq!(p.row(price(20_000)).volume, 8);
+    assert_eq!(p.row(price(20_000)).eth_periods, 0b11);
+}
+
+#[test]
+fn zero_size_trades_excluded_from_state_equality() {
+    // Same-period zero-size Trade moves only the runtime counter; state equality
+    // must ignore it so restore+tail ≡ forward still holds without SESSION v1.
+    let mut a = empty_profile();
+    let mut b = empty_profile();
+    a.apply(&trade(20_000, 5, Side::Bid, SESSION_OPEN_NS));
+    b.apply(&trade(20_000, 5, Side::Bid, SESSION_OPEN_NS));
+    assert_eq!(a, b);
+    assert_eq!(a.zero_size_trades(), 0);
+
+    a.apply(&trade(20_001, 0, Side::Ask, SESSION_OPEN_NS + 1));
+    assert_eq!(a.zero_size_trades(), 1);
+    assert_eq!(b.zero_size_trades(), 0);
+    assert_eq!(
+        a, b,
+        "runtime-only zero_size_trades must not participate in PartialEq"
+    );
+    assert_eq!(a.current_eth_period(), b.current_eth_period());
+    assert_eq!(a.total_volume(), b.total_volume());
+}
+
+#[test]
+fn zero_size_trade_post_close_counts_without_volume() {
+    let mut p = empty_profile();
+    p.apply(&trade(20_000, 4, Side::Bid, SESSION_OPEN_NS));
+    let before = p.total_volume();
+    p.apply(&trade(20_000, 0, Side::Ask, ETH_END_NS));
+    assert_eq!(p.post_close_events(), 1);
+    assert_eq!(p.zero_size_trades(), 1);
+    assert_eq!(p.total_volume(), before);
+    assert_eq!(p.row(price(20_000)).volume, 4);
 }
 
 #[test]
