@@ -1,42 +1,130 @@
 name: Perf
 
-# Manual-dispatch only until the M0 gate is green on this runner; from M1 the perf
-# gates run per-merge and are merge-blocking (IMPLEMENTATION-PLAN rules of engagement).
+# Manual-dispatch only. There is no dedicated runner (René, 2026-08-11): timing
+# evidence is valid only on the desk box under docs/PERF-RUNNER.md's quiet-box
+# protocol — no concurrent builds/jobs, 60 s idle + thermal preflight, attached
+# display refresh, and a matching committed manifest. This workflow never commits
+# results; the orchestrator alone accepts evidence into append-only history.
 on:
   workflow_dispatch:
+    inputs:
+      week_dir:
+        description: Directory containing esu6-2026-07-27.fftlog through esu6-2026-07-31.fftlog
+        required: true
+        default: /tmp
+        type: string
+      checkpointed_wed:
+        description: Checkpointed Wednesday log used by frame/M2/M4/M5 scrub gates
+        required: true
+        default: /tmp/esu6-wed-v3-ckpt.fftlog
+        type: string
+      legacy_dir:
+        description: Legacy session-log directory used by the M1 size comparison
+        required: true
+        default: data/sessions
+        type: string
+
+# One job is intentional: quiet-box gates must never overlap.
+concurrency:
+  group: fft-quiet-box
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  frame-gate:
-    # Dedicated perf runner (pinned CPU governor, GPU/driver, compositor — TECH-STACK §7).
+  gates:
+    # Historical label retained for a future registration of the quiet desk box.
+    # It does not imply that dedicated perf hardware exists.
     runs-on: [self-hosted, fft-perf]
     steps:
       - uses: actions/checkout@v4
-      - name: Build release
-        run: cargo build -p fft-ui --release
-      - name: Preflight — governor, isolation, display, thermal (docs/PERF-RUNNER.md)
+      - name: Build current gate binaries
+        run: cargo build --release --workspace --bins
+      - name: Quiet-box preflight (docs/PERF-RUNNER.md)
         run: ./perf-runner/provision.sh preflight
-      - name: M0 frame gate — 60 s, zero missed deadlines
-        id: gate
+      - name: Set evidence paths
         run: |
           set -euo pipefail
           DATE=$(date -u +%Y-%m-%d)
-          # Match existing M0 artifact style: perf-runner/results/<date>-m0-frame-gate.json
-          OUT="perf-runner/results/${DATE}-m0-frame-gate.json"
-          mkdir -p perf-runner/results
-          echo "GATE_OUT=${OUT}" >> "${GITHUB_ENV}"
-          echo "Writing gate evidence to ${OUT}"
-          # --gate-out writes evidence on both PASS and FAIL so the upload step
-          # always has a self-identifying JSON result (git SHA + dirty + counters).
-          ./target/release/fft --gate 60 --gate-out "${OUT}"
+          OUT_DIR="perf-runner/results/dispatch-${GITHUB_RUN_ID}"
+          mkdir -p "${OUT_DIR}"
+          echo "DATE=${DATE}" >> "${GITHUB_ENV}"
+          echo "OUT_DIR=${OUT_DIR}" >> "${GITHUB_ENV}"
+      - name: M1 data-plane gate
+        id: m1
+        continue-on-error: true
+        run: |
+          ./target/release/m1-gate \
+            --out "${OUT_DIR}/${DATE}-m1-data-plane.json" \
+            --legacy-dir "${{ inputs.legacy_dir }}" --diff-trials 7 \
+            "${{ inputs.week_dir }}/esu6-2026-07-27.fftlog" \
+            "${{ inputs.week_dir }}/esu6-2026-07-28.fftlog" \
+            "${{ inputs.week_dir }}/esu6-2026-07-29.fftlog" \
+            "${{ inputs.week_dir }}/esu6-2026-07-30.fftlog" \
+            "${{ inputs.week_dir }}/esu6-2026-07-31.fftlog"
+      - name: M2 seek and bit-identity gate
+        id: m2
+        continue-on-error: true
+        run: |
+          ./target/release/m2-gate \
+            --log "${{ inputs.checkpointed_wed }}" \
+            --seeks 1000 --verify 25 --seed 0x4d325345454b \
+            --out "${OUT_DIR}/${DATE}-m2-seek-gate.json"
+      - name: M4 pane-agreement gate
+        id: m4_agreement
+        continue-on-error: true
+        run: |
+          ./target/release/m4-agreement \
+            --replay "${{ inputs.checkpointed_wed }}" \
+            --out "${OUT_DIR}/${DATE}-m4-agreement.json"
+      - name: M5 scrub-burst gate
+        id: m5_scrub
+        continue-on-error: true
+        run: |
+          ./target/release/m5-scrub-burst \
+            --replay "${{ inputs.checkpointed_wed }}" \
+            --out "${OUT_DIR}/${DATE}-m5-scrub-burst.json"
+      - name: M5 full-week RSS gate
+        id: m5_rss
+        continue-on-error: true
+        run: |
+          ./target/release/m5-rss-week \
+            --current "${{ inputs.week_dir }}/esu6-2026-07-31.fftlog" \
+            --prior "${{ inputs.week_dir }}/esu6-2026-07-27.fftlog" \
+            --prior "${{ inputs.week_dir }}/esu6-2026-07-28.fftlog" \
+            --prior "${{ inputs.week_dir }}/esu6-2026-07-29.fftlog" \
+            --prior "${{ inputs.week_dir }}/esu6-2026-07-30.fftlog" \
+            --out "${OUT_DIR}/${DATE}-m5-rss-week.json"
+      - name: Anchored M4 frame gate
+        id: frame
+        continue-on-error: true
+        run: |
+          ./target/release/fft --gate 60 \
+            --replay "${{ inputs.checkpointed_wed }}" \
+            --replay-at 2026-07-29T13:50:00Z \
+            --manifest perf-runner/manifest.json \
+            --conditions "quiet desk box; no concurrent builds/jobs; workflow dispatch ${GITHUB_RUN_ID}" \
+            --gate-out "${OUT_DIR}/${DATE}-m4-frame-gate-anchored.json"
       - name: Upload gate evidence
-        # Evidence of failure is still evidence — upload even when the gate step fails.
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: m0-frame-gate-evidence
-          path: ${{ env.GATE_OUT }}
+          name: perf-gate-evidence-${{ github.run_id }}
+          path: ${{ env.OUT_DIR }}/*.json
           if-no-files-found: warn
           retention-days: 90
+      - name: Fail if any gate failed
+        if: always()
+        env:
+          M1: ${{ steps.m1.outcome }}
+          M2: ${{ steps.m2.outcome }}
+          M4_AGREEMENT: ${{ steps.m4_agreement.outcome }}
+          M5_SCRUB: ${{ steps.m5_scrub.outcome }}
+          M5_RSS: ${{ steps.m5_rss.outcome }}
+          FRAME: ${{ steps.frame.outcome }}
+        run: |
+          set -euo pipefail
+          for outcome in "$M1" "$M2" "$M4_AGREEMENT" "$M5_SCRUB" "$M5_RSS" "$FRAME"; do
+            test "$outcome" = success
+          done

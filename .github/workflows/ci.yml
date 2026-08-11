@@ -37,4 +37,8 @@ jobs:
           sudo apt-get install -y libwayland-dev libxkbcommon-x11-dev libfontconfig-dev \
             libasound2-dev libvulkan1 libzstd-dev
       - uses: Swatinem/rust-cache@v2
+      # Keep every executable harness buildable even though timing gates never run on
+      # shared runners. Correctness equivalents are already in fft-replay's synthetic
+      # checkpoint tests: chunked_forward (M1) and seek_differential (M2, six sections).
+      - run: cargo build --workspace --bins
       - run: cargo test --workspace
