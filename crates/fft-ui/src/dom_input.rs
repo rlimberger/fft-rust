@@ -239,8 +239,9 @@ mod tests {
         assert_eq!(input.axis(), DragAxis::Horizontal);
     }
 
+    /// Wheel over the DOM produces row pan deltas (no zoom path — DOM has none).
     #[test]
-    fn wheel_motion_coalesces_without_crossing_directions() {
+    fn wheel_over_dom_produces_row_pan() {
         let mut input = DomInput::default();
         assert_eq!(input.wheel(0.75), 0);
         assert_eq!(input.wheel(-0.5), 0);

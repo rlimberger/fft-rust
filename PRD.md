@@ -95,7 +95,7 @@ on hover for any observed order.
 
 **Chrome:** header = contract · NY clock · FPS. Nothing else. Transport strip only when replay
 mode (`r`) is on. Keys as in legacy PRD (`d`, `e`, `r`, space, `l`, arrows, `[`/`]`,
-Ctrl+wheel zoom), except tick scales are **hover-routed** (decision: René, 2026-08-10):
+wheel zoom over the MP (Ctrl optional); wheel pans the DOM), except tick scales are **hover-routed** (decision: René, 2026-08-10):
 `1`/`2`/`4` set the scale of the pane under the mouse; `t` copies the hovered pane's scale
 onto the other pane (sync). No hover → no-op. This supersedes the legacy `Shift+1/2/4`
 DOM chords. **Type + color follow the OS (Omarchy) theme system** (decision: René,

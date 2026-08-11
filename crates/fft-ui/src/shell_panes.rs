@@ -14,7 +14,7 @@ use crate::dom_ladder::DomLadder;
 use crate::dom_view::DomView;
 use crate::layout::{header_h, row_h};
 use crate::mp_element::MarketProfile;
-use crate::mp_layout::{clamp_pan, mp_row_h, session_layout, zoom_at_cursor};
+use crate::mp_layout::{clamp_pan, mp_row_h, scroll_notches, session_layout, zoom_at_cursor};
 use crate::mp_view::{current_session, pan_center};
 use crate::pane_state::{Pane, PaneState, SPLITTER_WIDTH};
 use crate::theme::Palette;
@@ -40,7 +40,6 @@ pub(crate) fn mp_pane(
     let drag_snapshot = Arc::clone(&snapshot);
     let drag_end = Rc::clone(&input);
     let drag_end_out = Rc::clone(&input);
-    let wheel_input = Rc::clone(&input);
     let wheel_panes = Rc::clone(&panes);
     let wheel_snapshot = Arc::clone(&snapshot);
     let row_height = mp_row_h(scale);
@@ -56,6 +55,7 @@ pub(crate) fn mp_pane(
                 .borrow_mut()
                 .set_hovered(Pane::MarketProfile, *hovered);
         })
+        // Left-button only: axis-dominant pan (vertical price / horizontal strips).
         .on_mouse_down(MouseButton::Left, move |event, _, _| {
             if !drag_split.borrow().splitter.is_dragging() {
                 drag_start
@@ -121,53 +121,33 @@ pub(crate) fn mp_pane(
             drag_end_out.borrow_mut().end_drag();
         })
         .on_scroll_wheel(move |event, window, cx| {
-            // Ctrl+wheel: horizontal zoom anchored at cursor x.
-            if event.modifiers.control {
-                let sessions = wheel_snapshot.profile.sessions.len().max(1);
-                let viewport_w = f32::from(window.viewport_size().width);
-                let mut panes = wheel_panes.borrow_mut();
-                let pane_w = ((viewport_w - SPLITTER_WIDTH) * panes.splitter.ratio()).max(1.0);
-                let notches = scroll_notches(event.delta);
-                if notches != 0.0 {
-                    let cursor_x = f32::from(event.position.x);
-                    let (zoom, pan) = zoom_at_cursor(
-                        0.0,
-                        pane_w,
-                        sessions,
-                        panes.mp_pan_px,
-                        panes.mp_zoom,
-                        scale,
-                        cursor_x,
-                        notches,
-                    );
-                    if (zoom - panes.mp_zoom).abs() > f32::EPSILON
-                        || (pan - panes.mp_pan_px).abs() > f32::EPSILON
-                    {
-                        panes.mp_zoom = zoom;
-                        panes.mp_pan_px = pan;
-                        drop(panes);
-                        window.refresh();
-                    }
-                }
-                cx.stop_propagation();
+            // Plain wheel and Ctrl+wheel: horizontal zoom anchored at cursor x.
+            // Other modifiers (Shift/Alt/…) are ignored. Wheel never pans the MP.
+            if event.modifiers.modified() && !event.modifiers.control {
                 return;
             }
-            if event.modifiers.modified() {
-                return;
-            }
-            let rows = scroll_rows(event.delta, row_height);
-            let delta = wheel_input.borrow_mut().wheel(rows);
-            if delta != 0 {
-                let mut panes = wheel_panes.borrow_mut();
-                if let Some(session) = current_session(&wheel_snapshot.profile) {
-                    panes.center = pan_center(
-                        session,
-                        wheel_snapshot.dom.tick_size,
-                        panes.mp_scale,
-                        panes.effective_center(&wheel_snapshot.dom),
-                        delta,
-                    );
-                    panes.clamp_center_to_dom(&wheel_snapshot.dom);
+            let sessions = wheel_snapshot.profile.sessions.len().max(1);
+            let viewport_w = f32::from(window.viewport_size().width);
+            let mut panes = wheel_panes.borrow_mut();
+            let pane_w = ((viewport_w - SPLITTER_WIDTH) * panes.splitter.ratio()).max(1.0);
+            let notches = scroll_notches(scroll_delta_y(event.delta));
+            if notches != 0.0 {
+                let cursor_x = f32::from(event.position.x);
+                let (zoom, pan) = zoom_at_cursor(
+                    0.0,
+                    pane_w,
+                    sessions,
+                    panes.mp_pan_px,
+                    panes.mp_zoom,
+                    scale,
+                    cursor_x,
+                    notches,
+                );
+                if (zoom - panes.mp_zoom).abs() > f32::EPSILON
+                    || (pan - panes.mp_pan_px).abs() > f32::EPSILON
+                {
+                    panes.mp_zoom = zoom;
+                    panes.mp_pan_px = pan;
                     drop(panes);
                     window.refresh();
                 }
@@ -288,33 +268,13 @@ pub(crate) fn splitter(panes: Rc<RefCell<PaneState>>, palette: Rc<Palette>) -> A
 }
 
 fn scroll_rows(delta: ScrollDelta, row_height: f32) -> f32 {
-    match delta {
-        ScrollDelta::Lines(delta) => delta.y,
-        ScrollDelta::Pixels(delta) => f32::from(delta.y) / row_height,
-    }
+    scroll_delta_y(delta) / row_height
 }
 
-/// Wheel notches for Ctrl+zoom. Positive = zoom in.
-fn scroll_notches(delta: ScrollDelta) -> f32 {
+/// Extract the Y component of a GPUI scroll delta (lines or pixels).
+fn scroll_delta_y(delta: ScrollDelta) -> f32 {
     match delta {
-        ScrollDelta::Lines(delta) => {
-            if delta.y > 0.0 {
-                1.0
-            } else if delta.y < 0.0 {
-                -1.0
-            } else {
-                0.0
-            }
-        }
-        ScrollDelta::Pixels(delta) => {
-            let y = f32::from(delta.y);
-            if y > 0.0 {
-                1.0
-            } else if y < 0.0 {
-                -1.0
-            } else {
-                0.0
-            }
-        }
+        ScrollDelta::Lines(delta) => delta.y,
+        ScrollDelta::Pixels(delta) => f32::from(delta.y),
     }
 }

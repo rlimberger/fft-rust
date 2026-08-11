@@ -16,6 +16,22 @@ pub const ZOOM_MAX: f32 = 3.0;
 /// Multiplicative zoom step per wheel notch.
 pub const ZOOM_STEP: f32 = 1.1;
 
+/// Map a wheel delta's Y component to discrete zoom notches.
+/// Positive = zoom in. Zero / non-finite → 0.
+#[inline]
+pub fn scroll_notches(delta_y: f32) -> f32 {
+    if !delta_y.is_finite() {
+        return 0.0;
+    }
+    if delta_y > 0.0 {
+        1.0
+    } else if delta_y < 0.0 {
+        -1.0
+    } else {
+        0.0
+    }
+}
+
 /// Scaled MP row height.
 #[inline]
 pub fn mp_row_h(scale: f32) -> f32 {
@@ -487,6 +503,38 @@ mod tests {
             (content_after - expected).abs() < 0.05,
             "content under cursor drifted: before_scaled={expected} after={content_after}"
         );
+    }
+
+    /// Plain wheel over the MP maps to discrete notches → `zoom_at_cursor` factor math
+    /// (Ctrl is optional at the shell binding; the pure path is identical either way).
+    #[test]
+    fn wheel_over_mp_produces_zoom_deltas() {
+        assert_eq!(scroll_notches(1.0), 1.0);
+        assert_eq!(scroll_notches(-3.5), -1.0);
+        assert_eq!(scroll_notches(0.0), 0.0);
+        assert_eq!(scroll_notches(f32::NAN), 0.0);
+
+        let origin = 0.0;
+        let width = 500.0;
+        let sessions = 2usize;
+        let pan = 10.0;
+        let zoom = 1.0;
+        let cursor = 80.0;
+        let notches = scroll_notches(2.0);
+        let (zoomed_in, _) =
+            zoom_at_cursor(origin, width, sessions, pan, zoom, 1.0, cursor, notches);
+        assert!((zoomed_in - ZOOM_STEP).abs() < 1e-4);
+
+        let notches_out = scroll_notches(-1.0);
+        let (zoomed_out, _) =
+            zoom_at_cursor(origin, width, sessions, pan, zoom, 1.0, cursor, notches_out);
+        assert!((zoomed_out - 1.0 / ZOOM_STEP).abs() < 1e-4);
+
+        // Clamp ceiling / floor unchanged.
+        let (at_max, _) = zoom_at_cursor(origin, width, sessions, pan, ZOOM_MAX, 1.0, cursor, 1.0);
+        assert!((at_max - ZOOM_MAX).abs() < 1e-6);
+        let (at_min, _) = zoom_at_cursor(origin, width, sessions, pan, ZOOM_MIN, 1.0, cursor, -1.0);
+        assert!((at_min - ZOOM_MIN).abs() < 1e-6);
     }
 
     #[test]
