@@ -110,6 +110,27 @@ mod tests {
     }
 
     #[test]
+    fn sv_bar_width_is_driven_by_session_volume_only() {
+        // Mirror paint_rows: available = cols.sv.w - 4.0; width = volume_width(session_volume, …).
+        // Aggressor buy/sell volumes must not change the SV geometry (René 2026-08-11).
+        let cols = strips(0.0, 500.0);
+        let available = cols.sv.w - 4.0;
+        let max_sv = 100;
+        let session_volume = 50u64;
+        let buy_volume = 90u64;
+        let sell_volume = 90u64;
+        let sv_w = volume_width(session_volume, max_sv, available);
+        assert!((sv_w - available * 0.5).abs() < 1e-4);
+        let legacy_half = (cols.sv.w - 4.0) / 2.0;
+        let legacy_sell = volume_width(sell_volume, max_sv, legacy_half);
+        let legacy_buy = volume_width(buy_volume, max_sv, legacy_half);
+        assert!(
+            (sv_w - legacy_sell).abs() > 1.0 && (sv_w - legacy_buy).abs() > 1.0,
+            "session_volume width must differ from the removed centered aggressor half-bars"
+        );
+    }
+
+    #[test]
     fn va_line_placement_uses_descending_price_rows() {
         assert_eq!(price_line_y(100, 104, 2, 10.0, 1.0), Some(50.0));
         assert_eq!(price_line_y(101, 104, 2, 10.0, 1.0), None);

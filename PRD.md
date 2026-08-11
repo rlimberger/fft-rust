@@ -79,7 +79,8 @@ steady-state RSS < 2 GB with a full week loaded; replay ≥ 60× realtime sustai
 **Market Profile (left, WindoTrader/Dalton):** per session block — divider, collapsed prior-day
 CP columns (letters only), then for the current session CP → EP (one column per 30-min period;
 ETH letters A…, RTH restarts at A) → PV (developing-period volume) → SV (session volume-at-price
-spectrum) → pinned price axis. Footer: Globex open `MM-DD HH:MM` NY per session, dividers run
+— total only, no aggressor split; decision: René, 2026-08-11) → pinned price axis. Footer: Globex
+open `MM-DD HH:MM` NY per session, dividers run
 through. VA/VAH/VAL/IB/VPOC computed from day one; drawn per WT grammar (subtle, not chartjunk).
 Current price full-width line; session open hairline. No strip labels, no row grid.
 

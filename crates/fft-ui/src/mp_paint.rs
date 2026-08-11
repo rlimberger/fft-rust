@@ -49,6 +49,7 @@ pub(crate) fn paint_rows(
                 palette.pv_bar,
             ));
         }
+        // SV = session volume-at-price TOTAL only (René 2026-08-11). No aggressor split.
         let total_w = volume_width(row.session_volume, prepaint.max_sv, cols.sv.w - 4.0);
         if total_w > 0.0 {
             window.paint_quad(fill(
@@ -57,28 +58,6 @@ pub(crate) fn paint_rows(
                     size(px(total_w), px(rh - 8.0 * scale)),
                 ),
                 palette.sv_total,
-            ));
-        }
-        let half = (cols.sv.w - 4.0) / 2.0;
-        let center = cols.sv.x + cols.sv.w / 2.0;
-        let sell_w = volume_width(row.sell_volume, prepaint.max_sv, half);
-        let buy_w = volume_width(row.buy_volume, prepaint.max_sv, half);
-        if sell_w > 0.0 {
-            window.paint_quad(fill(
-                Bounds::new(
-                    point(px(center - sell_w), px(y + 2.0 * scale)),
-                    size(px(sell_w), px(rh - 4.0 * scale)),
-                ),
-                palette.sell,
-            ));
-        }
-        if buy_w > 0.0 {
-            window.paint_quad(fill(
-                Bounds::new(
-                    point(px(center), px(y + 2.0 * scale)),
-                    size(px(buy_w), px(rh - 4.0 * scale)),
-                ),
-                palette.buy,
             ));
         }
     }
