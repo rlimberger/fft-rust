@@ -16,3 +16,7 @@ serde_json = "1.0.151"
 [[bin]]
 name = "fft"
 path = "src/main.rs"
+
+[[bin]]
+name = "m4-agreement"
+path = "src/bin/m4-agreement.rs"

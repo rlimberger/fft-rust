@@ -9,6 +9,17 @@ fft-book = { path = "../fft-book" }
 fft-core = { path = "../fft-core" }
 fft-log = { path = "../fft-log" }
 fft-profile = { path = "../fft-profile" }
+# Gate evidence JSON only (`m1-gate`/`m2-gate` bins); versions match fft-ui.
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 
 [dev-dependencies]
 tempfile = "3"
+
+[[bin]]
+name = "m1-gate"
+path = "src/bin/m1-gate.rs"
+
+[[bin]]
+name = "m2-gate"
+path = "src/bin/m2_gate/main.rs"
