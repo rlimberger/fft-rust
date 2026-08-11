@@ -24,15 +24,15 @@ M2 bit-identity) is queued as NON-BLOCKING polish.
 
 M5 features landed this wave (all reviewed, committed, pushed):
 - **UI-TRANSPORT** (`2654d8c`): r strip / space / [ ] speed ladder / arrow step
-  (PROVISIONAL ±1 s Seek — René ruling still open) / scrub with latest-wins one
+  (±1 s Seek — FINAL, see below) / scrub with latest-wins one
   Seek per frame, gens from 2 (anchor owns 1). Scrub range = session bounds from
   trade_date (snapshot lacks log extent — plumb later if multi-day scrub wanted).
 - **DOM-ICEBERG** (`0a617d3`): per-price refresh badges + ×N fit-gated labels,
   Mauve role; hidden volume deferred to the hover track (VOL too tight).
 - **LoadPriorSession** (`6836af0`, ENGINE.md §2 frozen same-commit): async
   profile-only prior-day builds, 2 ms slices, complete-or-invisible, current
-  always last. UI wiring (shell issues oldest-first loads) NOT DONE — orchestrator
-  glue, next action.
+  always last. UI wiring landed later this wave (`a50cc49`: `--prior` repeatable
+  → oldest-first dispatch after Play).
 - **MP-PANZOOM** (`6d89b16`): prior sessions as collapsed CP strips, axis-dominant
   horizontal pan, Ctrl+wheel cursor-anchored zoom 0.5–3×, state in PaneState.
   (Worker died mid-track once; resumed and completed — a worker "report" that is
