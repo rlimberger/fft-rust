@@ -2,13 +2,13 @@
 
 ## Binding
 
-**Topology (René 2026-08-10 night, supersedes everything below it):** the orchestrator is
-Claude Fable 5 running inside one opencodex/grok session (`ocx-anthropic-claude-fable-5`);
-ALL implementation work fans out to in-session subagents pinned to `ocx-xai-grok-4-5` and
-`ocx-cursor-grok-4-5-fast` — as many in parallel as the work decomposes into. No external
-CLI workers, no human relay. Full rule in AGENTS.md "Process rules". Standing orders that
-carry over: commit + push accepted work without asking (scoped commits per track, review
-first); recenter key `c`; models always pinned, never default/auto.
+**Topology (René 2026-08-10, roster updated 2026-08-11 — canonical text lives in
+AGENTS.md "Process rules"):** the orchestrator is Claude Fable 5 inside one opencodex/
+grok session; ALL implementation fans out to in-session subagents, priority
+Sol → Cursor Grok → xai Grok, target parallelism 12 (2/5/5). No external CLI workers.
+Standing orders that carry over: commit + push accepted work without asking (scoped
+commits per track, review first); recenter key `c`; models always pinned, never
+default/auto; workers never run git mutation commands in the shared tree.
 
 ## Wave 7 board (2026-08-11 — M5 build-out, READ THIS FIRST)
 

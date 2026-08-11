@@ -35,13 +35,20 @@ Linux/Wayland first. No order entry.
 - **Orchestration topology (René 2026-08-10, supersedes the CLI-relay model):** one
   opencodex/grok session hosts the orchestrator — Claude Fable 5
   (`ocx-anthropic-claude-fable-5`) — which fans **all** implementation work out to
-  in-session subagents pinned to `ocx-xai-grok-4-5` and `ocx-cursor-grok-4-5-fast`, as
-  many in parallel as the work decomposes into. No external CLI workers, no human
-  relay: briefs, work, and reports stay inside the one session. Models are always
-  pinned explicitly — never default/auto. The orchestrator writes crate code only in
-  its own track; otherwise it briefs (exact paths, interfaces, output format, explicit
-  non-goals), reviews every diff, authors quality-critical artifacts, and
-  commits+pushes accepted work.
+  in-session subagents. No external CLI workers, no human relay: briefs, work, and
+  reports stay inside the one session. Models are always pinned explicitly — never
+  default/auto. The orchestrator writes crate code only in its own track; otherwise it
+  briefs (exact paths, interfaces, output format, explicit non-goals), reviews every
+  diff, authors quality-critical artifacts, and commits+pushes accepted work.
+- **Subagent roster & scale (René 2026-08-11, supersedes the 08-10 two-model list):**
+  model priority is 1. `ocx-gpt-5-6-sol` (Codex Sol) → 2. `ocx-cursor-grok-4-5-fast`
+  (Cursor Grok) → 3. `ocx-xai-grok-4-5` (xai Grok); prefer the highest lane available
+  per brief. Target steady-state parallelism: **12 subagents — 2 Sol, 5 Cursor Grok,
+  5 xai Grok** — keep the pool saturated whenever non-colliding work exists; never
+  invent make-work in contested files to hit the number. Opus 5 is permitted for
+  read-only research when the lanes are saturated. Claude Fable 5 is the orchestrator
+  only — off limits as a subagent. Workers NEVER run git stash/clean/checkout/commit/
+  push in the shared tree; diffs stay in the working tree for orchestrator review.
 - Quality-critical artifacts (docs, architecture, synthesis) are authored by the
   orchestrator, not pasted from a subagent.
 - Don't rush. When genuinely stuck or facing a product decision, **ask René** — don't guess.
