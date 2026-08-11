@@ -10,7 +10,35 @@ CLI workers, no human relay. Full rule in AGENTS.md "Process rules". Standing or
 carry over: commit + push accepted work without asking (scoped commits per track, review
 first); recenter key `c`; models always pinned, never default/auto.
 
-## Wave 5 board (2026-08-10 late night — READ THIS FIRST, next orchestrator)
+## Wave 6 board (2026-08-11 — milestone gates, READ THIS FIRST)
+
+Three gate harnesses landed (`4192ef4`: m1-gate, m2-gate, m4-agreement — headless
+evidence bins with exact quiet-box commands in their --help/source) and the measured
+gates ran on the idle desk box (evidence committed, `635754d`):
+- **M2 seek gate: PASS** — 1000 seeks cold p95 6.9 ms (budget 250), bit-identity 25/25
+  across all six sections, 25,230× realtime (budget 60×). Required fixing
+  **REFRESH-SEEK-DIVERGE** (same commit): tombstone GC was 4096-apply-interval with
+  phase reset on restore ⇒ restore+short-tail kept expired tombstones a from-open pass
+  had swept — REFRESH-only byte divergence. Now: refresh GC every apply (event-time),
+  restore-side sweep (legacy checkpoints restore clean — the PASS ran against pre-fix
+  checkpoints), serialize-side filter as defense. MP volume split also removed
+  (`03f2eef`, René ruling: SV = total only).
+- **M4 agreement gate: PASS** — 1089/1089 snapshots, coverage 1.0, 0 MP≡DOM
+  disagreements over full Wed. (M4's frame-gate half already PASSed Wave 5.)
+- **M1: differential PASS** (7/7 real-data chunk splits — first real-data coverage),
+  size 0.186–0.199× legacy all five days (budget ≤0.5×), **but busiest-day one-shot
+  apply 3.443 s vs the <2 s budget: FAIL, honest**. Wed is 21.4 M events (plan's
+  "20.6 M" is a v1-era count). NEXT WAVE: profile the apply path (book+profile per
+  event) before touching the budget — the 2 s number predates profile/CVD/refresh
+  per-event state. Don't edit the budget without René.
+- Also this wave: OS-theme live derivation + warm switches (`1caaabe`, `81e0818`),
+  gap-desync venue-wins + locked/crossed diagnostic-only (`d80f927`, evidence-refined
+  ruling), zero-size trades (`1e00ecc`), engine shutdown evidence path (`c336266`),
+  --replay-at anchored starts (`3d8e6f9`, `9dd8c4d`), no-perf-hardware ruling
+  (`cf35626`), Databento parked (`d0cdb12`).
+- Open: M1 apply-time investigation (only red gate number); M5 fan-out after it.
+
+## Wave 5 board (2026-08-10 late night — superseded by Wave 6 above)
 
 **RULING (René, 2026-08-11): no dedicated perf hardware — ever, for now.** The 240 Hz
 box is declined; the recurring budget goes to Databento live (Standard ~$334/mo all-in)
