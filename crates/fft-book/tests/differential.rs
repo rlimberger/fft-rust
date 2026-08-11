@@ -2,7 +2,8 @@
 //! shadow model over randomized event streams. After every event the book's
 //! invariants must hold and sizes, FIFO ranks, and contracts-ahead must agree
 //! exactly. Bids and asks draw from disjoint price bands so random streams
-//! never cross the book (a crossed book is an invariant violation by design).
+//! never lock or cross (overlap is wire-legal but excluded here so FIFO ranks
+//! stay unambiguous across disjoint bands).
 
 mod common;
 

@@ -363,3 +363,66 @@ fn flow_omits_untouched_and_stale_levels_but_keeps_fresh_empty() {
     book.apply(&ev(EventKind::Status, Side::None, 0, 0, 0, T0 + 6 * S, 0));
     assert_eq!(book.serialize_flow().len(), empty_len);
 }
+
+/// Locked book (bb == ba): wire-legal; structure holds; overlap diagnostic.
+#[test]
+fn locked_book_passes_invariants_and_roundtrips() {
+    use fft_book::Overlap;
+
+    let mut live = book();
+    live.apply(&add(1, Side::Bid, 100, 5, T0));
+    live.apply(&add(2, Side::Ask, 100, 3, T0 + 1));
+    assert_eq!(live.best_bid(), Some(px(100)));
+    assert_eq!(live.best_ask(), Some(px(100)));
+    assert_eq!(live.book_overlap(), Some(Overlap::Locked(px(100))));
+    live.check_invariants();
+
+    let (book, flow, refresh) = sections(&live);
+    let restored = Book::restore(&book, &flow, &refresh).unwrap();
+    restored.check_invariants();
+    assert_eq!(restored.book_overlap(), Some(Overlap::Locked(px(100))));
+    assert_eq!(restored.serialize_book(), book);
+    assert_eq!(restored.serialize_flow(), flow);
+    assert_eq!(restored.serialize_refresh(), refresh);
+}
+
+/// Crossed book (bb > ba): wire-legal (intra-event-group / post-close).
+#[test]
+fn crossed_book_passes_invariants_and_roundtrips() {
+    use fft_book::Overlap;
+
+    let mut live = book();
+    live.apply(&add(1, Side::Bid, 100, 5, T0));
+    live.apply(&add(2, Side::Ask, 99, 3, T0 + 1));
+    assert_eq!(
+        live.book_overlap(),
+        Some(Overlap::Crossed {
+            bid: px(100),
+            ask: px(99),
+        })
+    );
+    live.check_invariants();
+
+    let (book, flow, refresh) = sections(&live);
+    let restored = Book::restore(&book, &flow, &refresh).unwrap();
+    restored.check_invariants();
+    assert_eq!(
+        restored.book_overlap(),
+        Some(Overlap::Crossed {
+            bid: px(100),
+            ask: px(99),
+        })
+    );
+    assert_eq!(restored.serialize_book(), book);
+    assert_eq!(restored.serialize_flow(), flow);
+    assert_eq!(restored.serialize_refresh(), refresh);
+}
+
+#[test]
+fn normal_book_has_no_overlap() {
+    let mut live = book();
+    live.apply(&add(1, Side::Bid, 100, 5, T0));
+    live.apply(&add(2, Side::Ask, 101, 3, T0 + 1));
+    assert_eq!(live.book_overlap(), None);
+    live.check_invariants();
+}

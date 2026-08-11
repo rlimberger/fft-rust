@@ -3,7 +3,7 @@
 use crate::flow::TradedAtInsideTicks;
 use crate::level::{NIL, Order, OrderOrigin};
 use crate::refresh::RefreshTracker;
-use crate::side::{SideBook, link_snapshot, link_tail, unlink};
+use crate::side::{SideBook, link_snapshot, link_tail};
 use fft_core::{CanonicalEvent, EventKind, Price, Side};
 use slab::Slab;
 use std::collections::HashMap;
@@ -40,6 +40,12 @@ pub struct Book {
     pub(crate) unknown_refs: u64,
     /// Snapshot-flagged Clear records ignored (FFTLOG-V2 §4 block framing).
     pub(crate) snapshot_clears: u64,
+    /// Gap-tainted Cancel whose size/price/side disagreed with retained depth
+    /// (runtime diagnostic; not seek-relevant — restarts at 0 on restore).
+    pub(crate) gap_desync_cancels: u64,
+    /// Gap-tainted Modify whose side/price disagreed with retained depth
+    /// (runtime diagnostic; not seek-relevant — restarts at 0 on restore).
+    pub(crate) gap_desync_modifies: u64,
 }
 
 impl Book {
@@ -70,6 +76,8 @@ impl Book {
             last_gap: None,
             unknown_refs: 0,
             snapshot_clears: 0,
+            gap_desync_cancels: 0,
+            gap_desync_modifies: 0,
         }
     }
 
@@ -227,7 +235,7 @@ impl Book {
 
     /// Shared placement path for Add and iceberg restores: routes through the
     /// refresh tracker, then links at the back of the level FIFO.
-    fn insert_order(&mut self, id: u64, side: Side, price: i64, size: u32, ts: u64) {
+    pub(crate) fn insert_order(&mut self, id: u64, side: Side, price: i64, size: u32, ts: u64) {
         self.refresh.on_placed(id, side, price, size, ts);
         let o = Order {
             id,
@@ -251,174 +259,6 @@ impl Book {
         link_tail(sb, &mut self.orders, slot);
         sb.level_entry(price).flow.record_added(ts, size);
         sb.note_add(price);
-    }
-
-    fn do_cancel(&mut self, ev: &CanonicalEvent, ts: u64) {
-        let id = ev.order_id.0;
-        let Some(&slot) = self.index.get(&id) else {
-            // Cancel of a depleted id is the "no refresh after all" terminal.
-            if !self.refresh.cancel_tombstone(id) {
-                self.unknown_refs += 1;
-            }
-            return;
-        };
-        let o = self.orders[slot as usize].clone();
-        assert!(
-            ev.side == Side::None || ev.side == o.side,
-            "fft-book: Cancel side {:?} != resting side {:?} (id {id})",
-            ev.side,
-            o.side
-        );
-        let price = self.to_ticks(ev.price);
-        assert_eq!(
-            price, o.price,
-            "fft-book: Cancel price {price} != resting price {} (id {id})",
-            o.price
-        );
-        assert!(ev.size > 0, "fft-book: Cancel with size 0 (id {id})");
-        assert!(
-            ev.size <= o.size,
-            "fft-book: Cancel size {} > resting {} (id {id})",
-            ev.size,
-            o.size
-        );
-        let sb = if o.side == Side::Bid {
-            &mut self.bids
-        } else {
-            &mut self.asks
-        };
-        if ev.size < o.size {
-            let level = sb
-                .level_mut(o.price)
-                .expect("fft-book invariant: level missing for live order");
-            level.total_size -= u64::from(ev.size);
-            level.flow.record_cancelled(ts, ev.size);
-            self.orders[slot as usize].size -= ev.size;
-            self.refresh.on_book_change(id);
-            return;
-        }
-
-        self.remove_live_order(slot, &o, Some(ts));
-    }
-
-    fn remove_live_order(&mut self, slot: u32, order: &Order, cancelled_ts: Option<u64>) {
-        let sb = if order.side == Side::Bid {
-            &mut self.bids
-        } else {
-            &mut self.asks
-        };
-        self.index.remove(&order.id);
-        unlink(sb, &mut self.orders, slot);
-        if let Some(ts) = cancelled_ts {
-            sb.level_mut(order.price)
-                .expect("fft-book invariant: level missing for live order")
-                .flow
-                .record_cancelled(ts, order.size);
-        }
-        sb.note_remove(order.price);
-        self.orders.remove(slot as usize);
-        self.refresh
-            .on_cancel_live(order.id, order.side, order.price);
-    }
-
-    /// Exact CME modify semantics: same price + size-down mutates in place and
-    /// keeps queue position; size-up or price change relinks at the back of the
-    /// target level. A Modify for a depleted (tombstoned) id is the CME iceberg
-    /// restore path and re-enters the book through `insert_order`.
-    fn do_modify(&mut self, ev: &CanonicalEvent, ts: u64) {
-        let id = ev.order_id.0;
-        let Some(&slot) = self.index.get(&id) else {
-            if self.refresh.tombstone_side(id).is_some() {
-                if ev.size == 0 {
-                    self.refresh.cancel_tombstone(id);
-                    return;
-                }
-                let side = if ev.side == Side::None {
-                    self.refresh.tombstone_side(id).unwrap()
-                } else {
-                    ev.side
-                };
-                let price = self.to_ticks(ev.price);
-                self.insert_order(id, side, price, ev.size, ts);
-            } else {
-                self.unknown_refs += 1;
-            }
-            return;
-        };
-        let o = self.orders[slot as usize].clone();
-        assert!(
-            ev.side == Side::None || ev.side == o.side,
-            "fft-book: Modify side {:?} != resting side {:?} (id {id})",
-            ev.side,
-            o.side
-        );
-        let new_price = self.to_ticks(ev.price);
-        if ev.size == 0 {
-            assert_eq!(
-                new_price, o.price,
-                "fft-book: zero-size Modify price {new_price} != resting price {} (id {id})",
-                o.price
-            );
-            self.remove_live_order(slot, &o, Some(ts));
-            return;
-        }
-        let new_size = ev.size;
-        if self.refresh.is_depleted(id) {
-            self.remove_live_order(slot, &o, None);
-            self.insert_order(id, o.side, new_price, new_size, ts);
-            return;
-        }
-        let now = self.now;
-        let sb = if o.side == Side::Bid {
-            &mut self.bids
-        } else {
-            &mut self.asks
-        };
-
-        if new_price == o.price {
-            if new_size <= o.size {
-                let shrink = o.size - new_size;
-                let l = sb
-                    .level_mut(o.price)
-                    .expect("fft-book invariant: level missing for live order");
-                l.total_size -= u64::from(shrink);
-                if shrink > 0 {
-                    l.flow.record_cancelled(ts, shrink);
-                }
-                self.orders[slot as usize].size = new_size;
-            } else {
-                let grow = new_size - o.size;
-                unlink(sb, &mut self.orders, slot);
-                let ord = &mut self.orders[slot as usize];
-                ord.size = new_size;
-                ord.ts = ts;
-                ord.origin = OrderOrigin::Live;
-                link_tail(sb, &mut self.orders, slot);
-                sb.level_mut(o.price)
-                    .expect("fft-book invariant: level missing for live order")
-                    .flow
-                    .record_added(ts, grow);
-            }
-            self.refresh.on_book_change(id);
-            return;
-        }
-
-        unlink(sb, &mut self.orders, slot);
-        sb.level_mut(o.price)
-            .expect("fft-book invariant: level missing for live order")
-            .flow
-            .record_cancelled(ts, o.size);
-        sb.note_remove(o.price);
-        sb.prepare_for(new_price, now);
-        let ord = &mut self.orders[slot as usize];
-        ord.price = new_price;
-        ord.size = new_size;
-        ord.ts = ts;
-        ord.origin = OrderOrigin::Live;
-        link_tail(sb, &mut self.orders, slot);
-        sb.level_entry(new_price).flow.record_added(ts, new_size);
-        sb.note_add(new_price);
-        self.refresh.on_book_change(id);
     }
 
     /// Fill is the sole execution-derived input for tape, cB/cA, five-second

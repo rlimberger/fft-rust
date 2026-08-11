@@ -24,6 +24,7 @@
 mod book;
 mod flow;
 mod level;
+mod mutate;
 mod query;
 mod refresh;
 mod serialize;
@@ -67,6 +68,16 @@ pub struct LastTrade {
     pub size: u32,
     /// Aggressor side; [`Side::None`] when the source did not attribute one.
     pub aggressor: Side,
+}
+
+/// Bid/ask price relation at the touch. Diagnostic only — locked and crossed
+/// books are wire-legal (intra-event-group publication and post-close windows).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Overlap {
+    /// Best bid equals best ask.
+    Locked(Price),
+    /// Best bid strictly above best ask.
+    Crossed { bid: Price, ask: Price },
 }
 
 /// Grady "current traded" counters at the touch: sells into the bid (cB) and

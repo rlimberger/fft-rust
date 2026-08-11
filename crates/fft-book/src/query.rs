@@ -3,7 +3,9 @@
 
 use crate::book::Book;
 use crate::level::{Level, NIL, OrderOrigin, view_of};
-use crate::{InsideTraded, LastTrade, LevelView, PriceRefreshAgg, QueuePosition, RefreshState};
+use crate::{
+    InsideTraded, LastTrade, LevelView, Overlap, PriceRefreshAgg, QueuePosition, RefreshState,
+};
 use fft_core::{OrderId, Price, Side, Ts};
 use std::collections::HashMap;
 
@@ -18,6 +20,20 @@ impl Book {
 
     pub fn best_ask(&self) -> Option<Price> {
         self.asks.best.map(|t| self.price_of(t))
+    }
+
+    /// Bid/ask price relation from the two cached bests. `None` when the book
+    /// is normal (`bb < ba`) or one-sided; locked/crossed are wire-legal
+    /// transient (and post-close) states — diagnostic only, never an invariant.
+    pub fn book_overlap(&self) -> Option<Overlap> {
+        match (self.bids.best, self.asks.best) {
+            (Some(bb), Some(ba)) if bb == ba => Some(Overlap::Locked(self.price_of(bb))),
+            (Some(bb), Some(ba)) if bb > ba => Some(Overlap::Crossed {
+                bid: self.price_of(bb),
+                ask: self.price_of(ba),
+            }),
+            _ => None,
+        }
     }
 
     pub fn last_trade(&self) -> Option<LastTrade> {
@@ -178,6 +194,18 @@ impl Book {
         self.snapshot_clears
     }
 
+    /// Cancel events on gap-tainted ids whose size/price/side disagreed with
+    /// retained depth (venue-wins full removal; see FFTLOG-V2 §4).
+    pub fn gap_desync_cancels(&self) -> u64 {
+        self.gap_desync_cancels
+    }
+
+    /// Modify events on gap-tainted ids whose side/price disagreed with
+    /// retained depth (venue values re-applied via remove+reinsert).
+    pub fn gap_desync_modifies(&self) -> u64 {
+        self.gap_desync_modifies
+    }
+
     fn walk_level(
         &self,
         side: Side,
@@ -317,12 +345,8 @@ impl Book {
             seen.len(),
             self.index.len()
         );
-        if let (Some(bb), Some(ba)) = (self.bids.best, self.asks.best) {
-            assert!(
-                bb < ba,
-                "fft-book invariant: crossed book (bid {bb} >= ask {ba})"
-            );
-        }
+        // Bid/ask overlap is not structural: locked and crossed books are
+        // wire-legal (intra-event-group and post-close). See `book_overlap`.
         for id in self.refresh.tombstones.keys() {
             assert!(
                 !self.index.contains_key(id),

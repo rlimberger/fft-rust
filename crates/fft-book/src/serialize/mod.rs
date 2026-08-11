@@ -69,14 +69,10 @@ impl Book {
 }
 
 fn validate_cross_section(book: &Book) -> Result<(), RestoreError> {
-    if let (Some(bid), Some(ask)) = (book.bids.best, book.asks.best)
-        && bid >= ask
-    {
-        return Err(RestoreError::Corrupt {
-            section: "BOOK",
-            what: "crossed book",
-        });
-    }
+    // Bid/ask overlap is wire-legal: measured locked+crossed states are
+    // transient intra-event-group (and post-close maintenance can persist a
+    // crossed book into a checkpoint). See HANDOFF Wave 5 LOCKED-MARKET-EVIDENCE.
+    // Structural topology only below — never reject on bb/ba relation.
     if book.gap_pending && (book.last_gap.is_none() || book.last_seq.is_some()) {
         return Err(RestoreError::Corrupt {
             section: "BOOK",

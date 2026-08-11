@@ -127,8 +127,12 @@ pub(super) fn restore(bytes: &[u8]) -> Result<Book, RestoreError> {
         gap_pending,
         last_gap,
         unknown_refs,
-        // Runtime block-framing counter, not seek-relevant state — restarts at 0.
+        // Runtime block-framing / gap-desync counters, not seek-relevant —
+        // restart at 0. Per-order gap taint reconstructs from order.epoch vs
+        // REFRESH.gap_epoch (and gap_pending when the book is mid-gap).
         snapshot_clears: 0,
+        gap_desync_cancels: 0,
+        gap_desync_modifies: 0,
     })
 }
 
