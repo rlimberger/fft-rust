@@ -23,6 +23,7 @@
 
 mod book;
 mod flow;
+mod hasher;
 mod level;
 mod mutate;
 mod query;

@@ -1,12 +1,12 @@
 //! The book proper: canonical-event application with exact CME semantics.
 
 use crate::flow::TradedAtInsideTicks;
+use crate::hasher::{OrderIdMap, order_id_map_new};
 use crate::level::{NIL, Order, OrderOrigin};
 use crate::refresh::RefreshTracker;
 use crate::side::{SideBook, link_snapshot, link_tail};
 use fft_core::{CanonicalEvent, EventKind, Price, Side};
 use slab::Slab;
-use std::collections::HashMap;
 
 /// Events between dead-level / expired-tombstone sweeps.
 pub(crate) const GC_INTERVAL: u32 = 4096;
@@ -20,7 +20,7 @@ pub struct Book {
     pub(crate) asks: SideBook,
     pub(crate) orders: Slab<Order>,
     /// order id → slab slot.
-    pub(crate) index: HashMap<u64, u32>,
+    pub(crate) index: OrderIdMap<u32>,
     pub(crate) refresh: RefreshTracker,
     pub(crate) tai: TradedAtInsideTicks,
     /// (price ticks, size, aggressor).
@@ -65,7 +65,7 @@ impl Book {
             bids: SideBook::new(true),
             asks: SideBook::new(false),
             orders: Slab::new(),
-            index: HashMap::new(),
+            index: order_id_map_new(),
             refresh: RefreshTracker::default(),
             tai: TradedAtInsideTicks::default(),
             last_trade: None,

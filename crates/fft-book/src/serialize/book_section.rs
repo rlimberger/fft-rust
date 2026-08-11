@@ -4,11 +4,11 @@ use super::RestoreError;
 use super::codec::{Reader, w8, w16, w32, w64, wi64, wopt_i64, wopt_u64};
 use crate::BOOK_SECTION_VERSION;
 use crate::book::Book;
+use crate::hasher::{OrderIdMap, order_id_map_new};
 use crate::level::{NIL, Order, OrderOrigin};
 use crate::side::{SideBook, WINDOW_TICKS, link_tail};
 use fft_core::Side;
 use slab::Slab;
-use std::collections::HashMap;
 
 const MAX_LEVELS: u32 = 1_000_000;
 const MAX_ORDERS: u32 = 10_000_000;
@@ -107,7 +107,7 @@ pub(super) fn restore(bytes: &[u8]) -> Result<Book, RestoreError> {
     let last_trade = read_last_trade(&mut reader)?;
 
     let mut orders = Slab::new();
-    let mut index = HashMap::new();
+    let mut index = order_id_map_new();
     let bids = read_side(&mut reader, Side::Bid, tick, &mut orders, &mut index)?;
     let asks = read_side(&mut reader, Side::Ask, tick, &mut orders, &mut index)?;
     reader.finish()?;
@@ -166,7 +166,7 @@ fn read_side(
     side: Side,
     tick: i64,
     orders: &mut Slab<Order>,
-    index: &mut HashMap<u64, u32>,
+    index: &mut OrderIdMap<u32>,
 ) -> Result<SideBook, RestoreError> {
     let initialised = reader.boolean()?;
     let base_tick = reader.i64()?;
@@ -224,7 +224,7 @@ fn read_order(
     side: Side,
     price: i64,
     orders: &mut Slab<Order>,
-    index: &mut HashMap<u64, u32>,
+    index: &mut OrderIdMap<u32>,
     live_seen: &mut bool,
 ) -> Result<(), RestoreError> {
     let id = reader.u64()?;

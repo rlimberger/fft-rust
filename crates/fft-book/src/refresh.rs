@@ -7,9 +7,10 @@
 //! classified refresh **iff** no sequence gap separates depletion from restore
 //! (`epoch` check). Any gap makes reads Unavailable, never a false boolean.
 
+use crate::hasher::{OrderIdMap, order_id_map_new};
 use crate::{PriceRefreshAgg, REFRESH_WINDOW_NS, RefreshState};
 use fft_core::Side;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 /// Refresh history of a live order. Only orders with observed reloads or a
 /// broken (gap-spanning) restore have an entry; plain orders have none.
@@ -45,11 +46,11 @@ pub(crate) struct FillProgress {
     pub epoch: u32,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct RefreshTracker {
-    pub live: HashMap<u64, LiveRefresh>,
-    pub tombstones: HashMap<u64, Tombstone>,
-    pub fills: HashMap<u64, FillProgress>,
+    pub live: OrderIdMap<LiveRefresh>,
+    pub tombstones: OrderIdMap<Tombstone>,
+    pub fills: OrderIdMap<FillProgress>,
     /// Session-cumulative aggregates keyed by (side wire value, price ticks).
     pub per_price: BTreeMap<(u8, i64), PriceRefreshAgg>,
     /// Incremented on every sequence gap. Orders placed under an older epoch
@@ -57,6 +58,19 @@ pub(crate) struct RefreshTracker {
     pub gap_epoch: u32,
     /// Fill executions whose price differed from their order's displayed price.
     pub fills_off_display: u64,
+}
+
+impl Default for RefreshTracker {
+    fn default() -> Self {
+        Self {
+            live: order_id_map_new(),
+            tombstones: order_id_map_new(),
+            fills: order_id_map_new(),
+            per_price: BTreeMap::new(),
+            gap_epoch: 0,
+            fills_off_display: 0,
+        }
+    }
 }
 
 impl RefreshTracker {
