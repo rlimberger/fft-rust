@@ -7,31 +7,30 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use fft_engine::RenderSnapshot;
-use gpui::{AnyElement, MouseButton, ScrollDelta, div, prelude::*, px, relative};
+use gpui::{
+    AnyElement, App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, LayoutId,
+    MouseButton, Pixels, ScrollDelta, Window, div, prelude::*, px, relative,
+};
 
 use crate::dom_input::{DomInput, PaneDrag};
 use crate::dom_ladder::DomLadder;
-use crate::dom_view::DomView;
+
 use crate::layout::{header_h, row_h};
 use crate::mp_element::MarketProfile;
-use crate::mp_layout::{clamp_pan, mp_row_h, scroll_notches, session_layout, zoom_at_cursor};
-use crate::mp_view::{current_session, pan_center};
-use crate::pane_state::{Pane, PaneState, SPLITTER_WIDTH};
+use crate::mp_layout::{mp_row_h, scroll_notches, session_layout, zoom_at_cursor};
+use crate::mp_view::current_session;
+use crate::pane_state::{Pane, PaneState, SPLITTER_WIDTH, pan_center};
 use crate::theme::Palette;
 
 pub(crate) fn mp_pane(
-    mut profile: MarketProfile,
+    profile: MarketProfile,
     ratio: f32,
     snapshot: Arc<RenderSnapshot>,
     panes: Rc<RefCell<PaneState>>,
     input: Rc<RefCell<DomInput>>,
     scale: f32,
 ) -> AnyElement {
-    // Inject pan/zoom from PaneState without changing shell.rs's MarketProfile::new call.
-    {
-        let state = panes.borrow();
-        profile = profile.with_pan_zoom(state.mp_pan_px, state.mp_zoom);
-    }
+    let sessions = snapshot.profile.sessions.len();
     let hover = Rc::clone(&panes);
     let drag_start = Rc::clone(&input);
     let drag_split = Rc::clone(&panes);
@@ -43,6 +42,7 @@ pub(crate) fn mp_pane(
     let wheel_panes = Rc::clone(&panes);
     let wheel_snapshot = Arc::clone(&snapshot);
     let row_height = mp_row_h(scale);
+    let profile = GeometryCorrectMp::new(profile, sessions, Rc::clone(&panes), scale);
     div()
         .id("market-profile-pane")
         .h_full()
@@ -77,15 +77,17 @@ pub(crate) fn mp_pane(
                 PaneDrag::None => {}
                 PaneDrag::Vertical(delta) => {
                     let mut panes = drag_panes.borrow_mut();
-                    if let Some(session) = current_session(&drag_snapshot.profile) {
-                        panes.center = pan_center(
-                            session,
+                    if current_session(&drag_snapshot.profile).is_some()
+                        && let Some(center) =
+                            panes.navigation_center(&drag_snapshot.profile, &drag_snapshot.dom)
+                    {
+                        panes.center = Some(pan_center(
+                            center,
                             drag_snapshot.dom.tick_size,
                             panes.mp_scale,
-                            panes.effective_center(&drag_snapshot.dom),
                             delta,
-                        );
-                        panes.clamp_center_to_dom(&drag_snapshot.dom);
+                        ));
+                        panes.clamp_center(&drag_snapshot.profile, &drag_snapshot.dom);
                         drop(panes);
                         window.refresh();
                     }
@@ -94,7 +96,7 @@ pub(crate) fn mp_pane(
                     let mut panes = drag_panes.borrow_mut();
                     let sessions = drag_snapshot.profile.sessions.len().max(1);
                     let viewport_w = f32::from(window.viewport_size().width);
-                    let pane_w = ((viewport_w - SPLITTER_WIDTH) * panes.splitter.ratio()).max(1.0);
+                    let pane_w = panes.effective_mp_width(viewport_w);
                     let layout = session_layout(
                         0.0,
                         pane_w,
@@ -103,11 +105,8 @@ pub(crate) fn mp_pane(
                         panes.mp_zoom,
                         scale,
                     );
-                    // Dragging content right (positive dx) decreases pan (reveals older left).
-                    let next = panes.mp_pan_px - dx;
-                    let clamped = clamp_pan(next, layout.content_width, layout.strip_viewport.w);
-                    if (clamped - panes.mp_pan_px).abs() > f32::EPSILON {
-                        panes.mp_pan_px = clamped;
+                    // Dragging content right (positive dx) reveals older/left.
+                    if panes.navigate_mp_pan(-dx, layout.content_width, layout.strip_viewport.w) {
                         drop(panes);
                         window.refresh();
                     }
@@ -129,7 +128,7 @@ pub(crate) fn mp_pane(
             let sessions = wheel_snapshot.profile.sessions.len().max(1);
             let viewport_w = f32::from(window.viewport_size().width);
             let mut panes = wheel_panes.borrow_mut();
-            let pane_w = ((viewport_w - SPLITTER_WIDTH) * panes.splitter.ratio()).max(1.0);
+            let pane_w = panes.effective_mp_width(viewport_w);
             let notches = scroll_notches(scroll_delta_y(event.delta));
             if notches != 0.0 {
                 let cursor_x = f32::from(event.position.x);
@@ -143,11 +142,8 @@ pub(crate) fn mp_pane(
                     cursor_x,
                     notches,
                 );
-                if (zoom - panes.mp_zoom).abs() > f32::EPSILON
-                    || (pan - panes.mp_pan_px).abs() > f32::EPSILON
-                {
-                    panes.mp_zoom = zoom;
-                    panes.mp_pan_px = pan;
+                let after = session_layout(0.0, pane_w, sessions, pan, zoom, scale);
+                if panes.navigate_mp_zoom(zoom, pan, after.content_width, after.strip_viewport.w) {
                     drop(panes);
                     window.refresh();
                 }
@@ -156,6 +152,111 @@ pub(crate) fn mp_pane(
         })
         .child(profile)
         .into_any_element()
+}
+
+struct GeometryCorrectMp {
+    profile: Option<MarketProfile>,
+    sessions: usize,
+    panes: Rc<RefCell<PaneState>>,
+    scale: f32,
+}
+
+impl GeometryCorrectMp {
+    fn new(
+        profile: MarketProfile,
+        sessions: usize,
+        panes: Rc<RefCell<PaneState>>,
+        scale: f32,
+    ) -> Self {
+        Self {
+            profile: Some(profile),
+            sessions,
+            panes,
+            scale,
+        }
+    }
+}
+
+struct GeometryCorrectMpState {
+    child: AnyElement,
+}
+
+impl Element for GeometryCorrectMp {
+    type RequestLayoutState = GeometryCorrectMpState;
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        let viewport_w = f32::from(window.viewport_size().width);
+        let mut panes = self.panes.borrow_mut();
+        let pane_w = panes.effective_mp_width(viewport_w);
+        if self.sessions > 0 {
+            let layout = session_layout(
+                0.0,
+                pane_w,
+                self.sessions,
+                panes.mp_pan_px,
+                panes.mp_zoom,
+                self.scale,
+            );
+            panes.reconcile_mp_pan(layout.content_width, layout.strip_viewport.w);
+        }
+        let mut child = self
+            .profile
+            .take()
+            .expect("GeometryCorrectMp layout requested once")
+            .with_pan_zoom(panes.mp_pan_px, panes.mp_zoom)
+            .into_any_element();
+        drop(panes);
+        let child_layout = child.request_layout(window, cx);
+        (child_layout, GeometryCorrectMpState { child })
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        state: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        state.child.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        state: &mut Self::RequestLayoutState,
+        _prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        state.child.paint(window, cx);
+    }
+}
+
+impl IntoElement for GeometryCorrectMp {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
 }
 
 pub(crate) fn dom_pane(
@@ -236,15 +337,18 @@ pub(crate) fn dom_pane(
 
 fn pan_dom(panes: &Rc<RefCell<PaneState>>, snapshot: &RenderSnapshot, delta: i64) -> bool {
     let mut panes = panes.borrow_mut();
-    let mut view = DomView {
-        anchor: panes.effective_center(&snapshot.dom),
-        tick_scale: panes.dom_scale,
+    let Some(center) = panes.navigation_center(&snapshot.profile, &snapshot.dom) else {
+        return false;
     };
-    let dom = view.aggregate(&snapshot.dom);
-    if !view.pan_rows(&dom, delta) {
+    let target = pan_center(center, snapshot.dom.tick_size, panes.dom_scale, delta);
+    let next = crate::pane_state::clamp_center(
+        Some(target),
+        crate::pane_state::navigation_range(&snapshot.profile, &snapshot.dom),
+    );
+    if panes.center == next {
         return false;
     }
-    panes.center = view.anchor;
+    panes.center = next;
     true
 }
 

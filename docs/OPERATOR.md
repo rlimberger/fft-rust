@@ -29,22 +29,29 @@ pinned gpui rev (baked at build time from Cargo.lock).
 
 ## 2. Keys (as implemented)
 
+Launch: MP full-width; DOM hidden every start. `d` toggles the DOM without resetting MP
+navigation (pan/zoom/center). When hidden: no splitter, no DOM hit targets.
+
 | Key | Action |
 |---|---|
 | `1` `2` `4` | Tick scale of the pane under the cursor (no hover → no-op) |
 | `t` | Copy hovered pane's scale to the other pane |
-| `c` | Recenter (clear locked center) |
-| `r` | Toggle the transport strip (chrome only; playback state untouched) |
-| `space` | Play / pause (replay mode only) |
-| `]` / `[` | Speed up / down the ladder 0.25×…64× |
-| `←` / `→` | Step ±1 s (Seek, clamped to session) |
-| `l` | No-op with hint — go-live arrives with M6 |
-| drag / wheel | Vertical price pan (both panes); horizontal drag pans MP strips |
-| Ctrl+wheel | MP horizontal zoom 0.5×–3×, anchored at cursor |
+| `c` | Price-only recenter (clear locked center; MP pan/zoom untouched) |
+| `d` | Toggle DOM surface (launch-local; MP nav preserved) |
+| `r` | Toggle the transport strip (chrome only; playback state untouched). Arms transport keys below. |
+| `space` | Play / pause — requires `r` on; silent no-op otherwise |
+| `]` / `[` | Speed up / down the ladder 0.25×…64× — requires `r` on; silent no-op otherwise |
+| `←` / `→` | Step ±1 s (Seek, clamped to session) — requires `r` on; silent no-op otherwise |
+| `l` | Go-live placeholder — requires `r` on (hint only); silent no-op otherwise; M6 |
+| MP left-drag | Vertical → price pan; horizontal → strip pan |
+| MP wheel | Plain or Ctrl+wheel: horizontal zoom 0.5×–3× at cursor (never pan) |
+| DOM drag / wheel | Vertical price pan (only when DOM shown) |
 | hover (DOM row) | Per-price readout: orders, size, hidden volume, reload count per side |
 
-Modified keys (Ctrl/Alt/Shift chords other than the above) are ignored. The legacy `d`/`e`
-keys from the original PRD list are not yet bound (open PRD item, harmless).
+Modified keys (Ctrl/Alt/Shift chords other than MP Ctrl+wheel) are ignored. `e` is unbound.
+When the DOM is shown and the linked center cannot sit mid-window in engine depth, the ladder
+synthesizes a zero-filled scaled-tick lattice centered on that price (source overlap kept;
+no fabricated sizes/inside).
 
 ## 3. Fixtures & recipes
 
@@ -76,7 +83,9 @@ Other trade dates: same command with `--trade-date 2026-07-27 … 2026-07-31` �
 
 **Prefs** persist at `$XDG_CONFIG_HOME/fft/prefs.toml` (else `~/.config/fft/prefs.toml`):
 `mp_scale`/`dom_scale` ∈ {1,2,4}, `splitter_ratio` ∈ [0.1,0.9], `mp_zoom` ∈ [0.5,3.0],
-`transport_speed_index` ∈ 0..=7. Invalid values fall back loudly; saves are atomic.
+`transport_speed_index` ∈ 0..=7. Out-of-range numerics clamp loudly; unparseable values and
+illegal scales fall back to defaults loudly. Missing file → defaults, no warning. Saves are
+atomic.
 
 **Theme/font** follow Omarchy live (≤500 ms): colors from
 `~/.local/state/omarchy/current/theme/colors.toml`; size from `[font] base-size` (user

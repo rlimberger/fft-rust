@@ -1,5 +1,4 @@
-//! Coherent two-pane shell and zero-`entity.update` frame/input path.
-
+//! Coherent shell and zero-`entity.update` frame/input path.
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -44,9 +43,7 @@ pub struct Shell {
     snapshots: Option<SnapshotSlot>,
     replay_ready: Rc<RefCell<Option<ReplayResources>>>,
     pending_replay: Option<PathBuf>,
-    /// Seek target (ns UTC) after SetSource, before Play.
     replay_at: Option<u64>,
-    /// Prior-day logs, oldest-first after Play (`--prior`, ENGINE.md §2).
     prior_sessions: Vec<PathBuf>,
     prior_options: PriorOptions,
     engine_slot: Rc<RefCell<Option<EngineHandle>>>,
@@ -57,7 +54,6 @@ pub struct Shell {
     mp_input: Rc<RefCell<DomInput>>,
     glyph_cache: Rc<RefCell<GlyphCache>>,
     palette: Rc<Palette>,
-    /// OS theme scale (`base_size / 12`).
     scale: f32,
     theme_slot: Arc<ThemeSlot>,
     slot_seen_generation: u64,
@@ -118,7 +114,6 @@ impl Shell {
         }
     }
 
-    /// Quit-time prefs handles (main holds these across `app.run`).
     pub fn prefs_handles(&self) -> ShellPrefsHandles {
         ShellPrefsHandles::new(Rc::clone(&self.panes), Rc::clone(&self.transport))
     }
@@ -150,7 +145,6 @@ impl Shell {
         }
     }
 
-    /// Phase 1 — detect only (palette/scale stay on the pending path until warm).
     fn detect_theme_slot(&mut self) {
         let theme_slot = Arc::clone(&self.theme_slot);
         let advanced = note_theme_slot_advance(
@@ -168,7 +162,6 @@ impl Shell {
         }
     }
 
-    /// Phase 2 — warm at the OLD theme, then adopt.
     fn warm_and_maybe_adopt_theme(&mut self, window: &mut Window) {
         if self.pending_theme.is_none() {
             return;
@@ -177,7 +170,7 @@ impl Shell {
         let (center, mp_scale, dom_scale) = {
             let panes = self.panes.borrow();
             (
-                panes.effective_center(&self.frame_snapshot.dom),
+                panes.navigation_center(&self.frame_snapshot.profile, &self.frame_snapshot.dom),
                 panes.mp_scale,
                 panes.dom_scale,
             )
@@ -252,7 +245,6 @@ impl Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Detect before building the tree; do not adopt yet.
         self.detect_theme_slot();
         self.adopt_replay();
         if let Some(slot) = &self.snapshots {
@@ -303,30 +295,32 @@ impl Render for Shell {
         }
 
         #[cfg(debug_assertions)]
-        if let Err(mismatch) =
-            check_pane_agreement(&self.frame_snapshot.profile, &self.frame_snapshot.dom)
-        {
-            debug_assert!(
-                false,
-                "MP/DOM volume mismatch at {:?}: profile={}, DOM={}",
-                mismatch.price, mismatch.profile_volume, mismatch.dom_volume
-            );
-        }
+        debug_assert!(
+            check_pane_agreement(&self.frame_snapshot.profile, &self.frame_snapshot.dom).is_ok(),
+            "MP/DOM volume mismatch"
+        );
 
         self.drain_scrub_seek();
 
         let viewport_width = f32::from(window.viewport_size().width);
-        self.panes.borrow_mut().splitter.consume(viewport_width);
+        if self.panes.borrow().dom_visible() {
+            self.panes.borrow_mut().splitter.consume(viewport_width);
+        }
         self.panes
             .borrow_mut()
-            .clamp_center_to_dom(&self.frame_snapshot.dom);
+            .clamp_center(&self.frame_snapshot.profile, &self.frame_snapshot.dom);
         let center = self
             .panes
             .borrow()
-            .effective_center(&self.frame_snapshot.dom);
-        let (mp_scale, dom_scale, ratio) = {
+            .navigation_center(&self.frame_snapshot.profile, &self.frame_snapshot.dom);
+        let (mp_scale, dom_scale, ratio, dom_visible) = {
             let panes = self.panes.borrow();
-            (panes.mp_scale, panes.dom_scale, panes.splitter.ratio())
+            (
+                panes.mp_scale,
+                panes.dom_scale,
+                panes.splitter.ratio(),
+                panes.dom_visible(),
+            )
         };
         let ui_scale = self.scale;
         let mp = MarketProfile::new(
@@ -337,35 +331,41 @@ impl Render for Shell {
             Rc::clone(&self.palette),
             ui_scale,
         );
-        let dom = DomLadder::new(
-            Arc::clone(&self.frame_snapshot),
-            DomView {
-                anchor: center,
-                tick_scale: dom_scale,
-            },
-            Rc::clone(&self.glyph_cache),
-            Rc::clone(&self.palette),
-            ui_scale,
-        );
-
         let mp_pane = shell_panes::mp_pane(
             mp,
-            ratio,
+            if dom_visible { ratio } else { 1.0 },
             Arc::clone(&self.frame_snapshot),
             Rc::clone(&self.panes),
             Rc::clone(&self.mp_input),
             ui_scale,
         );
-        let dom_pane = shell_panes::dom_pane(
-            dom,
-            1.0 - ratio,
-            Arc::clone(&self.frame_snapshot),
-            Rc::clone(&self.panes),
-            Rc::clone(&self.dom_input),
-            ui_scale,
-        );
-        let splitter = shell_panes::splitter(Rc::clone(&self.panes), Rc::clone(&self.palette));
+        let mut pane_elements = vec![mp_pane];
+        if dom_visible {
+            let dom = DomLadder::new(
+                Arc::clone(&self.frame_snapshot),
+                DomView {
+                    anchor: center,
+                    tick_scale: dom_scale,
+                },
+                Rc::clone(&self.glyph_cache),
+                Rc::clone(&self.palette),
+                ui_scale,
+            );
+            pane_elements.push(shell_panes::splitter(
+                Rc::clone(&self.panes),
+                Rc::clone(&self.palette),
+            ));
+            pane_elements.push(shell_panes::dom_pane(
+                dom,
+                1.0 - ratio,
+                Arc::clone(&self.frame_snapshot),
+                Rc::clone(&self.panes),
+                Rc::clone(&self.dom_input),
+                ui_scale,
+            ));
+        }
         let key_panes = Rc::clone(&self.panes);
+        let key_dom_input = Rc::clone(&self.dom_input);
         let key_transport = Rc::clone(&self.transport);
         let key_engine = Rc::clone(&self.engine_slot);
         let key_applied_ts = self.frame_snapshot.applied_ts;
@@ -408,7 +408,7 @@ impl Render for Shell {
             .min_h_0()
             .flex()
             .flex_row()
-            .children([mp_pane, splitter, dom_pane]);
+            .children(pane_elements);
 
         div()
             .id("fft-two-pane-shell")
@@ -430,6 +430,13 @@ impl Render for Shell {
                         "4" => (true, panes.set_hovered_scale(4)),
                         "t" => (true, panes.sync_scale_from_hovered()),
                         "c" => (true, panes.recenter()),
+                        "d" => {
+                            let visible = panes.toggle_dom();
+                            if !visible {
+                                key_dom_input.borrow_mut().end_drag();
+                            }
+                            (true, true)
+                        }
                         _ => (false, false),
                     }
                 };
@@ -483,7 +490,6 @@ impl Render for Shell {
     }
 }
 
-/// Scrub range: session open…+24h from trade_date (snapshot has no log extent).
 fn scrub_range_from_snapshot(snap: &RenderSnapshot) -> (u64, u64) {
     if let Some(session) = display_session(&snap.profile)
         && session.trade_date > 0

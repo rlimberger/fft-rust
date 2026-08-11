@@ -55,6 +55,37 @@ impl DomView {
         aggregate_rows(dom, self.tick_scale)
     }
 
+    /// Build the render source for a viewport. An explicit linked anchor stays on the
+    /// requested center row even at the edges of bounded engine depth; missing buckets are
+    /// zero-filled while overlapping source buckets are retained.
+    pub fn aggregate_window(&self, dom: &DomRenderState, row_count: usize) -> AggregatedDom {
+        let aggregated = self.aggregate(dom);
+        let Some(anchor) = self.anchor else {
+            return aggregated;
+        };
+        if row_count == 0 {
+            return AggregatedDom {
+                rows: Vec::new(),
+                ..aggregated
+            };
+        }
+        let anchor_bucket = if aggregated.scaled_tick_size.0 > 0 {
+            bucket_price(anchor, aggregated.scaled_tick_size)
+        } else {
+            anchor
+        };
+        let normal_range = self.window_range(&aggregated, row_count);
+        let normal_centers_anchor = normal_range.len() == row_count
+            && aggregated
+                .rows
+                .get(normal_range.start + row_count / 2)
+                .is_some_and(|row| row.price == anchor_bucket);
+        if normal_centers_anchor {
+            return aggregated;
+        }
+        synthesize_window(aggregated, anchor, row_count)
+    }
+
     /// Index range for a centered window of at most `row_count` rows.
     pub fn window_range(&self, dom: &AggregatedDom, row_count: usize) -> Range<usize> {
         if dom.rows.is_empty() || row_count == 0 {
@@ -102,6 +133,8 @@ impl DomView {
 pub struct DomViewRow {
     /// Lower boundary of this scaled-tick bucket.
     pub price: Price,
+    /// At least one bounded engine row contributed to this bucket.
+    pub source_present: bool,
     pub bid_size: u64,
     pub ask_size: u64,
     /// Resting bid order count across the bucket.
@@ -179,6 +212,7 @@ pub fn aggregate_rows(dom: &DomRenderState, tick_scale: u8) -> AggregatedDom {
         if rows.last().is_none_or(|row| row.price != price) {
             rows.push(DomViewRow {
                 price,
+                source_present: true,
                 ..DomViewRow::default()
             });
         }
@@ -266,6 +300,52 @@ fn merge_row(target: &mut DomViewRow, source: &DomPriceRow) {
     );
 }
 
+fn synthesize_window(mut dom: AggregatedDom, anchor: Price, row_count: usize) -> AggregatedDom {
+    assert!(
+        dom.scaled_tick_size.0 > 0,
+        "linked DOM synthesis requires positive tick size"
+    );
+    let center = bucket_price(anchor, dom.scaled_tick_size);
+    let below = i64::try_from(row_count / 2).expect("DOM row count fits i64");
+    let start = center
+        .0
+        .checked_sub(
+            below
+                .checked_mul(dom.scaled_tick_size.0)
+                .expect("linked DOM start offset overflows i64"),
+        )
+        .expect("linked DOM start price overflows i64");
+    let source = std::mem::take(&mut dom.rows);
+    let mut source_index = source.partition_point(|row| row.price.0 < start);
+    let mut rows = Vec::with_capacity(row_count);
+    for offset in 0..row_count {
+        let price = Price(
+            start
+                .checked_add(
+                    i64::try_from(offset)
+                        .expect("DOM row offset fits i64")
+                        .checked_mul(dom.scaled_tick_size.0)
+                        .expect("linked DOM row offset overflows i64"),
+                )
+                .expect("linked DOM row price overflows i64"),
+        );
+        if source
+            .get(source_index)
+            .is_some_and(|row| row.price == price)
+        {
+            rows.push(source[source_index]);
+            source_index += 1;
+        } else {
+            rows.push(DomViewRow {
+                price,
+                ..DomViewRow::default()
+            });
+        }
+    }
+    dom.rows = rows;
+    dom
+}
+
 fn nearest_row(rows: &[DomViewRow], target: Price) -> usize {
     match rows.binary_search_by_key(&target, |row| row.price) {
         Ok(index) => index,
@@ -287,225 +367,5 @@ fn ceiling_row(rows: &[DomViewRow], target: Price) -> usize {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn row(price: i64, value: u64) -> DomPriceRow {
-        let mut row = DomPriceRow::default();
-        row.price.0 = price;
-        row.bid_size = value;
-        row.ask_size = value;
-        row.bid_orders = u32::try_from(value).unwrap();
-        row.ask_orders = u32::try_from(value).unwrap();
-        row.session_volume = value;
-        row.cb = value;
-        row.ca = value;
-        row.bid_added_5s = u32::try_from(value).unwrap();
-        row.bid_cancelled_5s = u32::try_from(value).unwrap();
-        row.ask_added_5s = u32::try_from(value).unwrap();
-        row.ask_cancelled_5s = u32::try_from(value).unwrap();
-        row.refresh_agg.bid_count = u32::try_from(value).unwrap();
-        row.refresh_agg.ask_count = u32::try_from(value).unwrap();
-        row.refresh_agg.bid_hidden = value;
-        row.refresh_agg.ask_hidden = value;
-        row
-    }
-
-    fn dom(tick: i64, prices: &[i64]) -> DomRenderState {
-        let mut dom = DomRenderState::default();
-        dom.tick_size.0 = tick;
-        dom.rows = prices.iter().map(|&price| row(price, 1)).collect();
-        dom
-    }
-
-    #[test]
-    fn empty_book_is_a_no_op() {
-        let aggregated = DomView::default().aggregate(&dom(5, &[]));
-        assert!(aggregated.rows.is_empty());
-        let mut view = DomView::default();
-        assert!(!view.pan_rows(&aggregated, 10));
-        assert_eq!(view.anchor, None);
-        assert_eq!(view.window_range(&aggregated, 7), 0..0);
-    }
-
-    #[test]
-    fn default_engine_state_aggregates_for_instant_shell() {
-        assert_eq!(
-            aggregate_rows(&DomRenderState::default(), 1),
-            AggregatedDom::default()
-        );
-    }
-
-    #[test]
-    fn aggregates_exact_boundaries_and_all_metadata() {
-        let aggregated = aggregate_rows(&dom(5, &[0, 5, 10, 15]), 2);
-        assert_eq!(aggregated.rows.len(), 2);
-        assert_eq!(aggregated.rows[0].price, Price(0));
-        assert_eq!(aggregated.rows[1].price, Price(10));
-        let first = aggregated.rows[0];
-        assert_eq!(
-            (first.bid_size, first.ask_size, first.session_volume),
-            (2, 2, 2)
-        );
-        assert_eq!((first.cb, first.ca), (2, 2));
-        assert_eq!((first.bid_added_5s, first.ask_cancelled_5s), (2, 2));
-        assert_eq!((first.bid_orders, first.ask_orders), (2, 2));
-        assert_eq!((first.refresh_bid_count, first.refresh_ask_count), (2, 2));
-        assert_eq!((first.refresh_bid_hidden, first.refresh_ask_hidden), (2, 2));
-    }
-
-    #[test]
-    fn aggregates_order_counts_across_scales() {
-        let mut source = DomRenderState::default();
-        source.tick_size.0 = 5;
-        source.rows = vec![
-            {
-                let mut r = DomPriceRow::default();
-                r.price.0 = 0;
-                r.bid_orders = 1;
-                r.ask_orders = 2;
-                r
-            },
-            {
-                let mut r = DomPriceRow::default();
-                r.price.0 = 5;
-                r.bid_orders = 3;
-                r.ask_orders = 4;
-                r
-            },
-            {
-                let mut r = DomPriceRow::default();
-                r.price.0 = 10;
-                r.bid_orders = 5;
-                r.ask_orders = 6;
-                r
-            },
-            {
-                let mut r = DomPriceRow::default();
-                r.price.0 = 15;
-                r.bid_orders = 7;
-                r.ask_orders = 8;
-                r
-            },
-        ];
-        let scale2 = aggregate_rows(&source, 2);
-        assert_eq!(
-            (scale2.rows[0].bid_orders, scale2.rows[0].ask_orders),
-            (4, 6)
-        );
-        assert_eq!(
-            (scale2.rows[1].bid_orders, scale2.rows[1].ask_orders),
-            (12, 14)
-        );
-        let scale4 = aggregate_rows(&source, 4);
-        assert_eq!(
-            (scale4.rows[0].bid_orders, scale4.rows[0].ask_orders),
-            (16, 20)
-        );
-    }
-
-    #[test]
-    fn scales_one_two_and_four() {
-        let source = dom(5, &[0, 5, 10, 15]);
-        assert_eq!(aggregate_rows(&source, 1).rows.len(), 4);
-        assert_eq!(aggregate_rows(&source, 2).rows.len(), 2);
-        assert_eq!(aggregate_rows(&source, 4).rows.len(), 1);
-    }
-
-    #[test]
-    fn odd_source_count_keeps_partial_edge_bucket() {
-        let aggregated = aggregate_rows(&dom(5, &[0, 5, 10, 15, 20]), 2);
-        assert_eq!(
-            aggregated
-                .rows
-                .iter()
-                .map(|row| (row.price, row.bid_size))
-                .collect::<Vec<_>>(),
-            vec![(Price(0), 2), (Price(10), 2), (Price(20), 1)]
-        );
-    }
-
-    #[test]
-    fn inside_prices_map_to_containing_bucket() {
-        let mut source = dom(5, &[0, 5, 10, 15]);
-        source.best_bid = Some(source.rows[1].price);
-        source.best_ask = Some(source.rows[2].price);
-        let aggregated = aggregate_rows(&source, 4);
-        assert_eq!(aggregated.best_bid, Some(Price(0)));
-        assert_eq!(aggregated.best_ask, Some(Price(0)));
-    }
-
-    #[test]
-    fn follow_mode_preserves_inside_midpoint_ceiling() {
-        let mut source = dom(10, &[0, 10]);
-        source.best_bid = Some(Price(0));
-        source.best_ask = Some(Price(10));
-        let aggregated = aggregate_rows(&source, 1);
-        assert_eq!(DomView::default().window_range(&aggregated, 1), 1..2);
-    }
-
-    #[test]
-    fn odd_window_centers_and_shifts_at_edges() {
-        let aggregated = aggregate_rows(&dom(1, &[0, 1, 2, 3, 4]), 1);
-        let mut view = DomView {
-            anchor: Some(Price(2)),
-            ..DomView::default()
-        };
-        assert_eq!(view.window_range(&aggregated, 3), 1..4);
-        view.anchor = Some(Price(0));
-        assert_eq!(view.window_range(&aggregated, 3), 0..3);
-        view.anchor = Some(Price(4));
-        assert_eq!(view.window_range(&aggregated, 3), 2..5);
-    }
-
-    #[test]
-    fn panning_clamps_to_present_aggregated_rows() {
-        let aggregated = aggregate_rows(&dom(1, &[10, 11, 12]), 1);
-        let mut view = DomView::default();
-        assert!(view.pan_rows(&aggregated, i64::MAX));
-        assert_eq!(view.anchor, Some(Price(12)));
-        assert!(!view.pan_rows(&aggregated, i64::MAX));
-        assert!(view.pan_rows(&aggregated, i64::MIN));
-        assert_eq!(view.anchor, Some(Price(10)));
-    }
-
-    #[test]
-    #[should_panic(expected = "DOM tick scale must be 1, 2, or 4")]
-    fn invalid_scale_panics_even_for_empty_book() {
-        aggregate_rows(&dom(1, &[]), 3);
-    }
-
-    #[test]
-    #[should_panic(expected = "DOM tick size must be positive")]
-    fn invalid_tick_panics_for_nonempty_book() {
-        aggregate_rows(&dom(0, &[0]), 1);
-    }
-
-    #[test]
-    #[should_panic(expected = "DOM tick size must be positive")]
-    fn invalid_tick_panics_for_inconsistent_empty_state() {
-        let source = DomRenderState {
-            best_bid: Some(Price(1)),
-            ..DomRenderState::default()
-        };
-        aggregate_rows(&source, 1);
-    }
-
-    #[test]
-    fn mutation_helpers_report_changes() {
-        let mut view = DomView::default();
-        assert!(!view.set_tick_scale(1));
-        assert!(view.set_tick_scale(2));
-        assert!(!view.recenter());
-        view.anchor = Some(Price(10));
-        assert!(view.recenter());
-    }
-
-    #[test]
-    #[should_panic(expected = "DOM bid_size aggregation overflow")]
-    fn aggregation_overflow_is_loud() {
-        let mut source = dom(1, &[0, 1]);
-        source.rows[0].bid_size = u64::MAX;
-        aggregate_rows(&source, 2);
-    }
-}
+#[path = "dom_view_tests.rs"]
+mod tests;

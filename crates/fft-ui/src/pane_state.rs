@@ -1,12 +1,14 @@
 //! Pure linked-pane, hover-scale, and latest-wins splitter state.
 
 use fft_core::Price;
-use fft_engine::DomRenderState;
+use fft_engine::{DomRenderState, ProfileRenderState};
 
+use crate::mp_layout::{clamp_pan, current_session_rest_pan};
 use crate::prefs::Prefs;
 
 pub const SPLITTER_WIDTH: f32 = 6.0;
 const MIN_PANE_WIDTH: f32 = 180.0;
+const MP_REST_EPSILON_PX: f32 = 0.01;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pane {
@@ -24,7 +26,12 @@ pub struct PaneState {
     pub mp_pan_px: f32,
     /// Horizontal strip zoom factor (0.5..=3.0); 1.0 matches today's widths.
     pub mp_zoom: f32,
+    /// Unclamped user-selected pan, retained while narrower geometry clamps the display.
+    mp_desired_pan_px: f32,
+    /// Logical current-session rest survives geometry changes without persisting raw pan.
+    mp_at_rest: bool,
     pub hovered: Option<Pane>,
+    dom_visible: bool,
     pub splitter: SplitterState,
 }
 
@@ -36,7 +43,10 @@ impl Default for PaneState {
             dom_scale: 1,
             mp_pan_px: 0.0,
             mp_zoom: 1.0,
+            mp_desired_pan_px: 0.0,
+            mp_at_rest: true,
             hovered: None,
+            dom_visible: false,
             splitter: SplitterState::default(),
         }
     }
@@ -88,6 +98,113 @@ impl PaneState {
         self.center.or_else(|| raw_follow_center(dom))
     }
 
+    pub fn navigation_center(
+        &self,
+        profile: &ProfileRenderState,
+        dom: &DomRenderState,
+    ) -> Option<Price> {
+        clamp_center(self.effective_center(dom), navigation_range(profile, dom))
+    }
+
+    pub fn dom_visible(&self) -> bool {
+        self.dom_visible
+    }
+
+    /// Toggle the launch-local DOM surface without changing navigation or split ratio.
+    pub fn toggle_dom(&mut self) -> bool {
+        self.dom_visible = !self.dom_visible;
+        if !self.dom_visible {
+            if self.hovered == Some(Pane::Dom) {
+                self.hovered = None;
+            }
+            self.splitter.cancel();
+        }
+        self.dom_visible
+    }
+
+    /// Width used by MP layout and pointer math for the current surface composition.
+    pub fn effective_mp_width(&self, viewport_width: f32) -> f32 {
+        assert!(
+            viewport_width.is_finite() && viewport_width > 0.0,
+            "viewport width must be positive and finite"
+        );
+        if self.dom_visible {
+            ((viewport_width - SPLITTER_WIDTH) * self.splitter.ratio()).max(1.0)
+        } else {
+            viewport_width
+        }
+    }
+
+    pub fn mp_at_rest(&self) -> bool {
+        self.mp_at_rest
+    }
+
+    /// Reconcile horizontal navigation with current geometry before constructing the MP.
+    pub fn reconcile_mp_pan(&mut self, content_width: f32, viewport_width: f32) -> bool {
+        let next = if self.mp_at_rest {
+            let rest = current_session_rest_pan(content_width, viewport_width);
+            self.mp_desired_pan_px = rest;
+            rest
+        } else {
+            clamp_pan(self.mp_desired_pan_px, content_width, viewport_width)
+        };
+        if (next - self.mp_pan_px).abs() <= MP_REST_EPSILON_PX {
+            return false;
+        }
+        self.mp_pan_px = next;
+        true
+    }
+
+    /// Apply a horizontal drag to the logical pan, then clamp only the displayed pan.
+    pub fn navigate_mp_pan(
+        &mut self,
+        delta_px: f32,
+        content_width: f32,
+        viewport_width: f32,
+    ) -> bool {
+        assert!(delta_px.is_finite(), "MP pan delta must be finite");
+        let rest = current_session_rest_pan(content_width, viewport_width);
+        let base = if self.mp_at_rest {
+            rest
+        } else {
+            self.mp_desired_pan_px
+        };
+        self.mp_desired_pan_px = (base + delta_px).max(0.0);
+        let next = clamp_pan(self.mp_desired_pan_px, content_width, viewport_width);
+        let changed = (next - self.mp_pan_px).abs() > MP_REST_EPSILON_PX;
+        self.mp_pan_px = next;
+        self.mp_at_rest = (self.mp_desired_pan_px - rest).abs() <= MP_REST_EPSILON_PX;
+        if self.mp_at_rest {
+            self.mp_desired_pan_px = rest;
+        }
+        changed
+    }
+
+    /// Wheel zoom is navigation; a result at the new rest bound re-arms logical rest.
+    pub fn navigate_mp_zoom(
+        &mut self,
+        zoom: f32,
+        pan_px: f32,
+        content_width: f32,
+        viewport_width: f32,
+    ) -> bool {
+        assert!(zoom.is_finite() && zoom > 0.0, "MP zoom must be finite > 0");
+        assert!(pan_px.is_finite(), "MP zoom pan must be finite");
+        let next_pan = clamp_pan(pan_px, content_width, viewport_width);
+        let rest = current_session_rest_pan(content_width, viewport_width);
+        let changed = (zoom - self.mp_zoom).abs() > f32::EPSILON
+            || (next_pan - self.mp_pan_px).abs() > MP_REST_EPSILON_PX;
+        self.mp_zoom = zoom;
+        self.mp_pan_px = next_pan;
+        self.mp_at_rest = (next_pan - rest).abs() <= MP_REST_EPSILON_PX;
+        self.mp_desired_pan_px = if self.mp_at_rest {
+            rest
+        } else {
+            pan_px.max(0.0)
+        };
+        changed
+    }
+
     pub fn set_hovered(&mut self, pane: Pane, hovered: bool) {
         if hovered {
             self.hovered = Some(pane);
@@ -129,14 +246,44 @@ impl PaneState {
         self.center.take().is_some()
     }
 
-    pub fn clamp_center_to_dom(&mut self, dom: &DomRenderState) {
-        let (Some(center), Some(first), Some(last)) =
-            (self.center, dom.rows.first(), dom.rows.last())
-        else {
-            return;
-        };
-        self.center = Some(Price(center.0.clamp(first.price.0, last.price.0)));
+    pub fn clamp_center(&mut self, profile: &ProfileRenderState, dom: &DomRenderState) {
+        self.center = clamp_center(self.center, navigation_range(profile, dom));
     }
+}
+
+pub fn navigation_range(
+    profile: &ProfileRenderState,
+    dom: &DomRenderState,
+) -> Option<(Price, Price)> {
+    let profile_range = crate::mp_view::current_session(profile)
+        .and_then(|session| Some((session.rows.first()?.price, session.rows.last()?.price)));
+    let dom_range = match (dom.rows.first(), dom.rows.last()) {
+        (Some(first), Some(last)) => Some((first.price, last.price)),
+        _ => None,
+    };
+    match (profile_range, dom_range) {
+        (Some((profile_first, profile_last)), Some((dom_first, dom_last))) => Some((
+            Price(profile_first.0.min(dom_first.0)),
+            Price(profile_last.0.max(dom_last.0)),
+        )),
+        (Some(range), None) | (None, Some(range)) => Some(range),
+        (None, None) => None,
+    }
+}
+
+pub fn clamp_center(center: Option<Price>, range: Option<(Price, Price)>) -> Option<Price> {
+    let (Some(center), Some((first, last))) = (center, range) else {
+        return center;
+    };
+    assert!(first <= last, "navigation range must be ascending");
+    Some(Price(center.0.clamp(first.0, last.0)))
+}
+
+pub fn pan_center(center: Price, tick: Price, scale: u8, delta: i64) -> Price {
+    validate_scale(scale);
+    assert!(tick.0 > 0, "pane tick size must be positive");
+    let movement = i128::from(delta) * i128::from(tick.0) * i128::from(scale);
+    Price(i64::try_from(i128::from(center.0) + movement).expect("pane pan center overflows i64"))
 }
 
 pub fn raw_follow_center(dom: &DomRenderState) -> Option<Price> {
@@ -205,6 +352,11 @@ impl SplitterState {
         self.dragging = false;
     }
 
+    pub fn cancel(&mut self) {
+        self.dragging = false;
+        self.pending_x = None;
+    }
+
     pub fn is_dragging(&self) -> bool {
         self.dragging
     }
@@ -230,91 +382,5 @@ impl SplitterState {
 }
 
 #[cfg(test)]
-mod tests {
-    use fft_engine::DomPriceRow;
-
-    use super::*;
-
-    #[test]
-    fn raw_follow_center_is_scale_independent() {
-        let dom = DomRenderState {
-            best_bid: Some(Price(100)),
-            best_ask: Some(Price(110)),
-            ..Default::default()
-        };
-        assert_eq!(raw_follow_center(&dom), Some(Price(105)));
-    }
-
-    #[test]
-    fn scale_key_changes_only_hovered_pane() {
-        let mut state = PaneState::default();
-        assert!(!state.set_hovered_scale(4));
-        state.set_hovered(Pane::MarketProfile, true);
-        assert!(state.set_hovered_scale(4));
-        assert_eq!((state.mp_scale, state.dom_scale), (4, 1));
-        state.set_hovered(Pane::Dom, true);
-        assert!(state.set_hovered_scale(2));
-        assert_eq!((state.mp_scale, state.dom_scale), (4, 2));
-    }
-
-    #[test]
-    fn t_syncs_other_pane_to_hovered_scale() {
-        let mut state = PaneState::default();
-        assert!(!state.sync_scale_from_hovered(), "no hover is a no-op");
-        state.set_hovered(Pane::MarketProfile, true);
-        assert!(state.set_hovered_scale(4));
-        assert!(state.sync_scale_from_hovered());
-        assert_eq!((state.mp_scale, state.dom_scale), (4, 4));
-        assert!(!state.sync_scale_from_hovered(), "already equal is a no-op");
-        state.set_hovered(Pane::Dom, true);
-        assert!(state.set_hovered_scale(2));
-        assert!(state.sync_scale_from_hovered());
-        assert_eq!((state.mp_scale, state.dom_scale), (2, 2));
-    }
-
-    #[test]
-    fn splitter_is_latest_wins_and_clamped() {
-        let mut split = SplitterState::default();
-        split.begin(250.0);
-        split.queue(300.0);
-        split.queue(400.0);
-        assert!(split.consume(1_000.0));
-        assert!((split.ratio() - 400.0 / 994.0).abs() < 1e-6);
-        split.queue(-50.0);
-        assert!(split.consume(1_000.0));
-        assert!((split.ratio() - 180.0 / 994.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn splitter_keeps_final_pending_position_after_mouse_up() {
-        let mut split = SplitterState::default();
-        split.begin(300.0);
-        split.queue(420.0);
-        split.end();
-        assert!(split.consume(1_000.0));
-        assert!((split.ratio() - 420.0 / 994.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn shared_center_clamps_to_bounded_dom_window() {
-        let mut state = PaneState {
-            center: Some(Price(500)),
-            ..Default::default()
-        };
-        let dom = DomRenderState {
-            rows: vec![
-                DomPriceRow {
-                    price: Price(100),
-                    ..Default::default()
-                },
-                DomPriceRow {
-                    price: Price(120),
-                    ..Default::default()
-                },
-            ],
-            ..Default::default()
-        };
-        state.clamp_center_to_dom(&dom);
-        assert_eq!(state.center, Some(Price(120)));
-    }
-}
+#[path = "pane_state_tests.rs"]
+mod tests;

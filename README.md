@@ -55,9 +55,12 @@ loud warning.
 
 ## Keys
 
-`1/2/4` tick scale (pane under cursor) · `t` sync scales · `c` recenter · `r` transport
-strip · `space` play/pause · `[`/`]` speed (0.25×–64×) · `←/→` step ±1 s · drag/wheel pan
-· Ctrl+wheel MP zoom · hover a DOM row for queue/iceberg detail.
+MP is full-width by default; DOM is hidden every launch (`d` toggles it, MP nav preserved).
+`1/2/4` tick scale of the pane under the cursor · `t` sync scales · `c` price-only recenter
+· `r` arms transport · with `r` on: `space` play/pause · `[`/`]` speed (0.25×–64×) ·
+`←/→` step ±1 s (silent no-op when strip off) · MP left-drag: vertical price / horizontal
+strips · MP plain or Ctrl+wheel zoom (never pan) · DOM drag/wheel pan when shown · hover a
+DOM row for orders/size/hidden/reload per side. `e` unbound.
 
 See `docs/OPERATOR.md` for the full runbook, `PRD.md` for the product contract, and
 `docs/` for the frozen wire/engine specifications. Performance claims are numbers with

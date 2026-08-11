@@ -5,6 +5,8 @@ pub mod datetime;
 pub mod dom_badges;
 pub mod dom_input;
 pub mod dom_ladder;
+mod dom_ladder_paint;
+mod dom_ladder_prepare;
 pub mod dom_view;
 pub mod frame_stats;
 pub mod gate_report;
