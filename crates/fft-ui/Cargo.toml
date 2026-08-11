@@ -7,6 +7,8 @@ publish.workspace = true
 [dependencies]
 fft-core = { path = "../fft-core" }
 fft-engine = { path = "../fft-engine" }
+# Background auto-ingest calls the library API directly; no subprocess or UI-thread I/O.
+fft-ingest = { path = "../fft-ingest" }
 # m5-scrub-burst: event-time bounds from the log index (not on the GUI path).
 fft-log = { path = "../fft-log" }
 gpui.workspace = true

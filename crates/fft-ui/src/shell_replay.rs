@@ -7,13 +7,13 @@ use std::thread;
 
 use fft_engine::{EngineCmd, EngineConfig, EngineHandle, EngineService, SnapshotSlot, Source};
 
-use crate::prior_discovery::discover_prior_sessions;
+use crate::prior_discovery::{PriorOptions, auto_ingest_missing, discover_prior_sessions};
 
 pub(crate) fn spawn_replay_engine(
     path: PathBuf,
     replay_at: Option<u64>,
     prior_sessions: &[PathBuf],
-    discover_priors: bool,
+    prior_options: PriorOptions,
     speed: f64,
 ) -> (EngineHandle, SnapshotSlot, Arc<AtomicBool>) {
     let wake_dirty = Arc::new(AtomicBool::new(false));
@@ -54,13 +54,16 @@ pub(crate) fn spawn_replay_engine(
             })
             .unwrap_or_else(|err| panic!("fft: LoadPriorSession failed: {err}"));
     }
-    if discover_priors {
+    if prior_options.discover {
         let explicit = prior_sessions.to_vec();
         let tx = handle.command_sender();
         thread::Builder::new()
             .name("fft-prior-discovery".into())
             .spawn(move || {
-                for prior in discover_prior_sessions(&discovery_path, &explicit) {
+                let Some(discovery) = discover_prior_sessions(&discovery_path, &explicit) else {
+                    return;
+                };
+                for prior in &discovery.sessions {
                     let (year, month, day) =
                         crate::datetime::civil_from_days(i64::from(prior.trade_date));
                     eprintln!(
@@ -68,11 +71,28 @@ pub(crate) fn spawn_replay_engine(
                         prior.path.display()
                     );
                     if tx
-                        .send(EngineCmd::LoadPriorSession { path: prior.path })
+                        .send(EngineCmd::LoadPriorSession {
+                            path: prior.path.clone(),
+                        })
                         .is_err()
                     {
                         return;
                     }
+                }
+                if prior_options.auto_ingest {
+                    auto_ingest_missing(
+                        &discovery,
+                        prior_options.dbn_dir.as_deref(),
+                        |prior, _events| {
+                            let (year, month, day) =
+                                crate::datetime::civil_from_days(i64::from(prior.trade_date));
+                            eprintln!(
+                                "fft: discovered prior session {year:04}-{month:02}-{day:02} at {}",
+                                prior.path.display()
+                            );
+                            let _ = tx.send(EngineCmd::LoadPriorSession { path: prior.path });
+                        },
+                    );
                 }
             })
             .unwrap_or_else(|err| panic!("fft: failed to spawn prior discovery thread: {err}"));

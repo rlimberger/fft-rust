@@ -23,6 +23,7 @@ use crate::mp_view::display_session;
 use crate::os_theme::{ThemeSlot, resolve_font_family, spawn_theme_watcher};
 use crate::pane_state::PaneState;
 use crate::prefs::{Prefs, ShellPrefsHandles};
+use crate::prior_discovery::PriorOptions;
 use crate::shell_panes;
 use crate::shell_replay::spawn_replay_engine;
 use crate::theme::Palette;
@@ -47,7 +48,7 @@ pub struct Shell {
     replay_at: Option<u64>,
     /// Prior-day logs, oldest-first after Play (`--prior`, ENGINE.md §2).
     prior_sessions: Vec<PathBuf>,
-    discover_priors: bool,
+    prior_options: PriorOptions,
     engine_slot: Rc<RefCell<Option<EngineHandle>>>,
     wake_dirty: Arc<AtomicBool>,
     frame_snapshot: Arc<RenderSnapshot>,
@@ -75,7 +76,7 @@ impl Shell {
         pending_replay: Option<PathBuf>,
         replay_at: Option<u64>,
         prior_sessions: Vec<PathBuf>,
-        discover_priors: bool,
+        prior_options: PriorOptions,
         engine_slot: Rc<RefCell<Option<EngineHandle>>>,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -95,7 +96,7 @@ impl Shell {
             pending_replay,
             replay_at,
             prior_sessions,
-            discover_priors,
+            prior_options,
             engine_slot,
             wake_dirty: Arc::new(AtomicBool::new(false)),
             frame_snapshot: Arc::new(RenderSnapshot::default()),
@@ -232,13 +233,13 @@ impl Shell {
         };
         let replay_at = self.replay_at.take();
         let priors = std::mem::take(&mut self.prior_sessions);
-        let discover_priors = self.discover_priors;
+        let prior_options = self.prior_options.clone();
         let replay_ready = Rc::clone(&self.replay_ready);
         let engine_slot = Rc::clone(&self.engine_slot);
         let speed = self.transport.borrow().speed();
         window.on_next_frame(move |window, _| {
             let (handle, snapshots, wake_dirty) =
-                spawn_replay_engine(path, replay_at, &priors, discover_priors, speed);
+                spawn_replay_engine(path, replay_at, &priors, prior_options, speed);
             *engine_slot.borrow_mut() = Some(handle);
             *replay_ready.borrow_mut() = Some(ReplayResources {
                 snapshots,

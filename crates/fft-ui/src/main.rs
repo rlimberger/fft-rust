@@ -3,8 +3,8 @@
 //!
 //! ```text
 //! fft [--gate <seconds>] [--trace <path>] [--replay <fftlog>] [--replay-at <ts>]
-//!     [--prior <fftlog>]... [--no-prior-discovery] [--gate-out <path>] [--manifest <path>]
-//!     [--conditions <text>] [--startup-trace]
+//!     [--prior <fftlog>]... [--no-prior-discovery] [--no-auto-ingest] [--dbn-dir <path>]
+//!     [--gate-out <path>] [--manifest <path>] [--conditions <text>] [--startup-trace]
 //! ```
 //!
 //! `--startup-trace` emits wall-ms from process entry to first painted frame and to the
@@ -49,6 +49,7 @@ use fft_ui::datetime::parse_replay_at;
 use fft_ui::gate_report::{CoverageReport, GateOut, GateReport, GitInfo, RunMeta};
 use fft_ui::harness::Harness;
 use fft_ui::prefs::ShellPrefsHandles;
+use fft_ui::prior_discovery::PriorOptions;
 use fft_ui::shell::Shell;
 use gpui::{App, AppContext, Bounds, WindowBounds, WindowOptions, px, size};
 
@@ -62,8 +63,12 @@ struct Args {
     replay_at_arg: Option<String>,
     /// Prior-day fftlogs, oldest-first (CLI order preserved).
     prior: Vec<PathBuf>,
-    /// Disable sibling/cache prior discovery for deterministic gates and benchmarks.
+    /// Disable sibling/cache prior discovery and auto-ingest.
     no_prior_discovery: bool,
+    /// Keep existing-log discovery but disable DBN auto-ingest.
+    no_auto_ingest: bool,
+    /// Override automatic `data/GLBX-*` DBN directory resolution.
+    dbn_dir: Option<PathBuf>,
     gate_out: Option<PathBuf>,
     /// Perf-runner manifest path — validated at startup, recorded verbatim in evidence.
     manifest: Option<PathBuf>,
@@ -82,6 +87,8 @@ fn parse_args() -> Args {
     let mut replay_at_arg = None;
     let mut prior = Vec::new();
     let mut no_prior_discovery = false;
+    let mut no_auto_ingest = false;
+    let mut dbn_dir = None;
     let mut gate_out = None;
     let mut manifest = None;
     let mut conditions = None;
@@ -134,6 +141,19 @@ fn parse_args() -> Args {
             "--no-prior-discovery" => {
                 no_prior_discovery = true;
             }
+            "--no-auto-ingest" => {
+                no_auto_ingest = true;
+            }
+            "--dbn-dir" => {
+                let path = args
+                    .next()
+                    .unwrap_or_else(|| usage("--dbn-dir requires <path>"));
+                let path = PathBuf::from(path);
+                if !path.is_dir() {
+                    usage(&format!("--dbn-dir is not a directory: {}", path.display()));
+                }
+                dbn_dir = Some(path);
+            }
             "--gate-out" => {
                 let path = args
                     .next()
@@ -184,6 +204,8 @@ fn parse_args() -> Args {
         replay_at_arg,
         prior,
         no_prior_discovery,
+        no_auto_ingest,
+        dbn_dir,
         gate_out,
         manifest,
         conditions,
@@ -195,9 +217,12 @@ fn usage(msg: &str) -> ! {
     eprintln!(
         "fft: {msg}\nusage: fft [--gate <seconds>] [--trace <path>] [--replay <fftlog>] \
          [--replay-at <ts>] [--prior <fftlog>]... [--no-prior-discovery] \
-         [--gate-out <path>] [--manifest <path>] [--conditions <text>] [--startup-trace]\n\
+         [--no-auto-ingest] [--dbn-dir <path>] [--gate-out <path>] [--manifest <path>] \
+         [--conditions <text>] [--startup-trace]\n\
          --prior: earlier trade-date fftlog (repeatable, oldest first; requires --replay)\n\
-         --no-prior-discovery: disable sibling/cache prior scanning\n\
+         --no-prior-discovery: disable existing-log discovery and DBN auto-ingest\n\
+         --no-auto-ingest: discover existing prior logs but do not ingest missing days\n\
+         --dbn-dir: override automatic data/GLBX-* DBN source resolution\n\
          --startup-trace: emit first_paint_ms / first_interactive_ms then quit (M5 cold start)"
     );
     std::process::exit(2);
@@ -261,7 +286,11 @@ fn main() -> ExitCode {
     let replay = args.replay;
     let replay_at = args.replay_at;
     let prior = args.prior;
-    let discover_priors = !args.no_prior_discovery;
+    let prior_options = PriorOptions {
+        discover: !args.no_prior_discovery,
+        auto_ingest: !args.no_prior_discovery && !args.no_auto_ingest,
+        dbn_dir: args.dbn_dir,
+    };
 
     gpui_platform::application().run(move |cx: &mut App| {
         cx.on_window_closed(|cx, _| cx.quit()).detach();
@@ -278,7 +307,7 @@ fn main() -> ExitCode {
                         replay,
                         replay_at,
                         prior,
-                        discover_priors,
+                        prior_options,
                         engine_for_app,
                         cx,
                     );
