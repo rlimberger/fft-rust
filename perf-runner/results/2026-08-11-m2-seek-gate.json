@@ -1,0 +1,57 @@
+{
+  "gate": "M2 seek gate — p95≤250ms cold/warm, bit-identity, ≥60× realtime",
+  "date": "2026-08-11T10:12:40Z",
+  "binary": "./target/release/m2-gate --log /tmp/esu6-wed-v3-ckpt.fftlog --seeks 1000 --verify 25 --seed 0x4d325345454b --out perf-runner/results/2026-08-11-m2-seek-gate.json",
+  "git_sha": "4192ef4de4d4030c3d34022e8cf489aa3c506a52",
+  "git_dirty": true,
+  "label": null,
+  "log": {
+    "path": "/tmp/esu6-wed-v3-ckpt.fftlog",
+    "event_count": 21419657,
+    "checkpoint_count": 1393,
+    "frame_count": 4670,
+    "first_ts": 1785276000000000000,
+    "last_ts": 1785362399999689777,
+    "event_time_span_s": 86399.999689777
+  },
+  "seed": 84878540752203,
+  "seeks": 1000,
+  "methodology": "COLD: for each target ts sampled uniformly in [first_ts, last_ts] via xorshift64*(seed), open one long-lived ReplaySource on the checkpointed log; allocate fresh Book+MultiProfile; wall-time ReplaySource::seek(target, book, profile, || false) — checkpoint restore + tail through target_ts (events with ts ≤ target). WARM: immediately re-seek the same target on the same source into a second fresh Book+MultiProfile (mmap/checkpoint pages hot; no process restart). Bit-identity: for the first --verify targets, independent seek vs forward-from-open to the same target_ts; compare serialize_book/flow/refresh + MultiProfile::serialize (PROFILE/CVD/SESSION) byte vectors; any mismatch is FAIL with the first differing section named. Throughput: one full apply_next pass; realtime_multiple = (last_ts-first_ts)/wall. Harness requires checkpoint_count > 0 (mirrors engine loud reject).",
+  "cold": {
+    "n": 1000,
+    "p50_ms": 2.171963,
+    "p95_ms": 6.948601,
+    "p99_ms": 10.710880000000001,
+    "max_ms": 15.522062,
+    "min_ms": 0.28579899999999997,
+    "mean_ms": 2.8248147859999975
+  },
+  "warm": {
+    "n": 1000,
+    "p50_ms": 2.268122,
+    "p95_ms": 7.08842,
+    "p99_ms": 10.839478,
+    "max_ms": 16.399116,
+    "min_ms": 0.255133,
+    "mean_ms": 2.913717607000001
+  },
+  "verify": {
+    "count": 25,
+    "passed": 25,
+    "failed": 0,
+    "mismatch": null
+  },
+  "throughput": {
+    "events": 21401139,
+    "wall_s": 3.424524528,
+    "events_per_sec": 6249375.300138016,
+    "event_time_span_s": 86399.999689777,
+    "realtime_multiple": 25229.779779161505
+  },
+  "budgets": {
+    "seek_p95_ms": 250.0,
+    "realtime_multiple": 60.0
+  },
+  "verdict": "PASS",
+  "notes": null
+}

@@ -1,0 +1,204 @@
+{
+  "gate": "M1-data-plane",
+  "git_sha": "4192ef4de4d4030c3d34022e8cf489aa3c506a52",
+  "date": "2026-08-11",
+  "timing_label": "QUIET_BOX",
+  "smoke": false,
+  "seed": 13907096144290766865,
+  "note": "SMOKE timings are not claimable; only QUIET_BOX runs on an idle host count as gate evidence",
+  "days": [
+    {
+      "path": "/tmp/esu6-2026-07-27.fftlog",
+      "trade_date": 20661,
+      "trade_date_ymd": "2026-07-27",
+      "symbol": "ESU6",
+      "event_count": 16050064,
+      "file_bytes": 151671425,
+      "bytes_per_event": 9.449895,
+      "legacy_bytes": 863673280,
+      "legacy_ratio": 0.175612,
+      "legacy_status": "ok:data/sessions/2026-07-27-ESU6.fftlog:863673280B"
+    },
+    {
+      "path": "/tmp/esu6-2026-07-28.fftlog",
+      "trade_date": 20662,
+      "trade_date_ymd": "2026-07-28",
+      "symbol": "ESU6",
+      "event_count": 14054511,
+      "file_bytes": 134377944,
+      "bytes_per_event": 9.561197,
+      "legacy_bytes": 788250656,
+      "legacy_ratio": 0.170476,
+      "legacy_status": "ok:data/sessions/2026-07-28-ESU6.fftlog:788250656B"
+    },
+    {
+      "path": "/tmp/esu6-2026-07-29.fftlog",
+      "trade_date": 20663,
+      "trade_date_ymd": "2026-07-29",
+      "symbol": "ESU6",
+      "event_count": 21401139,
+      "file_bytes": 202632683,
+      "bytes_per_event": 9.468313,
+      "legacy_bytes": 1018442112,
+      "legacy_ratio": 0.198963,
+      "legacy_status": "ok:data/sessions/2026-07-29-ESU6.fftlog:1018442112B"
+    },
+    {
+      "path": "/tmp/esu6-2026-07-30.fftlog",
+      "trade_date": 20664,
+      "trade_date_ymd": "2026-07-30",
+      "symbol": "ESU6",
+      "event_count": 16595979,
+      "file_bytes": 158098435,
+      "bytes_per_event": 9.526310,
+      "legacy_bytes": 887672640,
+      "legacy_ratio": 0.178104,
+      "legacy_status": "ok:data/sessions/2026-07-30-ESU6.fftlog:887672640B"
+    },
+    {
+      "path": "/tmp/esu6-2026-07-31.fftlog",
+      "trade_date": 20665,
+      "trade_date_ymd": "2026-07-31",
+      "symbol": "ESU6",
+      "event_count": 17152053,
+      "file_bytes": 160034446,
+      "bytes_per_event": 9.330338,
+      "legacy_bytes": 891545824,
+      "legacy_ratio": 0.179502,
+      "legacy_status": "ok:data/sessions/2026-07-31-ESU6.fftlog:891545824B"
+    }
+  ],
+  "busiest_day": {
+    "trade_date_ymd": "2026-07-29",
+    "event_count": 21401139,
+    "path": "/tmp/esu6-2026-07-29.fftlog"
+  },
+  "forward_apply": {
+    "events": 21401139,
+    "seconds": 3.442979142,
+    "budget_seconds": 2,
+    "verdict": "FAIL",
+    "timing_label": "QUIET_BOX",
+    "applied_seq": 49143050,
+    "applied_ts": 1785362399999689777,
+    "serialize_book_bytes": 163556,
+    "serialize_flow_bytes": 5212,
+    "serialize_refresh_bytes": 35667,
+    "profile_section_bytes": 34111,
+    "cvd_section_bytes": 1554,
+    "session_section_bytes": 63
+  },
+  "differential": {
+    "verdict": "PASS",
+    "trials": 7,
+    "results": [
+      {
+        "trial": 0,
+        "n_chunks": 6,
+        "chunk_sizes": [965951, 2242488, 8473885, 1590275, 7883753, 244787],
+        "match_oneshot": true,
+        "seconds": 3.129028494,
+        "fail_reason": null
+      },
+      {
+        "trial": 1,
+        "n_chunks": 7,
+        "chunk_sizes": [5596069, 5588479, 856489, 553222, 4028497, 1948599, 2829784],
+        "match_oneshot": true,
+        "seconds": 3.185755962,
+        "fail_reason": null
+      },
+      {
+        "trial": 2,
+        "n_chunks": 7,
+        "chunk_sizes": [6372754, 1097376, 4487811, 491356, 894921, 3390026, 4666895],
+        "match_oneshot": true,
+        "seconds": 3.176727047,
+        "fail_reason": null
+      },
+      {
+        "trial": 3,
+        "n_chunks": 4,
+        "chunk_sizes": [2866082, 5213162, 12346999, 974896],
+        "match_oneshot": true,
+        "seconds": 3.149352701,
+        "fail_reason": null
+      },
+      {
+        "trial": 4,
+        "n_chunks": 4,
+        "chunk_sizes": [3137325, 3147369, 7106775, 8009670],
+        "match_oneshot": true,
+        "seconds": 3.169649397,
+        "fail_reason": null
+      },
+      {
+        "trial": 5,
+        "n_chunks": 13,
+        "chunk_sizes": [932879, 1516348, 2017226, 2691126, 895676, 4600872, 1433665, 1977717, 447922, 2292240, 730607, 1621932, 242929],
+        "match_oneshot": true,
+        "seconds": 3.168953639,
+        "fail_reason": null
+      },
+      {
+        "trial": 6,
+        "n_chunks": 4,
+        "chunk_sizes": [3609124, 1704074, 845399, 15242542],
+        "match_oneshot": true,
+        "seconds": 3.207593161,
+        "fail_reason": null
+      }
+    ]
+  },
+  "log_size": {
+    "claim_leq_half_legacy": "PASS",
+    "ratio_unverified": false,
+    "bytes_per_event_table": [
+      {
+        "trade_date_ymd": "2026-07-27",
+        "event_count": 16050064,
+        "v2_bytes": 151671425,
+        "v2_bytes_per_event": 9.449895,
+        "legacy_bytes": 863673280,
+        "v2_over_legacy": 0.175612,
+        "legacy_status": "ok:data/sessions/2026-07-27-ESU6.fftlog:863673280B"
+      },
+      {
+        "trade_date_ymd": "2026-07-28",
+        "event_count": 14054511,
+        "v2_bytes": 134377944,
+        "v2_bytes_per_event": 9.561197,
+        "legacy_bytes": 788250656,
+        "v2_over_legacy": 0.170476,
+        "legacy_status": "ok:data/sessions/2026-07-28-ESU6.fftlog:788250656B"
+      },
+      {
+        "trade_date_ymd": "2026-07-29",
+        "event_count": 21401139,
+        "v2_bytes": 202632683,
+        "v2_bytes_per_event": 9.468313,
+        "legacy_bytes": 1018442112,
+        "v2_over_legacy": 0.198963,
+        "legacy_status": "ok:data/sessions/2026-07-29-ESU6.fftlog:1018442112B"
+      },
+      {
+        "trade_date_ymd": "2026-07-30",
+        "event_count": 16595979,
+        "v2_bytes": 158098435,
+        "v2_bytes_per_event": 9.526310,
+        "legacy_bytes": 887672640,
+        "v2_over_legacy": 0.178104,
+        "legacy_status": "ok:data/sessions/2026-07-30-ESU6.fftlog:887672640B"
+      },
+      {
+        "trade_date_ymd": "2026-07-31",
+        "event_count": 17152053,
+        "v2_bytes": 160034446,
+        "v2_bytes_per_event": 9.330338,
+        "legacy_bytes": 891545824,
+        "v2_over_legacy": 0.179502,
+        "legacy_status": "ok:data/sessions/2026-07-31-ESU6.fftlog:891545824B"
+      }
+    ]
+  }
+}

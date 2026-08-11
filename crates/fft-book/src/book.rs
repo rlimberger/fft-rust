@@ -129,13 +129,17 @@ impl Book {
             EventKind::Status => {}
             EventKind::Gap => self.do_gap(ev),
         }
+        // Tombstone lifetime is pure event-time ([`REFRESH_WINDOW_NS`]). GC must
+        // run every apply so seek (restore resets `since_gc`) and forward replay
+        // drop the same expired candidates — otherwise REFRESH section bytes
+        // diverge while BOOK/FLOW stay bit-identical (M2 gate).
+        self.refresh.gc(self.now);
         self.since_gc += 1;
         if self.since_gc >= GC_INTERVAL {
             self.since_gc = 0;
             let now = self.now;
             self.bids.gc(now);
             self.asks.gc(now);
-            self.refresh.gc(now);
         }
     }
 

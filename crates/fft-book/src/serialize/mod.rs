@@ -62,6 +62,11 @@ impl Book {
         let mut out = book_section::restore(book)?;
         flow_section::restore_into(flow, &mut out)?;
         out.refresh = refresh_section::restore(refresh)?;
+        // Checkpoints written under the old interval GC may still carry tombstones
+        // past [`crate::REFRESH_WINDOW_NS`]. Drop them against restored `now` so
+        // restore+tail matches a forward book that already swept them.
+        let now = out.now;
+        out.refresh.gc(now);
         validate_cross_section(&out)?;
         out.check_invariants();
         Ok(out)

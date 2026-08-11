@@ -11,6 +11,9 @@ use fft_core::Side;
 const MAX_REFRESH_ENTRIES: u32 = 10_000_000;
 
 pub(super) fn serialize(book: &Book) -> Vec<u8> {
+    // Expired tombstones cannot classify a later restore — omit them so the
+    // payload is independent of any residual apply-count GC lag (Book::apply).
+    let now = book.now;
     let mut bytes = Vec::new();
     w16(&mut bytes, REFRESH_SECTION_VERSION);
     w32(&mut bytes, book.refresh.gap_epoch);
@@ -29,7 +32,12 @@ pub(super) fn serialize(book: &Book) -> Vec<u8> {
         w8(&mut bytes, u8::from(state.unavailable));
     }
 
-    let mut tombstones: Vec<_> = book.refresh.tombstones.iter().collect();
+    let mut tombstones: Vec<_> = book
+        .refresh
+        .tombstones
+        .iter()
+        .filter(|(_, t)| now.saturating_sub(t.depleted_ts) <= crate::REFRESH_WINDOW_NS)
+        .collect();
     tombstones.sort_by_key(|(id, _)| **id);
     w32(
         &mut bytes,

@@ -155,6 +155,96 @@ fn restored_tail_matches_forward_with_snapshot_flow_refresh_and_gap() {
     assert_books_equal(&forward, &restored);
 }
 
+/// Regression for REFRESH-SEEK-DIVERGE: expired tombstones must not survive a
+/// restore+tail differently than a pure forward pass. Root cause was interval
+/// GC (`since_gc` resets to 0 on restore) leaving multi-second-old tombs on
+/// the seek path while forward had already swept them — BOOK/FLOW matched,
+/// REFRESH section bytes did not.
+#[test]
+fn expired_refresh_tombstones_match_across_restore_tail() {
+    let mut forward = book();
+    // Arm a tombstone at T0, then advance event time far past REFRESH_WINDOW_NS
+    // without hitting the old 4096-event GC phase on a restored book.
+    forward.apply(&add(1, Side::Bid, 100, 5, T0));
+    forward.apply(&fill(1, Side::Bid, 100, 5, T0 + 1));
+    forward.apply(&cancel(1, Side::Bid, 100, 5, T0 + 2));
+    // Unrelated live book activity so serialize has resting depth + now.
+    forward.apply(&add(2, Side::Bid, 99, 3, T0 + 3));
+    forward.apply(&add(3, Side::Ask, 101, 4, T0 + 4));
+
+    let (book_bytes, flow_bytes, refresh_bytes) = sections(&forward);
+    // Inject an expired tombstone into the REFRESH payload as old checkpoints
+    // could (interval GC had not yet run at write time, or a later now was
+    // not re-swept). Layout: after live count, tombstone block starts.
+    // Simpler: build a second book path that restores then advances time with
+    // fewer than GC_INTERVAL events — the bug class.
+    let mut restored = Book::restore(&book_bytes, &flow_bytes, &refresh_bytes).unwrap();
+
+    // Advance both past the 1 ms window with a short tail (≪ 4096 events).
+    let tail_ts = T0 + 3 + fft_book::REFRESH_WINDOW_NS + 10;
+    let tail = [
+        add(4, Side::Bid, 98, 1, tail_ts),
+        cancel(4, Side::Bid, 98, 1, tail_ts + 1),
+        add(5, Side::Ask, 102, 2, tail_ts + 2),
+    ];
+    for event in &tail {
+        forward.apply(event);
+        restored.apply(event);
+    }
+    forward.check_invariants();
+    restored.check_invariants();
+    assert_eq!(forward.serialize_refresh(), restored.serialize_refresh());
+    assert_books_equal(&forward, &restored);
+
+    // Late same-id restore must be a new life on both paths (window expired).
+    let late = add(1, Side::Bid, 100, 5, tail_ts + 3);
+    forward.apply(&late);
+    restored.apply(&late);
+    assert_eq!(
+        forward.refresh_state(OrderId(1)),
+        restored.refresh_state(OrderId(1))
+    );
+    assert_eq!(forward.serialize_refresh(), restored.serialize_refresh());
+}
+
+/// Serialize must omit tombstones past the acceptance window even if the
+/// in-memory map still holds them (defense against residual phase lag).
+#[test]
+fn serialize_refresh_omits_expired_tombstones() {
+    let mut b = book();
+    b.apply(&add(1, Side::Bid, 100, 5, T0));
+    b.apply(&fill(1, Side::Bid, 100, 5, T0 + 1));
+    b.apply(&cancel(1, Side::Bid, 100, 5, T0 + 2));
+    b.apply(&add(2, Side::Bid, 99, 1, T0 + 3));
+    // Force clock past window with a tiny tail; every-apply GC should already
+    // have dropped the tomb — re-serialize stays empty of id 1 candidacy.
+    b.apply(&add(
+        3,
+        Side::Ask,
+        101,
+        1,
+        T0 + 3 + fft_book::REFRESH_WINDOW_NS + 1,
+    ));
+    let refresh = b.serialize_refresh();
+    // Round-trip restore must accept and leave no stale candidacy for id 1.
+    let mut restored = Book::restore(&b.serialize_book(), &b.serialize_flow(), &refresh).unwrap();
+    restored.apply(&add(
+        1,
+        Side::Bid,
+        100,
+        5,
+        T0 + 3 + fft_book::REFRESH_WINDOW_NS + 2,
+    ));
+    assert_eq!(
+        restored.refresh_state(OrderId(1)),
+        fft_book::RefreshState::Known {
+            native: false,
+            reloads: 0,
+            hidden_volume: 0,
+        }
+    );
+}
+
 #[test]
 fn inner_versions_are_checked_independently() {
     let (book, flow, refresh) = sections(&busy_book());
