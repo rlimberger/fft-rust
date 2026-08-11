@@ -56,6 +56,13 @@ latency are never blocked (budgets in time, doctrine rule 4). Rules:
    the forward path.
 4. `SetSource` drops any in-progress prior build but **keeps** completed prior sessions
    when the new source's trade date is unchanged; otherwise it clears them.
+   Completed priors are likewise **engine-owned across Seek** (2026-08-11, defect found
+   by the m7-soak rig): a seek's checkpoint restore rebuilds only the current session;
+   the engine drains its completed priors before `ReplaySource::seek` (which replaces
+   the profile before its first cancellation poll) and re-inserts them after it returns
+   — on every exit path, including cancelled and superseded seeks. An in-progress prior
+   build is source-independent and unaffected by seeks; its completion re-validates
+   against the then-current profile.
 5. Snapshot budgets (§3.5) are unchanged and now include prior sessions: the 8 MiB heap
    assert is the guard — a full week of ES sessions measures well under it.
 

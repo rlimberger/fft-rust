@@ -245,6 +245,183 @@ fn completed_prior_survives_set_source_same_trade_date() {
 }
 
 #[test]
+fn completed_prior_survives_checkpoint_seek_unchanged() {
+    let main = temp_path("prior-seek-main");
+    let prior = temp_path("prior-seek-day");
+    write_checkpointed_log(main.path(), 400, 100);
+    write_checkpointed_log_for(prior.path(), PRIOR_TRADE_DATE, 200, 50);
+
+    let wakes = Arc::new(AtomicU64::new(0));
+    let handle = spawn_engine(wakes);
+    handle
+        .send(EngineCmd::SetSource(Source::Replay {
+            path: main.path().to_path_buf(),
+        }))
+        .unwrap();
+    handle
+        .send(EngineCmd::LoadPriorSession {
+            path: prior.path().to_path_buf(),
+        })
+        .unwrap();
+    wait_until(Duration::from_secs(10), || {
+        handle.snapshots().load().profile.sessions.len() == 2
+    });
+
+    let before = handle.snapshots().load();
+    let prior_before = before.profile.sessions[0].clone();
+    handle
+        .send(EngineCmd::Seek {
+            ts: SESSION_OPEN_NS + 250 * 1_000_000,
+            generation: 1,
+        })
+        .unwrap();
+
+    let after = wait_for_seek(&handle, 1);
+    assert_eq!(
+        after
+            .profile
+            .sessions
+            .iter()
+            .map(|session| session.trade_date)
+            .collect::<Vec<_>>(),
+        [PRIOR_TRADE_DATE, TRADE_DATE]
+    );
+    assert_eq!(after.profile.sessions[0], prior_before);
+    assert_eq!(
+        after
+            .profile
+            .sessions
+            .last()
+            .map(|session| session.trade_date),
+        Some(TRADE_DATE)
+    );
+
+    let exit = handle.shutdown().expect("join");
+    assert_eq!(exit.priors_completed, 1);
+    assert_eq!(exit.seeks_executed, 1);
+}
+
+#[test]
+fn completed_prior_survives_superseded_seek() {
+    let main = temp_path("prior-cancelled-seek-main");
+    let prior = temp_path("prior-cancelled-seek-day");
+    write_checkpointed_log(main.path(), 20_000, 5_000);
+    write_checkpointed_log_for(prior.path(), PRIOR_TRADE_DATE, 200, 50);
+
+    let wakes = Arc::new(AtomicU64::new(0));
+    let handle = spawn_engine(wakes);
+    handle
+        .send(EngineCmd::SetSource(Source::Replay {
+            path: main.path().to_path_buf(),
+        }))
+        .unwrap();
+    handle
+        .send(EngineCmd::LoadPriorSession {
+            path: prior.path().to_path_buf(),
+        })
+        .unwrap();
+    wait_until(Duration::from_secs(10), || {
+        handle.snapshots().load().profile.sessions.len() == 2
+    });
+    let prior_before = handle.snapshots().load().profile.sessions[0].clone();
+
+    let target = SESSION_OPEN_NS + 19_999 * 1_000_000;
+    handle
+        .send(EngineCmd::Seek {
+            ts: target,
+            generation: 1,
+        })
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(2));
+    handle
+        .send(EngineCmd::Seek {
+            ts: target,
+            generation: 2,
+        })
+        .unwrap();
+
+    let after = wait_for_seek(&handle, 2);
+    assert_eq!(
+        after
+            .profile
+            .sessions
+            .iter()
+            .map(|session| session.trade_date)
+            .collect::<Vec<_>>(),
+        [PRIOR_TRADE_DATE, TRADE_DATE]
+    );
+    assert_eq!(after.profile.sessions[0], prior_before);
+
+    let exit = handle.shutdown().expect("join");
+    assert_eq!(exit.priors_completed, 1);
+    assert_eq!(exit.seeks_executed, 1);
+}
+
+#[test]
+fn prior_build_in_progress_survives_checkpoint_seek() {
+    let main = temp_path("prior-build-seek-main");
+    let prior = temp_path("prior-build-seek-day");
+    write_checkpointed_log(main.path(), 400, 100);
+    // No checkpoint before EOF: the 2 ms prior-build slices must apply the full
+    // stream, keeping the build in progress while the queued seek executes.
+    write_checkpointed_log_for(prior.path(), PRIOR_TRADE_DATE, 200_000, 200_000);
+    let expected_prior_vol = offline_profile_volume(prior.path());
+
+    let wakes = Arc::new(AtomicU64::new(0));
+    let handle = spawn_engine(wakes);
+    handle
+        .send(EngineCmd::SetSource(Source::Replay {
+            path: main.path().to_path_buf(),
+        }))
+        .unwrap();
+    handle
+        .send(EngineCmd::LoadPriorSession {
+            path: prior.path().to_path_buf(),
+        })
+        .unwrap();
+    handle
+        .send(EngineCmd::Seek {
+            ts: SESSION_OPEN_NS + 250 * 1_000_000,
+            generation: 1,
+        })
+        .unwrap();
+
+    let sought = wait_for_seek(&handle, 1);
+    assert_eq!(sought.profile.sessions.len(), 1);
+    wait_until(Duration::from_secs(15), || {
+        handle.snapshots().load().profile.sessions.len() == 2
+    });
+
+    let after = handle.snapshots().load();
+    assert_eq!(
+        after
+            .profile
+            .sessions
+            .iter()
+            .map(|session| session.trade_date)
+            .collect::<Vec<_>>(),
+        [PRIOR_TRADE_DATE, TRADE_DATE]
+    );
+    assert_eq!(
+        session_volume(&after, PRIOR_TRADE_DATE),
+        Some(expected_prior_vol)
+    );
+    assert_eq!(
+        after
+            .profile
+            .sessions
+            .last()
+            .map(|session| session.trade_date),
+        Some(TRADE_DATE)
+    );
+
+    let exit = handle.shutdown().expect("join");
+    assert_eq!(exit.priors_completed, 1);
+    assert_eq!(exit.prior_skips, 0);
+    assert_eq!(exit.seeks_executed, 1);
+}
+
+#[test]
 fn no_partial_prior_publication_volume_matches_offline() {
     let main = temp_path("prior-partial-main");
     let prior = temp_path("prior-partial-day");

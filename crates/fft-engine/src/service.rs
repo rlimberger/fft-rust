@@ -572,6 +572,14 @@ impl Runtime {
     ) {
         self.playing = false;
         self.assert_seekable();
+        // ReplaySource::seek replaces the profile before its first cancellation
+        // poll. Detach engine-owned completed priors, then restore them onto the
+        // resulting current session whether the seek succeeds or is cancelled.
+        let retained_priors = self
+            .profile
+            .as_mut()
+            .expect("fft-engine source missing profile")
+            .drain_prior_sessions();
         let source = self
             .source
             .as_mut()
@@ -596,6 +604,9 @@ impl Runtime {
                 })
             })
             .unwrap_or_else(|e| replay_panic(e));
+        for prior in retained_priors {
+            profile.insert_prior_session(prior);
+        }
         drain(rx, &mut interrupted);
         let newest = interrupted
             .iter()
