@@ -12,6 +12,28 @@ first); recenter key `c`; models always pinned, never default/auto.
 
 ## Wave 5 board (2026-08-10 late night — READ THIS FIRST, next orchestrator)
 
+**Standing directive (René, this session): theme + font size follow the OS (Omarchy)
+system, live** — landed as UI-OS-THEME (`1caaabe`, PRD §5 same-commit). fc-match family
+at startup; `[font] base-size` → UI scale (base/12); colors from
+`~/.local/state/omarchy/current/theme/colors.toml`; 500 ms poll thread, latest-value
+snapshot, one atomic compare per frame, mocha fallback (loud) off-Omarchy. Live-switch
+validation: 14 theme+size flips during a 30 s anchored gate — only the first scale
+change cost one 33 ms frame (cold glyph reshape at the new size; every later flip in
+budget; static control 0 missed). Known residual: that first-switch reshape frame; if
+René wants it gone, pre-shape the row glyph set for the incoming scale on the watcher
+thread before publishing. Engine follow-up in the same wave (`c336266`):
+`EngineHandle::shutdown` on a dead engine returns the panic as Err instead of
+panicking — the evidence-destroying shutdown path is closed and regression-tested.
+Fixture note: HANDOFF's expected regen counts said "7409 snapshots dropped" — that was
+measured on a two-file ingest; the six-file regen command correctly reports 30,200
+(other days' blocks). Kept bytes are byte-identical (sha256-verified); 21,401,139
+events / 0 gaps / 1880 holes / 7561 kept / 1393 checkpoints all match.
+
+**Model roster (René, this session): subagents = ocx-xai-grok-4-5,
+ocx-cursor-grok-4-5-fast, ocx-gpt-5-6-sol, ocx-anthropic-claude-opus-5 — use them
+liberally, always pinned. Claude Fable 5 is the orchestrator only and off limits as a
+subagent.**
+
 **Standing directive (René, this session): gate/replay sessions run anchored at the PRD
 §6 sim-live head — Wed 2026-07-29 09:50 America/New_York.** (René wrote "wed 7-28"; the
 sample week's Wednesday is the 29th and PRD §6 pins 07-29 — interpreted as the PRD
@@ -121,8 +143,10 @@ cargo run --release -p fft-engine --bin fft-checkpoint -- \
   /tmp/esu6-wed-v3.fftlog /tmp/esu6-wed-v3-ckpt.fftlog
 ```
 Expected: 21,401,139 events, 0 gaps, 1880 seq_holes_ignored, 7561 snapshots kept /
-7409 dropped; checkpoint pass writes 1393 checkpoints. Gate replays use the -ckpt copy
-(Seek panics on the plain one by design).
+30,200 dropped (six-file run: the other days' snapshot blocks; a two-file
+28th+29th ingest reports 7409 dropped and yields a byte-identical log —
+sha256-verified 2026-08-10); checkpoint pass writes 1393 checkpoints. Gate replays
+use the -ckpt copy (Seek panics on the plain one by design).
 
 Worker git hygiene (hard rule, learned from a real incident): subagents NEVER run
 `git stash`, `git clean`, `git checkout -- .`, commit, or push in the shared tree —
