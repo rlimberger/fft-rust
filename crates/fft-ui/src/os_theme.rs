@@ -81,7 +81,7 @@ pub struct ThemeSlot {
 }
 
 impl ThemeSlot {
-    fn new(snapshot: ThemeSnapshot) -> Self {
+    pub(crate) fn new(snapshot: ThemeSnapshot) -> Self {
         let generation = snapshot.generation;
         Self {
             current: Mutex::new(Arc::new(snapshot)),
@@ -96,7 +96,7 @@ impl ThemeSlot {
 
     /// Clone the latest snapshot.
     pub fn load(&self) -> Arc<ThemeSnapshot> {
-        Arc::clone(&self.current.lock().expect("fft: theme slot mutex poisoned"))
+        Arc::clone(&self.lock_current())
     }
 
     fn publish(&self, mut snapshot: ThemeSnapshot) {
@@ -107,8 +107,18 @@ impl ThemeSlot {
             .expect("fft: theme generation overflow");
         snapshot.generation = next;
         let arc = Arc::new(snapshot);
-        *self.current.lock().expect("fft: theme slot mutex poisoned") = Arc::clone(&arc);
+        *self.lock_current() = Arc::clone(&arc);
         self.generation.store(next, Ordering::Release);
+    }
+
+    /// Recover through poison: a dead watcher must not kill the UI on next theme read.
+    fn lock_current(&self) -> std::sync::MutexGuard<'_, Arc<ThemeSnapshot>> {
+        self.current.lock().unwrap_or_else(|poisoned| {
+            eprintln!(
+                "fft: WARNING theme slot mutex poisoned; recovering last snapshot (watcher died?)"
+            );
+            poisoned.into_inner()
+        })
     }
 }
 
@@ -341,10 +351,15 @@ pub fn spawn_theme_watcher() -> Arc<ThemeSlot> {
     let initial = load_theme_snapshot(0);
     let slot = Arc::new(ThemeSlot::new(initial));
     let worker = Arc::clone(&slot);
-    std::thread::Builder::new()
+    if let Err(err) = std::thread::Builder::new()
         .name("fft-os-theme".into())
         .spawn(move || theme_poll_loop(worker))
-        .expect("fft: failed to spawn os-theme watcher thread");
+    {
+        // Loud warn + keep static fallback snapshot; UI stays alive without live theme updates.
+        eprintln!(
+            "fft: WARNING failed to spawn os-theme watcher ({err}); keeping static fallback theme"
+        );
+    }
     slot
 }
 

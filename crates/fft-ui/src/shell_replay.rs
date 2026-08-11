@@ -26,33 +26,41 @@ pub(crate) fn spawn_replay_engine(
             wake.store(true, Ordering::Release);
         }),
     )
-    .unwrap_or_else(|err| panic!("fft: failed to spawn engine thread: {err}"));
+    .unwrap_or_else(|err| {
+        eprintln!("fft: failed to spawn engine thread: {err}");
+        std::process::exit(1);
+    });
     let discovery_path = path.clone();
-    handle
-        .send(EngineCmd::SetSource(Source::Replay { path }))
-        .unwrap_or_else(|err| panic!("fft: SetSource failed: {err}"));
+    if let Err(err) = handle.send(EngineCmd::SetSource(Source::Replay { path })) {
+        eprintln!("fft: SetSource failed: {err}");
+        std::process::exit(1);
+    }
     // Seek pauses; Play follows. Gen 1 is the UI's first seek after SetSource (0).
     // Transport scrub/step starts at 2 (`FIRST_UI_SEEK_GENERATION`).
-    if let Some(ts) = replay_at {
-        handle
-            .send(EngineCmd::Seek { ts, generation: 1 })
-            .unwrap_or_else(|err| panic!("fft: Seek failed: {err}"));
+    if let Some(ts) = replay_at
+        && let Err(err) = handle.send(EngineCmd::Seek { ts, generation: 1 })
+    {
+        eprintln!("fft: Seek failed: {err}");
+        std::process::exit(1);
     }
-    handle
-        .send(EngineCmd::Play)
-        .unwrap_or_else(|err| panic!("fft: Play failed: {err}"));
-    if (speed - 1.0).abs() > f64::EPSILON {
-        handle
-            .send(EngineCmd::SetSpeed(speed))
-            .unwrap_or_else(|err| panic!("fft: SetSpeed failed: {err}"));
+    if let Err(err) = handle.send(EngineCmd::Play) {
+        eprintln!("fft: Play failed: {err}");
+        std::process::exit(1);
+    }
+    if (speed - 1.0).abs() > f64::EPSILON
+        && let Err(err) = handle.send(EngineCmd::SetSpeed(speed))
+    {
+        eprintln!("fft: SetSpeed failed: {err}");
+        std::process::exit(1);
     }
     // ENGINE.md §2: one LoadPriorSession per explicit prior, oldest-first (CLI order).
     for prior in prior_sessions {
-        handle
-            .send(EngineCmd::LoadPriorSession {
-                path: prior.clone(),
-            })
-            .unwrap_or_else(|err| panic!("fft: LoadPriorSession failed: {err}"));
+        if let Err(err) = handle.send(EngineCmd::LoadPriorSession {
+            path: prior.clone(),
+        }) {
+            eprintln!("fft: LoadPriorSession failed: {err}");
+            std::process::exit(1);
+        }
     }
     if prior_options.discover {
         let explicit = prior_sessions.to_vec();
@@ -95,7 +103,12 @@ pub(crate) fn spawn_replay_engine(
                     );
                 }
             })
-            .unwrap_or_else(|err| panic!("fft: failed to spawn prior discovery thread: {err}"));
+            .map(|_handle| ())
+            .unwrap_or_else(|err| {
+                eprintln!(
+                    "fft: WARNING failed to spawn prior discovery thread ({err}); continuing without auto-priors"
+                );
+            });
     }
     let snapshots = handle.snapshots();
     (handle, snapshots, wake_dirty)

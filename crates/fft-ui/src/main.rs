@@ -259,6 +259,9 @@ fn main() -> ExitCode {
     if args.startup_trace {
         fft_ui::startup_trace::enable();
     }
+    // Missing tzdb fails loudly here, before the window opens; paint-time clock
+    // failures after this soft-fail to "--:--:--" (doctrine §7 split).
+    fft_ui::transport::ensure_tzdb_available();
     // Provenance and evidence-file writability are established before the window opens: a
     // 60 s measured run must never be spent to discover the result cannot be recorded.
     let meta = RunMeta {

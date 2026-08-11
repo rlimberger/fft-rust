@@ -157,3 +157,19 @@ fn write_file(path: &Path, body: &str) {
     let mut f = fs::File::create(path).unwrap();
     f.write_all(body.as_bytes()).unwrap();
 }
+
+#[test]
+fn theme_slot_recovers_from_poison() {
+    let slot = ThemeSlot::new(ThemeSnapshot {
+        palette: Palette::mocha(),
+        scale: 1.0,
+        generation: 7,
+    });
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = slot.current.lock().unwrap();
+        panic!("poison theme slot");
+    }));
+    let snap = slot.load();
+    assert_eq!(snap.generation, 7);
+    assert!((snap.scale - 1.0).abs() < f32::EPSILON);
+}

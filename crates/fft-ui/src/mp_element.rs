@@ -3,6 +3,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use fft_core::Price;
 use fft_engine::RenderSnapshot;
@@ -12,18 +13,20 @@ use gpui::{
 };
 
 use crate::glyph_cache::GlyphCache;
-use crate::layout::format_price;
-use crate::layout::format_size;
-use crate::mp_layout::{SessionBlock, SessionLayout, mp_footer_h, mp_row_h, row_y, session_layout};
+use crate::mp_layout::{SessionLayout, mp_footer_h, session_layout};
 use crate::mp_paint::{paint_dividers, paint_period_cursor, paint_rows, paint_semantic_lines};
-use crate::mp_prepare::prepare_tpos;
 use crate::mp_sessions::{
-    block_intersects_viewport, clip_prepared_texts, is_prior, paint_prior_va_vpoc,
-    paint_session_dividers, prepare_prior_session, prior_markers, same_price_ladder,
+    block_intersects_viewport, is_prior, paint_prior_va_vpoc, paint_session_dividers,
+    prepare_prior_session, prior_markers, same_price_ladder,
 };
 use crate::mp_view::{VisibleProfile, current_session, session_open_footer, visible_rows};
 use crate::theme::Palette;
 
+#[path = "mp_element_prepare.rs"]
+mod mp_element_prepare;
+use mp_element_prepare::prepare_current_rows;
+
+#[derive(Clone)]
 pub struct MarketProfile {
     snapshot: Arc<RenderSnapshot>,
     center: Option<Price>,
@@ -365,119 +368,40 @@ impl Element for MarketProfile {
         }
 
         for prepared in prepaint.texts.drain(..) {
-            window
-                .with_content_mask(
-                    Some(ContentMask {
-                        bounds: prepared.clip,
-                    }),
-                    |window| {
-                        prepared.line.paint(
-                            prepared.origin,
-                            prepared.line_height,
-                            prepared.align,
-                            Some(prepared.align_width),
-                            window,
-                            cx,
-                        )
-                    },
-                )
-                .expect("fft: MP shaped line paint failed");
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn prepare_current_rows(
-    profile: &VisibleProfile,
-    block: &SessionBlock,
-    layout: &SessionLayout,
-    bounds: Bounds<Pixels>,
-    window: &mut Window,
-    cache: &mut GlyphCache,
-    texts: &mut Vec<PreparedText>,
-    palette: &Palette,
-    scale: f32,
-) {
-    let origin_y = f32::from(bounds.origin.y);
-    let rh = mp_row_h(scale);
-    let strip_left = layout.strip_viewport.x;
-    let strip_right = layout.strip_viewport.x + layout.strip_viewport.w;
-    let mut cols = block.strips;
-    cols.axis = layout.axis;
-    for (from_top, row) in profile.rows.iter().rev().enumerate() {
-        let y = row_y(origin_y, from_top, scale) + 1.0 * scale;
-        let before = texts.len();
-        prepare_tpos(cache, window, texts, row, cols, y, palette, scale);
-        prepare_number(
-            cache,
-            window,
-            texts,
-            row.period_volume,
-            cols.pv,
-            y,
-            palette.text,
-            scale,
-        );
-        prepare_number(
-            cache,
-            window,
-            texts,
-            row.session_volume,
-            cols.sv,
-            y,
-            palette.text,
-            scale,
-        );
-        // Clip CP/EP/PV/SV glyphs to the strip viewport (axis stays unclipped).
-        clip_prepared_texts(texts, before, strip_left, strip_right);
-        if cols.axis.w > 0.0 {
-            let line = cache.get_or_shape(
-                window,
-                format_price(row.price.0),
-                palette.text,
-                px(10.0 * scale),
+            let paint_result = window.with_content_mask(
+                Some(ContentMask {
+                    bounds: prepared.clip,
+                }),
+                |window| {
+                    prepared.line.paint(
+                        prepared.origin,
+                        prepared.line_height,
+                        prepared.align,
+                        Some(prepared.align_width),
+                        window,
+                        cx,
+                    )
+                },
             );
-            texts.push(PreparedText {
-                line,
-                origin: point(px(cols.axis.x + 2.0), px(y)),
-                align_width: px((cols.axis.w - 4.0).max(0.0)),
-                align: TextAlign::Right,
-                line_height: px(rh - 1.0 * scale),
-                clip: Bounds::new(
-                    point(px(cols.axis.x), px(y - 1.0 * scale)),
-                    size(px(cols.axis.w), px(rh)),
-                ),
-            });
+            if paint_result.is_err() {
+                note_mp_shaped_line_paint_failure(self.snapshot.generation);
+            }
         }
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn prepare_number(
-    cache: &mut GlyphCache,
-    window: &mut Window,
-    texts: &mut Vec<PreparedText>,
-    value: u64,
-    strip: crate::mp_layout::Strip,
-    y: f32,
-    color: gpui::Hsla,
-    scale: f32,
-) {
-    let text = format_size(value);
-    if text.is_empty() || strip.w <= 0.0 {
-        return;
+fn note_mp_shaped_line_paint_failure(generation: u64) {
+    static FAIL_COUNT: AtomicU64 = AtomicU64::new(0);
+    static WARNED_GEN: AtomicU64 = AtomicU64::new(u64::MAX);
+    let n = FAIL_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    let prev = WARNED_GEN.load(Ordering::Relaxed);
+    if prev != generation
+        && WARNED_GEN
+            .compare_exchange(prev, generation, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+    {
+        eprintln!(
+            "fft: WARNING MP shaped-line paint failed (generation={generation}, count={n}); skipping run, frame continues"
+        );
     }
-    let rh = mp_row_h(scale);
-    let line = cache.get_or_shape(window, text, color, px(9.0 * scale));
-    texts.push(PreparedText {
-        line,
-        origin: point(px(strip.x + 2.0), px(y)),
-        align_width: px((strip.w - 4.0).max(0.0)),
-        align: TextAlign::Right,
-        line_height: px(rh - 1.0 * scale),
-        clip: Bounds::new(
-            point(px(strip.x), px(y - 1.0 * scale)),
-            size(px(strip.w), px(rh)),
-        ),
-    });
 }

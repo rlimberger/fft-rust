@@ -123,11 +123,13 @@ impl PaneState {
     }
 
     /// Width used by MP layout and pointer math for the current surface composition.
+    ///
+    /// Zero/non-finite viewport width is normal mid-resize; return a degenerate
+    /// but valid 1.0 so pointer math and layout never abort the UI thread.
     pub fn effective_mp_width(&self, viewport_width: f32) -> f32 {
-        assert!(
-            viewport_width.is_finite() && viewport_width > 0.0,
-            "viewport width must be positive and finite"
-        );
+        if !(viewport_width.is_finite() && viewport_width > 0.0) {
+            return 1.0;
+        }
         if self.dom_visible {
             ((viewport_width - SPLITTER_WIDTH) * self.splitter.ratio()).max(1.0)
         } else {
@@ -363,13 +365,14 @@ impl SplitterState {
 
     /// Consume only the most recent pointer coordinate queued before this frame.
     pub fn consume(&mut self, width: f32) -> bool {
+        // Zero/non-finite widths happen mid-resize; keep the pending sample
+        // (latest-wins) until a valid width can consume it.
+        if !(width.is_finite() && width > 0.0) {
+            return false;
+        }
         let Some(x) = self.pending_x.take() else {
             return false;
         };
-        assert!(
-            width.is_finite() && width > 0.0,
-            "split width must be positive"
-        );
         let usable = (width - SPLITTER_WIDTH).max(1.0);
         let min = MIN_PANE_WIDTH.min(usable / 2.0);
         let ratio = x.clamp(min, usable - min) / usable;

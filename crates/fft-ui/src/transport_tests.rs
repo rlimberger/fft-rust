@@ -184,3 +184,18 @@ fn queue_without_begin_is_ignored() {
     t.queue_scrub(50.0, 0.0, 100.0, 0, 100);
     assert!(t.take_coalesced_seek().is_none());
 }
+
+#[test]
+fn format_ct_clock_out_of_range_soft_fails() {
+    assert_eq!(
+        format_zone_clock_ns(i128::MAX, "America/Chicago"),
+        "--:--:--"
+    );
+}
+
+#[test]
+fn session_open_far_future_trade_date_soft_fails() {
+    // u32::MAX civil year overflows jiff i16; soft-fail to (0,1), not panic.
+    assert_eq!(session_open_ns(u32::MAX), 0);
+    assert_eq!(session_range_ns(u32::MAX), (0, 1));
+}

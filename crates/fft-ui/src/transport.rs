@@ -3,10 +3,16 @@
 //! No GPUI, no engine I/O. Shell maps [`TransportCommand`] → [`fft_engine::EngineCmd`]
 //! and drains scrub seeks once per frame (latest-wins).
 
-use jiff::Timestamp;
+use std::sync::atomic::AtomicBool;
+
 use jiff::civil::Date;
 
 use crate::prefs::Prefs;
+
+#[path = "transport_clock.rs"]
+mod transport_clock;
+use transport_clock::{CT, warn_once};
+pub use transport_clock::{ensure_tzdb_available, format_zone_clock_ns};
 
 /// Fixed speed ladder (PRD speeds via `[` / `]`).
 pub const SPEED_LADDER: &[f64] = &[0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 64.0];
@@ -25,8 +31,6 @@ pub const TRANSPORT_H: f32 = 28.0;
 
 /// `l` placeholder until M6 GoLive.
 pub const GO_LIVE_HINT: &str = "go-live: M6";
-
-const CT: &str = "America/Chicago";
 
 /// Engine-facing commands produced by transport input (no `GoLive`).
 #[derive(Debug, Clone, PartialEq)]
@@ -339,6 +343,10 @@ fn ordered_range(first: u64, last: u64) -> (u64, u64) {
 /// through +24 h (next Globex open). Matches `fft-ingest::session`.
 pub fn session_range_ns(trade_date_days: u32) -> (u64, u64) {
     let open = session_open_ns(trade_date_days);
+    // Soft-fail sentinel from `session_open_ns` (and pre-epoch opens).
+    if open == 0 {
+        return (0, 1);
+    }
     let close = open
         .checked_add(86_400 * 1_000_000_000)
         .expect("fft-ui: session close overflow");
@@ -346,42 +354,88 @@ pub fn session_range_ns(trade_date_days: u32) -> (u64, u64) {
 }
 
 /// 17:00 America/Chicago of the calendar day before `trade_date_days`, as UTC ns.
+///
+/// Contract: `trade_date_days > 0` stays an assert. Environmental tz/date failures
+/// soft-fail to `(0)` with a loud once-per-cause warning (callers use `(0,1)` range).
 pub fn session_open_ns(trade_date_days: u32) -> u64 {
     assert!(
         trade_date_days > 0,
         "trade date must follow Unix epoch day zero"
     );
+    ensure_tzdb_available();
+    static WARNED: AtomicBool = AtomicBool::new(false);
     // jiff's from_unix_epoch_day is crate-private; use our civil_from_days pair.
     let (year, month, day) = crate::datetime::civil_from_days(i64::from(trade_date_days));
-    let year = i16::try_from(year)
-        .unwrap_or_else(|_| panic!("fft-ui: trade_date year {year} out of jiff range"));
-    let month = i8::try_from(month).expect("fft-ui: month fits i8");
-    let day = i8::try_from(day).expect("fft-ui: day fits i8");
-    let date = Date::new(year, month, day)
-        .unwrap_or_else(|err| panic!("fft-ui: invalid trade_date {trade_date_days}: {err}"));
-    let prior = date
-        .yesterday()
-        .unwrap_or_else(|err| panic!("fft-ui: no day before {date}: {err}"));
-    let zoned = prior
-        .at(17, 0, 0, 0)
-        .in_tz(CT)
-        .unwrap_or_else(|err| panic!("fft-ui: cannot zone {prior} 17:00 {CT}: {err}"));
+    let Ok(year) = i16::try_from(year) else {
+        warn_once(
+            &WARNED,
+            format!(
+                "fft-ui: WARNING trade_date year {year} out of jiff range; scrub range soft-fails to (0,1)"
+            ),
+        );
+        return 0;
+    };
+    let Ok(month) = i8::try_from(month) else {
+        warn_once(
+            &WARNED,
+            format!(
+                "fft-ui: WARNING trade_date month {month} invalid; scrub range soft-fails to (0,1)"
+            ),
+        );
+        return 0;
+    };
+    let Ok(day) = i8::try_from(day) else {
+        warn_once(
+            &WARNED,
+            format!(
+                "fft-ui: WARNING trade_date day {day} invalid; scrub range soft-fails to (0,1)"
+            ),
+        );
+        return 0;
+    };
+    let Ok(date) = Date::new(year, month, day) else {
+        warn_once(
+            &WARNED,
+            format!(
+                "fft-ui: WARNING invalid trade_date {trade_date_days}; scrub range soft-fails to (0,1)"
+            ),
+        );
+        return 0;
+    };
+    let Ok(prior) = date.yesterday() else {
+        warn_once(
+            &WARNED,
+            format!("fft-ui: WARNING no day before {date}; scrub range soft-fails to (0,1)"),
+        );
+        return 0;
+    };
+    let Ok(zoned) = prior.at(17, 0, 0, 0).in_tz(CT) else {
+        warn_once(
+            &WARNED,
+            format!(
+                "fft-ui: WARNING cannot zone {prior} 17:00 {CT}; scrub range soft-fails to (0,1)"
+            ),
+        );
+        return 0;
+    };
     let ns = zoned.timestamp().as_nanosecond();
-    u64::try_from(ns).unwrap_or_else(|_| panic!("fft-ui: session open {zoned} before epoch"))
+    match u64::try_from(ns) {
+        Ok(ns) => ns,
+        Err(_) => {
+            warn_once(
+                &WARNED,
+                format!(
+                    "fft-ui: WARNING session open {zoned} before epoch; scrub range soft-fails to (0,1)"
+                ),
+            );
+            0
+        }
+    }
 }
 
 /// Format `applied_ts` (UTC ns) as America/Chicago `HH:MM:SS`.
 pub fn format_ct_clock(ts_ns: u64) -> String {
-    if ts_ns == 0 {
-        return "--:--:--".to_string();
-    }
-    let ts = Timestamp::from_nanosecond(i128::from(ts_ns))
-        .unwrap_or_else(|err| panic!("fft-ui: applied_ts {ts_ns} outside jiff range: {err}"));
-    let zoned = ts
-        .in_tz(CT)
-        .unwrap_or_else(|err| panic!("fft-ui: tz database missing {CT}: {err}"));
-    let t = zoned.time();
-    format!("{:02}:{:02}:{:02}", t.hour(), t.minute(), t.second())
+    format_zone_clock_ns(i128::from(ts_ns), CT)
 }
 
 /// Format speed for the strip label (`×1`, `×0.25`, …).

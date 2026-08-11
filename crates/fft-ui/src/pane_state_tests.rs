@@ -404,3 +404,25 @@ fn automatic_center_stays_inside_navigation_range() {
     );
     assert_eq!(state.center, None);
 }
+
+#[test]
+fn effective_mp_width_zero_viewport_is_degenerate() {
+    let mut state = PaneState::default();
+    assert_eq!(state.effective_mp_width(0.0), 1.0);
+    assert_eq!(state.effective_mp_width(-40.0), 1.0);
+    assert_eq!(state.effective_mp_width(f32::NAN), 1.0);
+    state.toggle_dom();
+    assert_eq!(state.effective_mp_width(0.0), 1.0);
+}
+
+#[test]
+fn splitter_consume_zero_width_is_noop() {
+    let mut split = SplitterState::default();
+    split.begin(250.0);
+    split.queue(400.0);
+    assert!(!split.consume(0.0));
+    assert!(!split.consume(-1.0));
+    assert!(!split.consume(f32::NAN));
+    // pending remains until a valid width arrives
+    assert!(split.consume(1_000.0));
+}

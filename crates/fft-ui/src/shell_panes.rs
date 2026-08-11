@@ -155,7 +155,8 @@ pub(crate) fn mp_pane(
 }
 
 struct GeometryCorrectMp {
-    profile: Option<MarketProfile>,
+    /// Kept across GPUI remeasure passes — `request_layout` may run more than once.
+    profile: MarketProfile,
     sessions: usize,
     panes: Rc<RefCell<PaneState>>,
     scale: f32,
@@ -169,11 +170,18 @@ impl GeometryCorrectMp {
         scale: f32,
     ) -> Self {
         Self {
-            profile: Some(profile),
+            profile,
             sessions,
             panes,
             scale,
         }
+    }
+
+    fn build_child(&self, panes: &PaneState) -> AnyElement {
+        self.profile
+            .clone()
+            .with_pan_zoom(panes.mp_pan_px, panes.mp_zoom)
+            .into_any_element()
     }
 }
 
@@ -214,12 +222,7 @@ impl Element for GeometryCorrectMp {
             );
             panes.reconcile_mp_pan(layout.content_width, layout.strip_viewport.w);
         }
-        let mut child = self
-            .profile
-            .take()
-            .expect("GeometryCorrectMp layout requested once")
-            .with_pan_zoom(panes.mp_pan_px, panes.mp_zoom)
-            .into_any_element();
+        let mut child = self.build_child(&panes);
         drop(panes);
         let child_layout = child.request_layout(window, cx);
         (child_layout, GeometryCorrectMpState { child })
@@ -380,5 +383,29 @@ fn scroll_delta_y(delta: ScrollDelta) -> f32 {
     match delta {
         ScrollDelta::Lines(delta) => delta.y,
         ScrollDelta::Pixels(delta) => f32::from(delta.y),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::glyph_cache::GlyphCache;
+    use crate::theme::Palette;
+
+    #[test]
+    fn geometry_correct_mp_keeps_profile_across_layouts() {
+        let profile = MarketProfile::new(
+            Arc::new(RenderSnapshot::default()),
+            None,
+            1,
+            Rc::new(RefCell::new(GlyphCache::default())),
+            Rc::new(Palette::mocha()),
+            1.0,
+        );
+        let panes = Rc::new(RefCell::new(PaneState::default()));
+        let correct = GeometryCorrectMp::new(profile, 0, Rc::clone(&panes), 1.0);
+        // Re-layout must not consume the profile (GPUI may request_layout twice).
+        let _child1 = correct.build_child(&panes.borrow());
+        let _child2 = correct.build_child(&panes.borrow());
     }
 }

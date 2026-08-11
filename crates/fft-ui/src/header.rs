@@ -6,12 +6,11 @@ use std::time::{Duration, Instant};
 
 use fft_engine::RenderSnapshot;
 use gpui::{AnyElement, div, prelude::*, px};
-use jiff::Timestamp;
 
 use crate::datetime::civil_from_days;
 use crate::mp_view::display_session;
 use crate::theme::Palette;
-use crate::transport::TRANSPORT_H;
+use crate::transport::{TRANSPORT_H, format_zone_clock_ns};
 
 const NY: &str = "America/New_York";
 const PAD_X: f32 = 8.0;
@@ -46,23 +45,15 @@ fn rolling_frame_count(frames: &mut VecDeque<Instant>, now: Instant, window: Dur
     frames.len()
 }
 
-/// America/New_York event-time clock. Zero means no applied event.
+/// America/New_York event-time clock. Zero / out-of-range ⇒ `--:--:--`.
 pub fn format_ny_clock(ts_ns: u64) -> String {
-    if ts_ns == 0 {
-        return "--:--:--".to_string();
-    }
-    let ts = Timestamp::from_nanosecond(i128::from(ts_ns))
-        .unwrap_or_else(|err| panic!("fft-ui: applied_ts {ts_ns} outside jiff range: {err}"));
-    let zoned = ts
-        .in_tz(NY)
-        .unwrap_or_else(|err| panic!("fft-ui: tz database missing {NY}: {err}"));
-    let time = zoned.time();
-    format!(
-        "{:02}:{:02}:{:02}",
-        time.hour(),
-        time.minute(),
-        time.second()
-    )
+    format_zone_clock_ns(i128::from(ts_ns), NY)
+}
+
+/// Test seam for out-of-range i128 timestamps (u64 always fits jiff).
+#[cfg(test)]
+pub(crate) fn format_ny_clock_ns(ts_ns: i128) -> String {
+    format_zone_clock_ns(ts_ns, NY)
 }
 
 /// Contract slot: symbol from the current source header, else `--`, plus trade date.
@@ -152,6 +143,13 @@ mod tests {
     #[test]
     fn ny_clock_is_empty_without_applied_event() {
         assert_eq!(format_ny_clock(0), "--:--:--");
+    }
+
+    #[test]
+    fn ny_clock_out_of_range_soft_fails() {
+        // u64 always fits jiff; exercise the i128 seam used by paint soft-fail.
+        assert_eq!(format_ny_clock_ns(i128::MAX), "--:--:--");
+        assert_eq!(format_ny_clock_ns(i128::MIN), "--:--:--");
     }
 
     #[test]

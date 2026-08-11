@@ -1,5 +1,7 @@
 //! DOM ladder paint helpers (split from `dom_ladder` to stay under ~500 lines).
 
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
 use gpui::{
     App, BorderStyle, Bounds, DispatchPhase, MouseMoveEvent, Pixels, Window, fill, outline, point,
     px, size,
@@ -13,6 +15,20 @@ use crate::layout::{
     ColRect, column_rects, depth_block_width, header_h, is_inside_market, row_h, row_top_y,
 };
 use crate::theme::Palette;
+
+fn note_shaped_line_paint_failure(surface: &'static str) {
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    if WARNED
+        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
+    {
+        eprintln!(
+            "fft: WARNING {surface} shaped line paint failed (count={n}); skipping run, frame continues"
+        );
+    }
+}
 
 fn max_side_sizes(rows: &[DomViewRow]) -> (u64, u64, u64) {
     let mut max_bid = 0u64;
@@ -152,7 +168,7 @@ pub(crate) fn paint(
 
     let line_height = px(rh - 2.0 * scale);
     for prepared in prepaint.texts.drain(..) {
-        prepared
+        if prepared
             .line
             .paint(
                 prepared.origin,
@@ -162,11 +178,14 @@ pub(crate) fn paint(
                 window,
                 cx,
             )
-            .expect("fft: shaped line paint failed");
+            .is_err()
+        {
+            note_shaped_line_paint_failure("DOM");
+        }
     }
     let hover_line_height = px(rh - 4.0 * scale);
     for prepared in prepaint.hover_texts.drain(..) {
-        prepared
+        if prepared
             .line
             .paint(
                 prepared.origin,
@@ -176,7 +195,10 @@ pub(crate) fn paint(
                 window,
                 cx,
             )
-            .expect("fft: hover readout paint failed");
+            .is_err()
+        {
+            note_shaped_line_paint_failure("DOM hover");
+        }
     }
 
     // GPUI does not auto-repaint on mouse-move; refresh only when the
