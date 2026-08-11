@@ -1,6 +1,54 @@
-//! Fractional pointer motion coalescing for pane panning.
+//! Fractional pointer motion coalescing for pane panning, plus DOM hover-row math.
 
 use crate::mp_layout::{AXIS_DOMINANCE_PX, DragAxis, classify_drag_axis};
+
+/// Map a window-space pointer y onto a visible body row index from the top.
+///
+/// `origin_y` is the ladder element's top; body rows start at
+/// `origin_y + header_h(scale)`. Returns `None` in the header, below the body,
+/// or outside `[0, visible_rows)`.
+pub fn hover_row_from_y(
+    window_y: f32,
+    origin_y: f32,
+    scale: f32,
+    visible_rows: usize,
+) -> Option<usize> {
+    use crate::layout::{header_h, row_h};
+
+    assert!(
+        window_y.is_finite() && origin_y.is_finite() && scale.is_finite(),
+        "DOM hover geometry must be finite"
+    );
+    assert!(scale > 0.0, "DOM hover scale must be positive");
+    if visible_rows == 0 {
+        return None;
+    }
+    let hh = header_h(scale);
+    let rh = row_h(scale);
+    let local_y = window_y - origin_y;
+    if local_y < hh {
+        return None;
+    }
+    let from_top = ((local_y - hh) / rh).floor() as isize;
+    if from_top < 0 {
+        return None;
+    }
+    let from_top = from_top as usize;
+    if from_top >= visible_rows {
+        None
+    } else {
+        Some(from_top)
+    }
+}
+
+/// Convert a from-top hover index into an ascending-price `rows[row_range]` index.
+pub fn hover_row_index(row_range: &std::ops::Range<usize>, from_top: usize) -> Option<usize> {
+    let count = row_range.end.saturating_sub(row_range.start);
+    if from_top >= count {
+        return None;
+    }
+    Some(row_range.start + (count - 1 - from_top))
+}
 
 /// Result of one pointer-move sample during an active drag.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -131,8 +179,33 @@ impl RowAccumulator {
 
 #[cfg(test)]
 mod tests {
-    use super::{DomInput, PaneDrag};
+    use super::{DomInput, PaneDrag, hover_row_from_y, hover_row_index};
     use crate::mp_layout::DragAxis;
+
+    #[test]
+    fn hover_row_skips_header_and_respects_scale() {
+        // scale 1: header 22, row 18; origin_y = 100
+        assert_eq!(hover_row_from_y(110.0, 100.0, 1.0, 5), None);
+        assert_eq!(hover_row_from_y(122.0, 100.0, 1.0, 5), Some(0));
+        assert_eq!(hover_row_from_y(139.9, 100.0, 1.0, 5), Some(0));
+        assert_eq!(hover_row_from_y(140.0, 100.0, 1.0, 5), Some(1));
+        assert_eq!(
+            hover_row_from_y(100.0 + 22.0 + 18.0 * 5.0, 100.0, 1.0, 5),
+            None
+        );
+        // scale 2 geometry (header/row doubled)
+        assert_eq!(hover_row_from_y(44.0, 0.0, 2.0, 3), Some(0));
+        assert_eq!(hover_row_from_y(80.0, 0.0, 2.0, 3), Some(1));
+        assert_eq!(hover_row_from_y(43.9, 0.0, 2.0, 3), None);
+    }
+
+    #[test]
+    fn hover_row_index_maps_descending_window() {
+        assert_eq!(hover_row_index(&(2..6), 0), Some(5));
+        assert_eq!(hover_row_index(&(2..6), 3), Some(2));
+        assert_eq!(hover_row_index(&(2..6), 4), None);
+        assert_eq!(hover_row_index(&(0..0), 0), None);
+    }
 
     #[test]
     fn one_drag_row_is_one_price_row() {

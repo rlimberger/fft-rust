@@ -7,14 +7,16 @@ use std::sync::Arc;
 
 use fft_engine::RenderSnapshot;
 use gpui::{
-    App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement, LayoutId,
-    Pixels, Point, ShapedLine, Style, TextAlign, Window, fill, point, px, relative, size,
+    App, BorderStyle, Bounds, DispatchPhase, Element, ElementId, GlobalElementId,
+    InspectorElementId, IntoElement, LayoutId, MouseMoveEvent, Pixels, Point, ShapedLine, Style,
+    TextAlign, Window, fill, outline, point, px, relative, size,
 };
 
 use crate::dom_badges::{
-    IcebergSide, format_reload_count, iceberg_badge_bounds, iceberg_badge_visible,
-    reload_count_text_origin,
+    HoverReadoutBoxArgs, IcebergSide, format_hover_readout, format_reload_count, hover_readout_box,
+    iceberg_badge_bounds, iceberg_badge_visible, reload_count_text_origin,
 };
+use crate::dom_input::hover_row_from_y;
 use crate::dom_view::{AggregatedDom, DomView, DomViewRow};
 use crate::glyph_cache::GlyphCache;
 use crate::layout::{
@@ -68,6 +70,9 @@ struct PreparedText {
 /// Prepaint cache for shaped glyph runs (associated type on [`Element`]; must be public).
 pub struct Prepaint {
     texts: Vec<PreparedText>,
+    hover_texts: Vec<PreparedText>,
+    hover_box: Option<Bounds<Pixels>>,
+    hovered_from_top: Option<usize>,
     dom: AggregatedDom,
     row_range: Range<usize>,
 }
@@ -144,6 +149,68 @@ fn paint_iceberg_badge(
         Bounds::new(point(px(x), px(y)), size(px(w), px(h))),
         color,
     ));
+}
+
+struct HoverReadoutArgs<'a> {
+    texts: &'a mut Vec<PreparedText>,
+    glyph_cache: &'a mut GlyphCache,
+    window: &'a mut Window,
+    row: &'a DomViewRow,
+    origin_x: f32,
+    origin_y: f32,
+    width: f32,
+    height: f32,
+    from_top: usize,
+    scale: f32,
+    color: gpui::Hsla,
+}
+
+fn prepare_hover_readout(args: HoverReadoutArgs<'_>) -> Bounds<Pixels> {
+    let HoverReadoutArgs {
+        texts,
+        glyph_cache,
+        window,
+        row,
+        origin_x,
+        origin_y,
+        width,
+        height,
+        from_top,
+        scale,
+        color,
+    } = args;
+    let font_size = px(11.0 * scale);
+    let (line1, line2) = format_hover_readout(row);
+    let shaped1 = glyph_cache.get_or_shape(window, line1, color, font_size);
+    let shaped2 = glyph_cache.get_or_shape(window, line2, color, font_size);
+    let content_w = f32::from(shaped1.width()).max(f32::from(shaped2.width()));
+    let line_h = row_h(scale) - 4.0 * scale;
+    let content_h = line_h * 2.0;
+    let (bx, by, bw, bh) = hover_readout_box(HoverReadoutBoxArgs {
+        origin_x,
+        origin_y,
+        width,
+        height,
+        from_top,
+        scale,
+        content_w,
+        content_h,
+    });
+    let pad = 4.0 * scale;
+    let text_w = (bw - pad * 2.0).max(0.0);
+    texts.push(PreparedText {
+        line: shaped1,
+        origin: point(px(bx + pad), px(by + pad)),
+        align_width: px(text_w),
+        align: TextAlign::Left,
+    });
+    texts.push(PreparedText {
+        line: shaped2,
+        origin: point(px(bx + pad), px(by + pad + line_h)),
+        align_width: px(text_w),
+        align: TextAlign::Left,
+    });
+    Bounds::new(point(px(bx), px(by)), size(px(bw), px(bh)))
 }
 
 impl Element for DomLadder {
@@ -236,7 +303,7 @@ impl Element for DomLadder {
 
             // Hidden volume stays off the VOL column — too tight at scale 1
             // (COL_FRACTIONS[1]=0.14 already hosts session volume + depth bar;
-            // a secondary right-aligned figure collides). Hover/tooltip track owns it.
+            // a secondary right-aligned figure collides). Hover track owns it.
             if iceberg_badge_visible(row.refresh_bid_count) {
                 push_reload_count(ReloadCountArgs {
                     texts: &mut texts,
@@ -267,9 +334,36 @@ impl Element for DomLadder {
             }
         }
 
+        let mouse = window.mouse_position();
+        let hovered_from_top = if bounds.contains(&mouse) {
+            hover_row_from_y(f32::from(mouse.y), origin_y, scale, slice.len())
+        } else {
+            None
+        };
+        let mut hover_texts = Vec::new();
+        let hover_box = hovered_from_top.and_then(|from_top| {
+            let row = slice.get(slice.len().checked_sub(1 + from_top)?)?;
+            Some(prepare_hover_readout(HoverReadoutArgs {
+                texts: &mut hover_texts,
+                glyph_cache: &mut glyph_cache,
+                window,
+                row,
+                origin_x,
+                origin_y,
+                width,
+                height,
+                from_top,
+                scale,
+                color: text,
+            }))
+        });
+
         drop(glyph_cache);
         Prepaint {
             texts,
+            hover_texts,
+            hover_box,
+            hovered_from_top,
             dom,
             row_range,
         }
@@ -298,11 +392,14 @@ impl Element for DomLadder {
         let origin_x = f32::from(bounds.origin.x);
         let origin_y = f32::from(bounds.origin.y);
         let width = f32::from(bounds.size.width);
+        let height = f32::from(bounds.size.height);
         let cols = column_rects(origin_x, width);
         let slice = &dom.rows[prepaint.row_range.clone()];
         let (max_bid, max_ask, max_vol) = max_side_sizes(slice);
         let best_bid = dom.best_bid.map(|price| price.0);
         let best_ask = dom.best_ask.map(|price| price.0);
+        let visible_count = slice.len();
+        let painted_hover = prepaint.hovered_from_top;
 
         for (from_top, row) in slice.iter().rev().enumerate() {
             let y = row_top_y(origin_y, from_top, scale);
@@ -373,6 +470,18 @@ impl Element for DomLadder {
             ));
         }
 
+        if let Some(from_top) = painted_hover {
+            let y = row_top_y(origin_y, from_top, scale);
+            let row_bounds = Bounds::new(
+                point(bounds.origin.x, px(y)),
+                size(bounds.size.width, px(rh)),
+            );
+            window.paint_quad(outline(row_bounds, palette.overlay, BorderStyle::default()));
+            if let Some(box_bounds) = prepaint.hover_box {
+                window.paint_quad(fill(box_bounds, palette.surface));
+            }
+        }
+
         let line_height = px(rh - 2.0 * scale);
         for prepared in prepaint.texts.drain(..) {
             prepared
@@ -387,5 +496,39 @@ impl Element for DomLadder {
                 )
                 .expect("fft: shaped line paint failed");
         }
+        let hover_line_height = px(rh - 4.0 * scale);
+        for prepared in prepaint.hover_texts.drain(..) {
+            prepared
+                .line
+                .paint(
+                    prepared.origin,
+                    hover_line_height,
+                    prepared.align,
+                    Some(prepared.align_width),
+                    window,
+                    cx,
+                )
+                .expect("fft: hover readout paint failed");
+        }
+
+        // GPUI does not auto-repaint on mouse-move; refresh only when the
+        // hovered body-row index changes (including enter/leave). No entity.update.
+        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, _cx| {
+            if phase != DispatchPhase::Bubble {
+                return;
+            }
+            let x = f32::from(event.position.x);
+            let y = f32::from(event.position.y);
+            let over =
+                x >= origin_x && x < origin_x + width && y >= origin_y && y < origin_y + height;
+            let next = if over {
+                hover_row_from_y(y, origin_y, scale, visible_count)
+            } else {
+                None
+            };
+            if next != painted_hover {
+                window.refresh();
+            }
+        });
     }
 }

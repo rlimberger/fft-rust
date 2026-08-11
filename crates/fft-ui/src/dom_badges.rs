@@ -99,6 +99,78 @@ pub fn row_iceberg_sides(row: &DomViewRow) -> (bool, bool) {
     )
 }
 
+/// Compact per-price hover readout: orders, contracts, hidden, reload count.
+///
+/// Two lines, bid then ask:
+/// `B {ord}ord {sz} hid{h} ×{r}` / `A {ord}ord {sz} hid{h} ×{r}`.
+#[inline]
+pub fn format_hover_readout(row: &DomViewRow) -> (String, String) {
+    (
+        format_hover_side(
+            'B',
+            row.bid_orders,
+            row.bid_size,
+            row.refresh_bid_hidden,
+            row.refresh_bid_count,
+        ),
+        format_hover_side(
+            'A',
+            row.ask_orders,
+            row.ask_size,
+            row.refresh_ask_hidden,
+            row.refresh_ask_count,
+        ),
+    )
+}
+
+#[inline]
+fn format_hover_side(side: char, orders: u32, size: u64, hidden: u64, reload: u32) -> String {
+    format!("{side} {orders}ord {size} hid{hidden} ×{reload}")
+}
+
+/// Geometry inputs for [`hover_readout_box`].
+#[derive(Clone, Copy, Debug)]
+pub struct HoverReadoutBoxArgs {
+    pub origin_x: f32,
+    pub origin_y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub from_top: usize,
+    pub scale: f32,
+    pub content_w: f32,
+    pub content_h: f32,
+}
+
+/// Right-anchored hover readout box `(x, y, w, h)` for a row.
+///
+/// Width grows with shaped content; height is two line slots. Clamped into the
+/// ladder body so the last visible rows still show the full box.
+pub fn hover_readout_box(args: HoverReadoutBoxArgs) -> (f32, f32, f32, f32) {
+    use crate::layout::{header_h, row_top_y};
+
+    let HoverReadoutBoxArgs {
+        origin_x,
+        origin_y,
+        width,
+        height,
+        from_top,
+        scale,
+        content_w,
+        content_h,
+    } = args;
+    let pad = 4.0 * scale;
+    let box_w = (content_w + pad * 2.0).min(width - pad * 2.0).max(0.0);
+    let box_h = content_h + pad * 2.0;
+    let row_y = row_top_y(origin_y, from_top, scale);
+    let ladder_bottom = origin_y + height;
+    let x = (origin_x + width - box_w - pad).max(origin_x + pad);
+    let mut y = row_y;
+    if y + box_h > ladder_bottom {
+        y = (ladder_bottom - box_h).max(origin_y + header_h(scale));
+    }
+    (x, y, box_w, box_h)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,5 +227,45 @@ mod tests {
         let origin =
             reload_count_text_origin(IcebergSide::Ask, wide, bx, bw, 0.0, 1.0, 12.0).unwrap();
         assert!(origin.2 >= 12.0);
+    }
+
+    #[test]
+    fn hover_readout_format_is_compact_two_lines() {
+        let row = DomViewRow {
+            bid_orders: 3,
+            bid_size: 12,
+            refresh_bid_hidden: 40,
+            refresh_bid_count: 2,
+            ask_orders: 1,
+            ask_size: 5,
+            refresh_ask_hidden: 0,
+            refresh_ask_count: 0,
+            ..Default::default()
+        };
+        assert_eq!(
+            format_hover_readout(&row),
+            ("B 3ord 12 hid40 ×2".into(), "A 1ord 5 hid0 ×0".into())
+        );
+    }
+
+    #[test]
+    fn hover_readout_box_is_right_anchored() {
+        let (x, y, w, h) = hover_readout_box(HoverReadoutBoxArgs {
+            origin_x: 100.0,
+            origin_y: 50.0,
+            width: 200.0,
+            height: 300.0,
+            from_top: 0,
+            scale: 1.0,
+            content_w: 80.0,
+            content_h: 28.0,
+        });
+        assert!((w - 88.0).abs() < 1e-4, "pad 4*2 around content");
+        assert!((x - (100.0 + 200.0 - 88.0 - 4.0)).abs() < 1e-4);
+        assert!(
+            (y - 50.0 - 22.0).abs() < 1e-4,
+            "first body row under header"
+        );
+        assert!((h - 36.0).abs() < 1e-4);
     }
 }

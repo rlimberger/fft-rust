@@ -41,6 +41,10 @@ pub struct DomPriceRow {
     pub ask_added_5s: u32,
     /// Ask pulls in the five-second flow window.
     pub ask_cancelled_5s: u32,
+    /// Resting bid order count at this price (`LevelView::order_count`, O(1)).
+    pub bid_orders: u32,
+    /// Resting ask order count at this price (`LevelView::order_count`, O(1)).
+    pub ask_orders: u32,
     /// Native-refresh badges.
     pub refresh_agg: PriceRefreshRender,
 }
@@ -238,6 +242,8 @@ pub fn build_snapshot(
             bid_cancelled_5s: bid.cancelled_5s,
             ask_added_5s: ask.added_5s,
             ask_cancelled_5s: ask.cancelled_5s,
+            bid_orders: bid.order_count,
+            ask_orders: ask.order_count,
             refresh_agg: PriceRefreshRender {
                 bid_count: bid_refresh.refresh_count,
                 ask_count: ask_refresh.refresh_count,

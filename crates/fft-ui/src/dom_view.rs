@@ -104,6 +104,10 @@ pub struct DomViewRow {
     pub price: Price,
     pub bid_size: u64,
     pub ask_size: u64,
+    /// Resting bid order count across the bucket.
+    pub bid_orders: u32,
+    /// Resting ask order count across the bucket.
+    pub ask_orders: u32,
     pub session_volume: u64,
     pub cb: u64,
     pub ca: u64,
@@ -219,6 +223,8 @@ fn merge_row(target: &mut DomViewRow, source: &DomPriceRow) {
     }
     add!(target.bid_size, source.bid_size, "bid_size");
     add!(target.ask_size, source.ask_size, "ask_size");
+    add!(target.bid_orders, source.bid_orders, "bid_orders");
+    add!(target.ask_orders, source.ask_orders, "ask_orders");
     add!(
         target.session_volume,
         source.session_volume,
@@ -289,6 +295,8 @@ mod tests {
         row.price.0 = price;
         row.bid_size = value;
         row.ask_size = value;
+        row.bid_orders = u32::try_from(value).unwrap();
+        row.ask_orders = u32::try_from(value).unwrap();
         row.session_volume = value;
         row.cb = value;
         row.ca = value;
@@ -341,8 +349,59 @@ mod tests {
         );
         assert_eq!((first.cb, first.ca), (2, 2));
         assert_eq!((first.bid_added_5s, first.ask_cancelled_5s), (2, 2));
+        assert_eq!((first.bid_orders, first.ask_orders), (2, 2));
         assert_eq!((first.refresh_bid_count, first.refresh_ask_count), (2, 2));
         assert_eq!((first.refresh_bid_hidden, first.refresh_ask_hidden), (2, 2));
+    }
+
+    #[test]
+    fn aggregates_order_counts_across_scales() {
+        let mut source = DomRenderState::default();
+        source.tick_size.0 = 5;
+        source.rows = vec![
+            {
+                let mut r = DomPriceRow::default();
+                r.price.0 = 0;
+                r.bid_orders = 1;
+                r.ask_orders = 2;
+                r
+            },
+            {
+                let mut r = DomPriceRow::default();
+                r.price.0 = 5;
+                r.bid_orders = 3;
+                r.ask_orders = 4;
+                r
+            },
+            {
+                let mut r = DomPriceRow::default();
+                r.price.0 = 10;
+                r.bid_orders = 5;
+                r.ask_orders = 6;
+                r
+            },
+            {
+                let mut r = DomPriceRow::default();
+                r.price.0 = 15;
+                r.bid_orders = 7;
+                r.ask_orders = 8;
+                r
+            },
+        ];
+        let scale2 = aggregate_rows(&source, 2);
+        assert_eq!(
+            (scale2.rows[0].bid_orders, scale2.rows[0].ask_orders),
+            (4, 6)
+        );
+        assert_eq!(
+            (scale2.rows[1].bid_orders, scale2.rows[1].ask_orders),
+            (12, 14)
+        );
+        let scale4 = aggregate_rows(&source, 4);
+        assert_eq!(
+            (scale4.rows[0].bid_orders, scale4.rows[0].ask_orders),
+            (16, 20)
+        );
     }
 
     #[test]
