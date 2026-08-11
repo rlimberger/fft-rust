@@ -27,6 +27,13 @@ pub enum Source {
 pub enum EngineCmd {
     /// Replace the active replay or live source.
     SetSource(Source),
+    /// Async profile-only build of an earlier trade date (`docs/ENGINE.md` §2).
+    /// Path to a prior-day fftlog; the engine inserts the completed session into
+    /// `ProfileRenderState.sessions` keeping ascending trade-date order.
+    LoadPriorSession {
+        /// Path to the prior-day fftlog.
+        path: PathBuf,
+    },
     /// Start event-time-paced replay.
     Play,
     /// Pause replay.

@@ -2,10 +2,11 @@ use crate::command::{EngineCmd, Source};
 use crate::snapshot::{CoverageCounters, RenderSnapshot, SnapshotSlot, build_snapshot};
 use crate::watermarks::Watermarks;
 use fft_book::Book;
-use fft_core::EventKind;
-use fft_profile::MultiProfile;
+use fft_core::{EventKind, InstrumentMeta};
+use fft_profile::{MultiProfile, SessionProfile};
 use fft_replay::{ReplayError, ReplaySource};
 use std::fmt;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::thread::{self, JoinHandle};
@@ -13,6 +14,9 @@ use std::time::{Duration, Instant};
 
 const COMMAND_CAPACITY: usize = 64;
 const APPLY_BUDGET: Duration = Duration::from_millis(4);
+/// Time-budgeted slice for one prior-session build step (doctrine rule 4: time,
+/// never event counts). Interleaved with forward work so playback is never blocked.
+const PRIOR_BUILD_BUDGET: Duration = Duration::from_millis(2);
 const IDLE_WAIT: Duration = Duration::from_millis(10);
 
 /// Engine startup configuration.
@@ -48,6 +52,22 @@ pub struct EngineExit {
     pub coverage: CoverageCounters,
     /// Visible log-open warnings encountered while switching sources.
     pub source_warnings: Vec<String>,
+    /// Prior-session loads that were skipped with a loud stderr report
+    /// (`docs/ENGINE.md` §2 rule 3: missing file / wrong instrument / date ≥ current).
+    pub prior_skips: u64,
+    /// Prior sessions that completed and were inserted into the profile.
+    pub priors_completed: u64,
+}
+
+/// In-progress profile-only build of an earlier trade date (`docs/ENGINE.md` §2).
+/// Lives only on the engine thread; never published until complete.
+struct PriorBuild {
+    path: PathBuf,
+    source: ReplaySource,
+    /// Throwaway book used only as the apply target for stream/tail events.
+    /// Prior sessions are profile-only; the book is discarded on completion.
+    book: Book,
+    profile: MultiProfile,
 }
 
 /// API misuse before a command reaches the engine.
@@ -152,6 +172,10 @@ struct Runtime {
     source: Option<ReplaySource>,
     book: Option<Book>,
     profile: Option<MultiProfile>,
+    /// Current source instrument identity, used to validate prior-session loads.
+    source_meta: Option<InstrumentMeta>,
+    /// In-progress prior-day profile build; at most one at a time.
+    prior_build: Option<PriorBuild>,
     playing: bool,
     speed: f64,
     pace_event_origin: u64,
@@ -164,7 +188,9 @@ struct Runtime {
     publications: u64,
     seeks_executed: u64,
     source_warnings: Vec<String>,
-    source_path: Option<std::path::PathBuf>,
+    source_path: Option<PathBuf>,
+    prior_skips: u64,
+    priors_completed: u64,
 }
 
 impl Runtime {
@@ -176,6 +202,8 @@ impl Runtime {
             source: None,
             book: None,
             profile: None,
+            source_meta: None,
+            prior_build: None,
             playing: false,
             speed: 1.0,
             pace_event_origin: 0,
@@ -189,6 +217,8 @@ impl Runtime {
             seeks_executed: 0,
             source_warnings: Vec::new(),
             source_path: None,
+            prior_skips: 0,
+            priors_completed: 0,
         }
     }
 
@@ -197,7 +227,7 @@ impl Runtime {
         let mut shutdown = false;
         while !shutdown {
             if backlog.is_empty() {
-                match rx.recv_timeout(if self.playing {
+                match rx.recv_timeout(if self.playing || self.prior_build.is_some() {
                     Duration::from_millis(1)
                 } else {
                     IDLE_WAIT
@@ -219,6 +249,16 @@ impl Runtime {
             if self.playing && self.forward_work().unwrap_or_else(|e| replay_panic(e)) {
                 self.publish(0);
             }
+            // Prior builds advance in time-budgeted slices after forward work so
+            // playback latency is never blocked by a prior-day load (ENGINE.md §2).
+            if self.prior_build.is_some() {
+                let done = self
+                    .advance_prior_build()
+                    .unwrap_or_else(|e| replay_panic(e));
+                if done {
+                    self.finish_prior_build();
+                }
+            }
         }
         EngineExit {
             book_bytes: self.book.as_ref().map(Book::serialize_book),
@@ -228,6 +268,8 @@ impl Runtime {
             seeks_executed: self.seeks_executed,
             coverage: self.coverage,
             source_warnings: self.source_warnings,
+            prior_skips: self.prior_skips,
+            priors_completed: self.priors_completed,
         }
     }
 
@@ -246,20 +288,7 @@ impl Runtime {
         for command in commands {
             match command {
                 EngineCmd::SetSource(Source::Replay { path }) => {
-                    let source = ReplaySource::open(&path).unwrap_or_else(|e| replay_panic(e));
-                    self.source_warnings
-                        .extend(source.open_report().warnings.iter().cloned());
-                    let meta = source.meta().clone();
-                    let mut profile = MultiProfile::new(meta.min_price_increment);
-                    profile.begin_session(meta.trade_date);
-                    self.book = Some(Book::new(meta.min_price_increment));
-                    self.profile = Some(profile);
-                    self.source = Some(source);
-                    self.source_path = Some(path);
-                    self.playing = false;
-                    self.watermarks = Watermarks::default();
-                    self.coverage = CoverageCounters::default();
-                    self.applied_ts = 0;
+                    self.set_replay_source(path);
                     // ENGINE.md §4: a seek batched before this SetSource targeted the
                     // old source — drop it, and let seek generations restart.
                     selected_seek = None;
@@ -270,6 +299,9 @@ impl Runtime {
                         "fft-engine live source {:?} is unavailable before M6",
                         config.name
                     )
+                }
+                EngineCmd::LoadPriorSession { path } => {
+                    self.start_prior_build(path);
                 }
                 EngineCmd::Play => {
                     assert!(self.source.is_some(), "fft-engine Play without a source");
@@ -327,6 +359,208 @@ impl Runtime {
             }
         }
         false
+    }
+
+    /// `SetSource(Replay)`: drop any in-progress prior build; keep completed
+    /// priors iff the new source shares the trade date (`docs/ENGINE.md` §2 r4).
+    fn set_replay_source(&mut self, path: PathBuf) {
+        // In-progress prior build is always dropped on source switch.
+        self.prior_build = None;
+
+        let source = ReplaySource::open(&path).unwrap_or_else(|e| replay_panic(e));
+        self.source_warnings
+            .extend(source.open_report().warnings.iter().cloned());
+        let meta = source.meta().clone();
+
+        // Retain completed priors only when the trade date is unchanged.
+        let retained = match (&self.source_meta, self.profile.as_mut()) {
+            (Some(prev), Some(profile)) if prev.trade_date == meta.trade_date => {
+                profile.drain_prior_sessions()
+            }
+            _ => Vec::new(),
+        };
+
+        let mut profile = MultiProfile::new(meta.min_price_increment);
+        if !retained.is_empty() {
+            profile.seed_prior_sessions(retained);
+        }
+        profile.begin_session(meta.trade_date);
+        self.book = Some(Book::new(meta.min_price_increment));
+        self.profile = Some(profile);
+        self.source = Some(source);
+        self.source_meta = Some(meta);
+        self.source_path = Some(path);
+        self.playing = false;
+        self.watermarks = Watermarks::default();
+        self.coverage = CoverageCounters::default();
+        self.applied_ts = 0;
+    }
+
+    /// Begin a profile-only prior-session build. Errors (missing file, wrong
+    /// instrument, trade date ≥ current) are loud stderr + a counted skip —
+    /// never a panic of the forward path (`docs/ENGINE.md` §2 rule 3).
+    fn start_prior_build(&mut self, path: PathBuf) {
+        // A new LoadPriorSession replaces any in-progress build (UI issues
+        // oldest-first; mid-build replacement is still a drop, not a queue).
+        self.prior_build = None;
+
+        let Some(current_meta) = self.source_meta.as_ref() else {
+            self.skip_prior(
+                &path,
+                "no current source (LoadPriorSession requires SetSource first)",
+            );
+            return;
+        };
+
+        let mut source = match ReplaySource::open(&path) {
+            Ok(source) => source,
+            Err(err) => {
+                self.skip_prior(&path, &format!("open failed: {err}"));
+                return;
+            }
+        };
+        self.source_warnings
+            .extend(source.open_report().warnings.iter().cloned());
+
+        let prior_meta = source.meta().clone();
+        if prior_meta.instrument_id != current_meta.instrument_id
+            || prior_meta.symbol != current_meta.symbol
+        {
+            self.skip_prior(
+                &path,
+                &format!(
+                    "instrument mismatch: prior {}/{} vs current {}/{}",
+                    prior_meta.symbol,
+                    prior_meta.instrument_id,
+                    current_meta.symbol,
+                    current_meta.instrument_id
+                ),
+            );
+            return;
+        }
+        if prior_meta.trade_date >= current_meta.trade_date {
+            self.skip_prior(
+                &path,
+                &format!(
+                    "trade date {} is not earlier than current {}",
+                    prior_meta.trade_date, current_meta.trade_date
+                ),
+            );
+            return;
+        }
+        if self
+            .profile
+            .as_ref()
+            .is_some_and(|p| p.session(prior_meta.trade_date).is_some())
+        {
+            self.skip_prior(
+                &path,
+                &format!(
+                    "trade date {} already present in profile",
+                    prior_meta.trade_date
+                ),
+            );
+            return;
+        }
+
+        let (book, profile) = match source.prepare_prior_build() {
+            Ok(state) => state,
+            Err(err) => {
+                self.skip_prior(&path, &format!("checkpoint restore failed: {err}"));
+                return;
+            }
+        };
+
+        self.prior_build = Some(PriorBuild {
+            path,
+            source,
+            book,
+            profile,
+        });
+    }
+
+    fn skip_prior(&mut self, path: &std::path::Path, reason: &str) {
+        self.prior_skips += 1;
+        eprintln!(
+            "fft-engine LoadPriorSession skipped {}: {reason}",
+            path.display()
+        );
+    }
+
+    /// Advance the in-progress prior build under `PRIOR_BUILD_BUDGET`.
+    /// Returns `true` when the prior log is fully applied (ready to insert).
+    /// Does **not** touch watermarks or `CoverageCounters` (forward-flow only).
+    fn advance_prior_build(&mut self) -> std::result::Result<bool, ReplayError> {
+        let build = self
+            .prior_build
+            .as_mut()
+            .expect("advance_prior_build without a build");
+        // Large event ceiling; the time budget is the real stop condition.
+        let progress = build.source.apply_forward(
+            &mut build.book,
+            &mut build.profile,
+            usize::MAX,
+            PRIOR_BUILD_BUDGET,
+        )?;
+        Ok(progress.eof)
+    }
+
+    /// Insert the completed prior session and publish once. Complete-or-invisible:
+    /// no partial publications ever reached the slot.
+    fn finish_prior_build(&mut self) {
+        let build = self
+            .prior_build
+            .take()
+            .expect("finish_prior_build without a build");
+        let path = build.path;
+        // A prior log is a single trade-date session; take its completed profile.
+        let mut sessions = build.profile.sessions().to_vec();
+        if sessions.is_empty() {
+            self.skip_prior(&path, "prior log produced zero sessions");
+            return;
+        }
+        if sessions.len() > 1 {
+            // Loud but non-fatal: insert only the last (developing) session of the
+            // prior log — multi-day priors are not in the M4 UI contract.
+            eprintln!(
+                "fft-engine LoadPriorSession {}: prior log has {} sessions; using last only",
+                path.display(),
+                sessions.len()
+            );
+        }
+        let session: SessionProfile = sessions.pop().expect("non-empty");
+        let date = session.trade_date();
+
+        // Validate without holding a mutable borrow across skip_prior.
+        let reject = match self.profile.as_ref() {
+            None => Some("no current profile at completion".to_string()),
+            Some(profile) if profile.session(date).is_some() => {
+                Some(format!("trade date {date} already present at completion"))
+            }
+            Some(profile) => match profile.current() {
+                None => Some("no current session at completion".to_string()),
+                Some(current) if date >= current.trade_date() => Some(format!(
+                    "trade date {date} is not earlier than current {} at completion",
+                    current.trade_date()
+                )),
+                Some(_) => None,
+            },
+        };
+        if let Some(reason) = reject {
+            self.skip_prior(&path, &reason);
+            return;
+        }
+
+        self.profile
+            .as_mut()
+            .expect("validated present")
+            .insert_prior_session(session);
+        self.priors_completed += 1;
+        // One normal publication so the UI sees the new session
+        // (complete-or-invisible: never published partial).
+        if self.book.is_some() {
+            self.publish(0);
+        }
     }
 
     fn execute_seek(

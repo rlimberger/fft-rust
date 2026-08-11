@@ -27,6 +27,7 @@ mutates engine state. The UI thread never blocks on I/O or seeks.
 ```rust
 enum EngineCmd {
     SetSource(Source),          // Replay { path } | Live { config }
+    LoadPriorSession { path },  // async profile-only build of an earlier trade date
     Play,
     Pause,
     SetSpeed(f64),              // replay only; 0.0 < speed, go-live cancels it
@@ -35,6 +36,28 @@ enum EngineCmd {
     Shutdown,                   // engine flushes + closes the log, then exits
 }
 ```
+
+**Prior sessions (2026-08-11, René: "all prior sessions we have, async"):**
+`LoadPriorSession` builds the PROFILE-side state of an earlier trade date on the engine
+thread in **time-budgeted slices interleaved with forward work** — playback and input
+latency are never blocked (budgets in time, doctrine rule 4). Rules:
+
+1. Profile-only: prior days build no book, no flow, no refresh state. Fast path: when the
+   log carries CHECKPOINT frames, restore PROFILE/CVD/SESSION from the **last** checkpoint
+   and tail-apply; otherwise stream-apply trades under the slice budget.
+2. The command carries one path; the UI issues one command per prior day,
+   **oldest-first** (M4 spec). The engine inserts each completed session into
+   `ProfileRenderState.sessions` keeping ascending trade-date order; **the current
+   (replay/live) session is always `sessions.last()`**. `display_session`-style consumers
+   must select by recency, never `.first()`.
+3. A prior session becomes visible only when **complete** (no partial-day publications);
+   completion triggers one normal publication. Errors (missing file, wrong instrument,
+   trade date ≥ the current session's) are loud stderr + a counted skip, never a panic of
+   the forward path.
+4. `SetSource` drops any in-progress prior build but **keeps** completed prior sessions
+   when the new source's trade date is unchanged; otherwise it clears them.
+5. Snapshot budgets (§3.5) are unchanged and now include prior sessions: the 8 MiB heap
+   assert is the guard — a full week of ES sessions measures well under it.
 
 - Commands travel UI → engine on a **bounded** channel (capacity 64). Only `EngineCmd`
   crosses; no state ever flows UI → engine.

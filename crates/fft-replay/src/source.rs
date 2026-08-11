@@ -109,6 +109,41 @@ impl ReplaySource {
         self.applied_ts
     }
 
+    /// Profile-only prior-session setup (`docs/ENGINE.md` §2): restore the six
+    /// checkpoint sections from the **last** CHECKPOINT frame when present
+    /// (Book is returned as a throwaway apply target for the tail; profile is
+    /// what the engine keeps), otherwise start an empty session at frame zero.
+    /// The six-section restore contract is unchanged.
+    pub fn prepare_prior_build(&mut self) -> Result<(Book, MultiProfile)> {
+        if let Some(frame) = self.last_checkpoint() {
+            let sections = self.reader.read_checkpoint(frame)?;
+            let (book, profile) = restore_sections(&sections)?;
+            let header = self.reader.frame_header(frame)?;
+            self.applied_seq = header.last_seq;
+            self.applied_ts = header.last_ts;
+            self.reset_cursor(frame + 1);
+            Ok((book, profile))
+        } else {
+            let book = Book::new(self.reader.meta().min_price_increment);
+            let profile = initial_profile(self.reader.meta());
+            self.applied_seq = 0;
+            self.applied_ts = 0;
+            self.reset_cursor(0);
+            Ok((book, profile))
+        }
+    }
+
+    /// Index of the last CHECKPOINT frame, if any.
+    fn last_checkpoint(&self) -> Option<usize> {
+        self.reader
+            .index()
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, entry)| entry.kind == KIND_CHECKPOINT)
+            .map(|(index, _)| index)
+    }
+
     fn load_frame(&mut self) -> Result<bool> {
         while self.frame < self.reader.frame_count() {
             let frame = self.frame;

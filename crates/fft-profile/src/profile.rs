@@ -42,6 +42,84 @@ impl MultiProfile {
         ));
     }
 
+    /// Insert a **completed** earlier-dated session while keeping ascending
+    /// trade-date order. The current (replay/live) session remains last.
+    ///
+    /// Used by `EngineCmd::LoadPriorSession` after an offline prior-day build
+    /// finishes (`docs/ENGINE.md` §2). Panics if there is no current session,
+    /// if `session.trade_date()` is not strictly older than the current, if the
+    /// date already exists, or if the tick disagrees.
+    pub fn insert_prior_session(&mut self, session: SessionProfile) {
+        assert_eq!(
+            session.tick(),
+            self.tick,
+            "prior session tick {:?} disagrees with MultiProfile tick {:?}",
+            session.tick(),
+            self.tick
+        );
+        let current = self
+            .sessions
+            .last()
+            .expect("insert_prior_session requires a current session");
+        let date = session.trade_date();
+        assert!(
+            date < current.trade_date(),
+            "prior session {date} must be older than current {}",
+            current.trade_date()
+        );
+        match self
+            .sessions
+            .binary_search_by_key(&date, SessionProfile::trade_date)
+        {
+            Ok(_) => panic!("prior session {date} already present"),
+            Err(index) => {
+                // date < current ⇒ insertion index is strictly before last.
+                debug_assert!(index < self.sessions.len());
+                self.sessions.insert(index, session);
+            }
+        }
+    }
+
+    /// Drain every completed prior session, leaving only the current session
+    /// (if any). Used by `SetSource` when the new source shares the trade date
+    /// and completed priors must be retained (`docs/ENGINE.md` §2 rule 4).
+    pub fn drain_prior_sessions(&mut self) -> Vec<SessionProfile> {
+        if self.sessions.len() <= 1 {
+            return Vec::new();
+        }
+        let current = self.sessions.pop().expect("len > 1");
+        let priors = std::mem::take(&mut self.sessions);
+        self.sessions.push(current);
+        priors
+    }
+
+    /// Seed completed prior sessions before [`begin_session`]. Dates must be
+    /// strictly ascending and the container must still be empty of a current
+    /// session (i.e. `sessions` is empty). Used to reinstall retained priors
+    /// across a same-date `SetSource`.
+    pub fn seed_prior_sessions(&mut self, priors: Vec<SessionProfile>) {
+        assert!(
+            self.sessions.is_empty(),
+            "seed_prior_sessions requires an empty MultiProfile"
+        );
+        let mut prev = None;
+        for session in priors {
+            assert_eq!(
+                session.tick(),
+                self.tick,
+                "prior session tick {:?} disagrees with MultiProfile tick {:?}",
+                session.tick(),
+                self.tick
+            );
+            let date = session.trade_date();
+            if let Some(p) = prev {
+                assert!(date > p, "seeded prior sessions must strictly ascend");
+            }
+            prev = Some(date);
+            self.sessions.push(session);
+        }
+    }
+
     /// Apply one canonical event to the current session. Panics if no session
     /// has been begun — routing events without a session is an engine bug.
     pub fn apply(&mut self, ev: &CanonicalEvent) {

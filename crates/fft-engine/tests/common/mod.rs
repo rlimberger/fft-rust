@@ -20,8 +20,15 @@ use std::time::{Duration, Instant};
 
 pub const TICK: i64 = 250_000_000;
 pub const TRADE_DATE: u32 = 20_663;
+/// One CT trade date before [`TRADE_DATE`] (Tue 2026-07-28).
+pub const PRIOR_TRADE_DATE: u32 = TRADE_DATE - 1;
 const DAY_S: u64 = 86_400;
 pub const SESSION_OPEN_NS: u64 = (20_662 * DAY_S + 22 * 3_600) * 1_000_000_000;
+
+/// Globex open (17:00 CT prior calendar day → 22:00 UTC under CDT) for `trade_date`.
+pub fn session_open_ns(trade_date: u32) -> u64 {
+    (u64::from(trade_date.saturating_sub(1)) * DAY_S + 22 * 3_600) * 1_000_000_000
+}
 
 pub struct TempPath(pub PathBuf);
 
@@ -47,6 +54,11 @@ pub fn temp_path(name: &str) -> TempPath {
 }
 
 pub fn es_meta() -> InstrumentMeta {
+    es_meta_for(TRADE_DATE)
+}
+
+/// ES instrument metadata pinned to a CT trade date.
+pub fn es_meta_for(trade_date: u32) -> InstrumentMeta {
     InstrumentMeta {
         symbol: "ESU6".into(),
         instrument_id: 42,
@@ -54,8 +66,8 @@ pub fn es_meta() -> InstrumentMeta {
         min_price_increment: Price(TICK),
         unit_of_measure_qty: 50_000_000_000,
         display_factor: 1,
-        trade_date: TRADE_DATE,
-        session_open: Ts(SESSION_OPEN_NS),
+        trade_date,
+        session_open: Ts(session_open_ns(trade_date)),
     }
 }
 
@@ -88,12 +100,18 @@ fn trade(aggressor: Side, ticks: i64, size: u32, ts: u64, seq: u32) -> Canonical
 /// Event-only log (no CHECKPOINT frames) with `ts_step_ns` between consecutive events.
 /// Used as the ingest-shaped input for the offline checkpoint pass.
 pub fn write_event_only_log(path: &Path, event_count: usize, ts_step_ns: u64) {
-    let meta = es_meta();
+    write_event_only_log_for(path, TRADE_DATE, event_count, ts_step_ns);
+}
+
+/// Event-only log for an arbitrary CT trade date.
+pub fn write_event_only_log_for(path: &Path, trade_date: u32, event_count: usize, ts_step_ns: u64) {
+    let meta = es_meta_for(trade_date);
+    let open = session_open_ns(trade_date);
     let mut writer = LogWriter::create(path, &meta).expect("create log");
     let mut batch = Vec::with_capacity(event_count.min(512));
     for i in 0..event_count {
         let seq = (i as u32) + 1;
-        let ts = SESSION_OPEN_NS + (i as u64) * ts_step_ns;
+        let ts = open + (i as u64) * ts_step_ns;
         let event = if i % 5 == 4 {
             trade(
                 if i % 2 == 0 { Side::Bid } else { Side::Ask },
@@ -121,7 +139,18 @@ pub fn write_event_only_log(path: &Path, event_count: usize, ts_step_ns: u64) {
 }
 
 pub fn write_checkpointed_log(path: &Path, event_count: usize, checkpoint_every: usize) {
-    let meta = es_meta();
+    write_checkpointed_log_for(path, TRADE_DATE, event_count, checkpoint_every);
+}
+
+/// Checkpointed log for an arbitrary CT trade date (prior-session fixtures).
+pub fn write_checkpointed_log_for(
+    path: &Path,
+    trade_date: u32,
+    event_count: usize,
+    checkpoint_every: usize,
+) {
+    let meta = es_meta_for(trade_date);
+    let open = session_open_ns(trade_date);
     let mut writer = LogWriter::create(path, &meta).expect("create log");
     let mut book = Book::new(meta.min_price_increment);
     let mut profile = MultiProfile::new(meta.min_price_increment);
@@ -130,7 +159,7 @@ pub fn write_checkpointed_log(path: &Path, event_count: usize, checkpoint_every:
     let mut applied = 0usize;
     for i in 0..event_count {
         let seq = (i as u32) + 1;
-        let ts = SESSION_OPEN_NS + (i as u64) * 1_000_000;
+        let ts = open + (i as u64) * 1_000_000;
         let event = if i % 5 == 4 {
             trade(
                 if i % 2 == 0 { Side::Bid } else { Side::Ask },
@@ -204,6 +233,21 @@ pub fn write_checkpointed_log(path: &Path, event_count: usize, checkpoint_every:
         }
     }
     writer.close().expect("close");
+}
+
+/// Offline full apply of a log's events to a fresh MultiProfile (for volume gates).
+pub fn offline_profile_volume(path: &Path) -> u64 {
+    use fft_replay::ReplaySource;
+    let mut source = ReplaySource::open(path).expect("open offline");
+    let mut book = Book::new(source.meta().min_price_increment);
+    let mut profile = MultiProfile::new(source.meta().min_price_increment);
+    profile.begin_session(source.meta().trade_date);
+    while source
+        .apply_next(&mut book, &mut profile)
+        .expect("apply")
+        .is_some()
+    {}
+    profile.current().expect("offline session").total_volume()
 }
 
 pub fn spawn_engine(wake_count: Arc<AtomicU64>) -> EngineHandle {
