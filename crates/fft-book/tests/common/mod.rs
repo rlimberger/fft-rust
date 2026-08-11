@@ -2,6 +2,8 @@
 
 #![allow(dead_code)]
 
+pub mod queue_oracles;
+
 use fft_book::Book;
 use fft_core::{CanonicalEvent, EventKind, OrderId, Price, Seq, Side, Ts};
 
