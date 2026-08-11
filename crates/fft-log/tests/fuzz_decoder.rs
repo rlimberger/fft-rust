@@ -156,7 +156,7 @@ fn exercise_full_surface(path: &Path) -> Result<(), String> {
             let _ = reader.meta();
             let _ = reader.version();
             let _ = reader.schema_tag();
-            let _ = reader.was_live();
+            let _ = reader.opened_live();
             let _ = reader.is_live();
             let n = reader.frame_count();
             let _ = reader.index();
@@ -726,7 +726,7 @@ fn seed_corpus_is_valid() {
             .unwrap_or_else(|e| panic!("seed {} failed to open: {e}", kind.name()));
         match kind {
             SeedKind::EventsOnly => {
-                assert!(!reader.was_live());
+                assert!(!reader.opened_live());
                 assert_eq!(report.index_source, IndexSource::Footer);
                 assert!(reader.frame_count() >= 2);
                 let events: Vec<CanonicalEvent> = reader
@@ -736,7 +736,7 @@ fn seed_corpus_is_valid() {
                 assert!(!events.is_empty());
             }
             SeedKind::WithCheckpoint => {
-                assert!(!reader.was_live());
+                assert!(!reader.opened_live());
                 assert!(reader.index().iter().any(|e| e.kind == KIND_CHECKPOINT));
                 let ck = reader
                     .index()
@@ -747,7 +747,7 @@ fn seed_corpus_is_valid() {
                 assert!(!sections.is_empty());
             }
             SeedKind::LiveTornTail => {
-                assert!(reader.was_live());
+                assert!(reader.opened_live());
                 assert_eq!(report.index_source, IndexSource::LiveRecovery);
                 let recovery = report.recovery.expect("LIVE surfaces recovery");
                 assert!(recovery.dropped_bytes > 0);

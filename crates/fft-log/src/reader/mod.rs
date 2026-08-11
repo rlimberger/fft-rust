@@ -178,7 +178,7 @@ impl LogReader {
     /// index path so the reader sees the full footer index.
     ///
     /// Wire bytes are untouched; this is remap + rescan only. Does **not** change
-    /// [`was_live`](Self::was_live) — that records the open-time flag only.
+    /// [`opened_live`](Self::opened_live) — that records the open-time flag only.
     pub fn refresh(&mut self) -> Result<RefreshReport> {
         let file = File::open(&self.path).map_err(LogError::io("open log file for refresh"))?;
         let file_len = file
@@ -261,17 +261,17 @@ impl LogReader {
     /// Whether the on-disk header **currently** has the `LIVE` flag.
     ///
     /// Updated by [`refresh`](Self::refresh) after a clean close clears the flag.
-    /// Distinct from [`was_live`](Self::was_live), which is sticky to open time.
+    /// Distinct from [`opened_live`](Self::opened_live), which is sticky to open time.
     pub fn is_live(&self) -> bool {
         self.header.flags & FLAG_LIVE != 0
     }
 
     /// Whether the file had the `LIVE` flag set when this reader was **opened**.
     ///
-    /// Stored once at open and never updated — a subsequent clean close +
-    /// [`refresh`](Self::refresh) leaves `was_live() == true` while
-    /// [`is_live`](Self::is_live) becomes `false`.
-    pub fn was_live(&self) -> bool {
+    /// Sticky open-time observation: stored once in [`LogReader::open`] and never
+    /// updated. A subsequent clean close + [`refresh`](Self::refresh) leaves
+    /// `opened_live() == true` while [`is_live`](Self::is_live) becomes `false`.
+    pub fn opened_live(&self) -> bool {
         self.opened_live
     }
 

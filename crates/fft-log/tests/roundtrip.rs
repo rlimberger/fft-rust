@@ -24,7 +24,7 @@ fn header_meta_round_trips() {
     assert_eq!(reader.meta(), &es_meta());
     assert_eq!(reader.version(), (VERSION_MAJOR, VERSION_MINOR));
     assert_eq!(reader.schema_tag(), "mbo");
-    assert!(!reader.was_live());
+    assert!(!reader.opened_live());
 }
 
 #[test]
