@@ -18,8 +18,12 @@ tempfile = "3"
 
 [[bin]]
 name = "m1-gate"
-path = "src/bin/m1-gate.rs"
+path = "src/bin/m1_gate/main.rs"
 
 [[bin]]
 name = "m2-gate"
 path = "src/bin/m2_gate/main.rs"
+
+[[bin]]
+name = "claim4-census"
+path = "src/bin/claim4_census/main.rs"
