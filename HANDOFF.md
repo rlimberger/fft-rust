@@ -12,6 +12,16 @@ first); recenter key `c`; models always pinned, never default/auto.
 
 ## Wave 5 board (2026-08-10 late night — READ THIS FIRST, next orchestrator)
 
+**RULING (René, 2026-08-11): no dedicated perf hardware — ever, for now.** The 240 Hz
+box is declined; the recurring budget goes to Databento live (Standard ~$334/mo all-in)
+at M6. Consequences, already landed in the docs (PERF-RUNNER.md, PRD §4 promise 2,
+IMPLEMENTATION-PLAN M3 gate, PROCUREMENT-2026-08.md): frame gates run on the desk
+machine under the quiet-box protocol (no concurrent builds — host load measurably
+injects 33 ms spikes); 240 Hz remains the design budget in time units; photon-level /
+high-refresh hardware validation is deferred and gates a release claim, never a merge.
+Open René action carried: submit the Databento licensing questionnaire (free) to close
+the one UNVERIFIED exchange-fee line before M6.
+
 **Standing directive (René, this session): theme + font size follow the OS (Omarchy)
 system, live** — landed as UI-OS-THEME (`1caaabe`, PRD §5 same-commit). fc-match family
 at startup; `[font] base-size` → UI scale (base/12); colors from

@@ -64,7 +64,7 @@ TradingView, Rithmic. Every claim below is bounded to this set.
 | # | Claim | Measure |
 |---|-------|---------|
 | 1 | Seek anywhere | p95 ≤ 250 ms from scrub-release to rendered exact book, any timestamp in a full Globex session; seek result **bit-identical** to forward replay from open |
-| 2 | Never miss a frame | Full RTH session at display refresh (tested to 240 Hz): zero missed frame deadlines, p99 frame time within budget, per-frame event-coverage counter shows **zero dropped events** |
+| 2 | Never miss a frame | Full RTH session at the attached display's refresh: zero missed frame deadlines, p99 frame time within budget, per-frame event-coverage counter shows **zero dropped events**. 240 Hz stays the design budget (4.17 ms); hardware validation above the desk display's rate is deferred with the perf box (René, 2026-08-11) |
 | 3 | Exact queue | For any resting order: contracts + orders ahead at its price, no size filter, exact FIFO/modify semantics |
 | 4 | Deterministic icebergs | Native refresh flagged on the CME signature (same `order_id`, size restored after full fill) within a **1 ms event-time acceptance window** of the depletion — CME re-displays the tranche within the same match event, so the bound GC's candidate state without ever guessing (approved 2026-08-10); per-order reload count + cumulative hidden volume, live, zero heuristics; across a sequence gap the classification reads **unavailable**, never false |
 | 5 | Panes agree | MP volume-at-price ≡ DOM VOL column, byte-identical, continuously asserted |

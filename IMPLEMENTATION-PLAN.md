@@ -105,7 +105,8 @@ Element** — Daytradr grammar: PRICE/VOL/BID/cB/cA/ASK, solid depth blocks, ins
 glyph-run caching, price-drag/wheel pan, tick scale 1/2/4.
 
 **Gate:** replay of the RTH open at 1× with DOM visible: **zero missed frame deadlines at the
-attached display's refresh** (validated at 60/120/240 Hz), p99 frame time within budget,
+attached display's refresh** (validated at whatever rates the available displays offer;
+240 Hz hardware deferred — René 2026-08-11, PERF-RUNNER.md), p99 frame time within budget,
 event-coverage counter = zero drops, input-to-photon ≤ 1 frame for pan.
 
 ## M4 — Market Profile pane

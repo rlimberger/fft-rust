@@ -1,9 +1,15 @@
 # Procurement memo — perf box + live data (2026-08-11)
 
+**RULED (René, 2026-08-11): Section A is DECLINED — no hardware purchase. The recurring
+budget goes to Databento live (Section B) at M6; static/recorded data until then. Gate
+policy updated in PERF-RUNNER.md (quiet-box protocol on the desk machine; 240 Hz stays
+the design budget, hardware validation deferred). Section A is kept below as the
+costed option should the decision ever be revisited.**
+
 Decision memo for René. Facts researched 2026-08-11, source URLs inline; items marked
 UNVERIFIED need the stated follow-up before money moves. Recommendations are firm.
 
-## A. `fft-perf` 240 Hz runner box (PERF-RUNNER.md mandate)
+## A. `fft-perf` 240 Hz runner box — DECLINED 2026-08-11, reference only
 
 **Recommendation: buy the IPS path now — Gigabyte M27Q3 + RX 7600 + Ryzen 9700X,
 ~€1,100–1,600 all-in.** The gate needs deterministic 240 Hz vsync delivery, not color;
@@ -50,7 +56,7 @@ Buying early would burn ~$334/mo for zero code exercised.
 
 ## Actions for René (in order)
 
-1. Order the box: M27Q3 + RX 7600 + 9700X + remainder BOM (~€1,100–1,600).
+1. ~~Order the box~~ — DECLINED 2026-08-11 (budget → Databento live instead).
 2. Submit Databento's licensing questionnaire → written quote (free, closes the
    UNVERIFIED fee line). No purchase yet.
 3. At M6 start: Standard plan, month-to-month.

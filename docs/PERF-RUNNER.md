@@ -15,10 +15,19 @@
 The runner publishes a machine manifest; a gate result without a matching manifest is
 invalid. Pinned: CPU model + `performance` governor + SMT setting, core isolation for the
 engine and UI threads, GPU + driver version, kernel version, compositor (Hyprland)
-version, display mode (must match the committed manifest; 240 Hz hardware is mandatory
-from the M3 gate onward), Rust toolchain, build profile (`release`, `lto = "thin"`,
-`codegen-units = 1`), thermal precondition (60 s idle, package temp below the manifest
-threshold, before any measured run).
+version, display mode (must match the committed manifest), Rust toolchain, build profile
+(`release`, `lto = "thin"`, `codegen-units = 1`), thermal precondition (60 s idle,
+package temp below the manifest threshold, before any measured run).
+
+**No dedicated perf hardware (René, 2026-08-11 — supersedes the 240 Hz box mandate;
+recurring budget goes to Databento live at M6 instead).** The "runner" is the desk
+machine under a quiet-box protocol: gate runs are valid only with no concurrent
+builds/compile jobs (measured 2026-08-10: host load injects ~33 ms 2-vsync spikes with
+zero app content; an idle box runs clean — blank-window control committed as evidence).
+Frame gates hold at **the attached display's refresh**; 240 Hz remains the design
+budget (budgets are stated in time, and the engine/UI path is validated headless
+against the 4.17 ms frame budget), but hardware-refresh validation above the desk
+display's rate is deferred until a 240 Hz panel exists for other reasons.
 
 Every result is stored with metadata JSON: full manifest + git SHA + timestamp + fixture
 hashes. History is append-only.
@@ -48,5 +57,5 @@ Two checks per metric, both must pass:
    the median worsens ≥ 3 % with Mann–Whitney U significance p < 0.01. This catches
    drift long before an absolute budget breaks (drift killed attempt one).
 
-Physical 240 Hz presentation (photon-level validation) is a milestone/release activity on
-this box, not a per-merge gate.
+Physical 240 Hz presentation (photon-level validation) is a release activity deferred
+with the hardware (René, 2026-08-11); it gates a release claim, never a merge.
