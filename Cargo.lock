@@ -1901,6 +1901,8 @@ dependencies = [
  "fft-core",
  "fft-log",
  "fft-profile",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 
@@ -1912,6 +1914,7 @@ dependencies = [
  "fft-engine",
  "gpui",
  "gpui_platform",
+ "jiff",
  "serde",
  "serde_json",
 ]

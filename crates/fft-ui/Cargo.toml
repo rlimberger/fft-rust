@@ -9,6 +9,8 @@ fft-core = { path = "../fft-core" }
 fft-engine = { path = "../fft-engine" }
 gpui.workspace = true
 gpui_platform.workspace = true
+# America/Chicago session bounds + CT clock for the transport strip (same pin as ingest).
+jiff = "=0.2.35"
 # Gate evidence only (`--gate-out`); both versions already resolved in the lock file.
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"

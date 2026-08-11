@@ -2,6 +2,7 @@
 //! harness used by the perf gate.
 
 pub mod datetime;
+pub mod dom_badges;
 pub mod dom_input;
 pub mod dom_ladder;
 pub mod dom_view;
@@ -21,3 +22,5 @@ pub mod shell;
 mod shell_panes;
 pub mod theme;
 pub mod theme_warmup;
+pub mod transport;
+mod transport_paint;

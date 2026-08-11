@@ -20,6 +20,7 @@ use crate::harness::Harness;
 use crate::mp_element::MarketProfile;
 #[cfg(debug_assertions)]
 use crate::mp_view::check_pane_agreement;
+use crate::mp_view::display_session;
 use crate::os_theme::{ThemeSlot, resolve_font_family, spawn_theme_watcher};
 use crate::pane_state::PaneState;
 use crate::shell_panes;
@@ -28,6 +29,8 @@ use crate::theme_warmup::{
     PendingTheme, ThemeWarmAction, collect_visible_glyph_jobs, drive_theme_warmup,
     note_theme_slot_advance, shape_pending_batch,
 };
+use crate::transport::{TransportCommand, TransportState, session_range_ns};
+use crate::transport_paint::{ScrubTrackGeom, TransportStripArgs, transport_strip};
 
 struct ReplayResources {
     snapshots: SnapshotSlot,
@@ -60,6 +63,10 @@ pub struct Shell {
     font_family: String,
     focus: FocusHandle,
     focus_once: bool,
+    /// Replay transport (`r` strip + keys). RefCell so key/mouse handlers avoid entity.update.
+    transport: Rc<RefCell<TransportState>>,
+    /// Scrub track window-space geometry (updated each strip paint).
+    scrub_track: Rc<RefCell<ScrubTrackGeom>>,
 }
 
 impl Shell {
@@ -98,6 +105,37 @@ impl Shell {
             font_family,
             focus: cx.focus_handle().tab_stop(true),
             focus_once: true,
+            transport: Rc::new(RefCell::new(TransportState::default())),
+            scrub_track: Rc::new(RefCell::new(ScrubTrackGeom::default())),
+        }
+    }
+
+    /// Map pure transport commands onto the engine (non-blocking bounded send).
+    fn dispatch_transport(engine: &Option<EngineHandle>, commands: &[TransportCommand]) {
+        let Some(handle) = engine.as_ref() else {
+            return;
+        };
+        for cmd in commands {
+            let engine_cmd = match cmd {
+                TransportCommand::Play => EngineCmd::Play,
+                TransportCommand::Pause => EngineCmd::Pause,
+                TransportCommand::SetSpeed(s) => EngineCmd::SetSpeed(*s),
+                TransportCommand::Seek { ts, generation } => EngineCmd::Seek {
+                    ts: *ts,
+                    generation: *generation,
+                },
+            };
+            handle
+                .send(engine_cmd)
+                .unwrap_or_else(|err| panic!("fft: transport command failed: {err}"));
+        }
+    }
+
+    /// Drain at most one scrub Seek per frame (latest-wins).
+    fn drain_scrub_seek(&self) {
+        let cmd = self.transport.borrow_mut().take_coalesced_seek();
+        if let Some(cmd) = cmd {
+            Self::dispatch_transport(&self.engine_slot.borrow(), std::slice::from_ref(&cmd));
         }
     }
 
@@ -243,6 +281,9 @@ impl Render for Shell {
             );
         }
 
+        // One scrub Seek max per frame from the latest drag position.
+        self.drain_scrub_seek();
+
         let viewport_width = f32::from(window.viewport_size().width);
         self.panes.borrow_mut().splitter.consume(viewport_width);
         self.panes
@@ -295,13 +336,43 @@ impl Render for Shell {
         );
         let splitter = shell_panes::splitter(Rc::clone(&self.panes), Rc::clone(&self.palette));
         let key_panes = Rc::clone(&self.panes);
+        let key_transport = Rc::clone(&self.transport);
+        let key_engine = Rc::clone(&self.engine_slot);
+        let key_applied_ts = self.frame_snapshot.applied_ts;
+        let (scrub_first, scrub_last) = scrub_range_from_snapshot(&self.frame_snapshot);
+        let key_first = scrub_first;
+        let key_last = scrub_last;
         let split_move = Rc::clone(&self.panes);
         let split_end = Rc::clone(&self.panes);
         let split_end_out = Rc::clone(&self.panes);
         let font_family = self.font_family.clone();
+        let transport_on = self.transport.borrow().mode_on;
+        let strip = if transport_on {
+            Some(transport_strip(TransportStripArgs {
+                transport: Rc::clone(&self.transport),
+                track_geom: Rc::clone(&self.scrub_track),
+                palette: Rc::clone(&self.palette),
+                scale: ui_scale,
+                applied_ts: self.frame_snapshot.applied_ts,
+                first_ts: scrub_first,
+                last_ts: scrub_last,
+                viewport_width,
+            }))
+        } else {
+            None
+        };
 
         // After the tree is built at the old theme: warm the incoming glyph set, then adopt.
         self.warm_and_maybe_adopt_theme(window);
+
+        let panes_row = div()
+            .id("fft-panes-row")
+            .flex_1()
+            .w_full()
+            .min_h_0()
+            .flex()
+            .flex_row()
+            .children([mp_pane, splitter, dom_pane]);
 
         div()
             .id("fft-two-pane-shell")
@@ -309,15 +380,17 @@ impl Render for Shell {
             // Family fixed at startup; live family switching is out of scope.
             .font_family(font_family)
             .flex()
-            .flex_row()
+            .flex_col()
             .track_focus(&self.focus)
             .on_key_down(move |event, window, cx| {
                 if event.keystroke.modifiers.modified() {
                     return;
                 }
-                let (handled, should_refresh) = {
+                let key = event.keystroke.key.as_str();
+                // Pane scale / recenter first (unchanged hover-routing).
+                let (pane_handled, pane_refresh) = {
                     let mut panes = key_panes.borrow_mut();
-                    match event.keystroke.key.as_str() {
+                    match key {
                         "1" => (true, panes.set_hovered_scale(1)),
                         "2" => (true, panes.set_hovered_scale(2)),
                         "4" => (true, panes.set_hovered_scale(4)),
@@ -326,12 +399,34 @@ impl Render for Shell {
                         _ => (false, false),
                     }
                 };
-                if should_refresh {
+                if pane_handled {
+                    if pane_refresh {
+                        window.refresh();
+                    }
+                    cx.stop_propagation();
+                    return;
+                }
+                let action = {
+                    let mut t = key_transport.borrow_mut();
+                    match key {
+                        "r" => t.toggle_mode(),
+                        "space" => t.toggle_play(),
+                        "]" => t.speed_up(),
+                        "[" => t.speed_down(),
+                        "left" => t.step(key_applied_ts, key_first, key_last, false),
+                        "right" => t.step(key_applied_ts, key_first, key_last, true),
+                        "l" => t.go_live_placeholder(),
+                        _ => return,
+                    }
+                };
+                if let Some(hint) = action.status_hint {
+                    eprintln!("fft: {hint}");
+                }
+                Self::dispatch_transport(&key_engine.borrow(), &action.commands);
+                if action.refresh {
                     window.refresh();
                 }
-                if handled {
-                    cx.stop_propagation();
-                }
+                cx.stop_propagation();
             })
             .on_mouse_move(move |event, window, _| {
                 let mut panes = split_move.borrow_mut();
@@ -347,9 +442,21 @@ impl Render for Shell {
             .on_mouse_up_out(MouseButton::Left, move |_, _, _| {
                 split_end_out.borrow_mut().splitter.end();
             })
-            .children([mp_pane, splitter, dom_pane])
+            .child(panes_row)
+            .children(strip)
             .into_any_element()
     }
+}
+
+/// Scrub range: session open…+24h from profile trade_date (engine has no log extent on snapshot).
+fn scrub_range_from_snapshot(snap: &RenderSnapshot) -> (u64, u64) {
+    if let Some(session) = display_session(&snap.profile)
+        && session.trade_date > 0
+    {
+        return session_range_ns(session.trade_date);
+    }
+    // Empty snapshot: degenerate range so pure math still clamps.
+    (0, 1)
 }
 
 fn spawn_replay_engine(
@@ -371,8 +478,8 @@ fn spawn_replay_engine(
         .send(EngineCmd::SetSource(Source::Replay { path }))
         .unwrap_or_else(|err| panic!("fft: SetSource failed: {err}"));
     // Seek pauses; Play must follow. Generation 1 is the first valid UI seek after
-    // SetSource resets latest_seek to 0. No fft-ui scrub Seek path exists yet — when
-    // one lands, its counter must start at ≥ 2 so it cannot collide with this Seek.
+    // SetSource resets latest_seek to 0. Transport scrub/step counter starts at 2
+    // (`TransportState` / FIRST_UI_SEEK_GENERATION) so it cannot collide with this Seek.
     if let Some(ts) = replay_at {
         handle
             .send(EngineCmd::Seek { ts, generation: 1 })
