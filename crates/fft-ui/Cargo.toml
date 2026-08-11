@@ -32,3 +32,7 @@ path = "src/bin/m5-scrub-burst.rs"
 [[bin]]
 name = "m5-rss-week"
 path = "src/bin/m5-rss-week.rs"
+
+[[bin]]
+name = "m7-soak"
+path = "src/bin/m7_soak/main.rs"
