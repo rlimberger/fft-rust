@@ -6,7 +6,7 @@ use common::*;
 use fft_core::{CanonicalEvent, EventKind, OrderId, Price, Seq, Side, Ts};
 use fft_engine::{EngineCmd, Source};
 use fft_log::LogWriter;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
@@ -296,6 +296,32 @@ fn set_source_resets_seek_generations() {
 
     let exit = handle.shutdown().expect("join");
     assert!(exit.seeks_executed >= 1);
+}
+
+#[test]
+fn shutdown_after_engine_death_returns_the_panic_instead_of_panicking() {
+    let wakes = Arc::new(AtomicU64::new(0));
+    let handle = spawn_engine(wakes);
+
+    // A nonexistent log kills the engine thread on SetSource (replay_panic).
+    handle
+        .send(EngineCmd::SetSource(Source::Replay {
+            path: PathBuf::from("/nonexistent/fft-test-no-such.fftlog"),
+        }))
+        .unwrap();
+    // Give the thread time to die so the later send hits a closed channel.
+    thread::sleep(Duration::from_millis(100));
+
+    // shutdown() must surface the engine panic as Err — never panic itself,
+    // or a 60 s gate run's evidence dies with it (main.rs writes JSON first).
+    let payload = handle
+        .shutdown()
+        .expect_err("dead engine must surface its panic through shutdown");
+    let message = panic_message(&*payload);
+    assert!(
+        message.contains("fft-engine replay failure"),
+        "unexpected panic message: {message}"
+    );
 }
 
 #[test]

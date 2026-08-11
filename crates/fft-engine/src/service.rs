@@ -94,9 +94,14 @@ impl EngineHandle {
     }
 
     /// Send shutdown and join the dedicated thread.
+    ///
+    /// A failed `send` means the engine thread already died (panicked): the
+    /// join below returns that panic as `Err` for the caller to record.
+    /// Panicking here instead would destroy gate evidence — the exact failure
+    /// mode ENGINE-DEFECT-WAVE exists to prevent (evidence is written first,
+    /// verdict FAIL, then the process fails).
     pub fn shutdown(mut self) -> thread::Result<EngineExit> {
-        self.send(EngineCmd::Shutdown)
-            .expect("fft-engine shutdown command failed");
+        let _ = self.send(EngineCmd::Shutdown);
         self.join
             .take()
             .expect("fft-engine join handle missing")
