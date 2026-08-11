@@ -66,7 +66,7 @@ pub struct OsColors {
 }
 
 /// Latest theme + scale published by the watcher (or the startup fallback).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ThemeSnapshot {
     pub palette: Palette,
     /// `base_size / 12.0` — multiplies design-time metrics (ROW_H, font px, …).

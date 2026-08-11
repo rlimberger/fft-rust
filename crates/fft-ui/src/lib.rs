@@ -20,3 +20,4 @@ pub mod pane_state;
 pub mod shell;
 mod shell_panes;
 pub mod theme;
+pub mod theme_warmup;

@@ -24,6 +24,10 @@ use crate::os_theme::{ThemeSlot, resolve_font_family, spawn_theme_watcher};
 use crate::pane_state::PaneState;
 use crate::shell_panes;
 use crate::theme::Palette;
+use crate::theme_warmup::{
+    PendingTheme, ThemeWarmAction, collect_visible_glyph_jobs, drive_theme_warmup,
+    note_theme_slot_advance, shape_pending_batch,
+};
 
 struct ReplayResources {
     snapshots: SnapshotSlot,
@@ -48,7 +52,10 @@ pub struct Shell {
     /// OS theme scale (`base_size / 12`); applied to row heights and font sizes.
     scale: f32,
     theme_slot: Arc<ThemeSlot>,
-    theme_generation: u64,
+    /// Last ThemeSlot generation we have reacted to (detect ≠ adopt).
+    slot_seen_generation: u64,
+    /// Incoming theme waiting for glyph warm-up before adoption.
+    pending_theme: Option<PendingTheme>,
     /// Resolved once before the window opens; live family switching is out of scope.
     font_family: String,
     focus: FocusHandle,
@@ -67,7 +74,7 @@ impl Shell {
         let font_family = resolve_font_family();
         let theme_slot = spawn_theme_watcher();
         let snap = theme_slot.load();
-        let theme_generation = snap.generation;
+        let slot_seen_generation = snap.generation;
         let palette = Rc::new(snap.palette);
         let scale = snap.scale;
         Self {
@@ -86,23 +93,86 @@ impl Shell {
             palette,
             scale,
             theme_slot,
-            theme_generation,
+            slot_seen_generation,
+            pending_theme: None,
             font_family,
             focus: cx.focus_handle().tab_stop(true),
             focus_once: true,
         }
     }
 
-    /// Per-frame u64 load + compare; no entity.update / notify.
-    fn pickup_theme_if_changed(&mut self) {
-        let next = self.theme_slot.generation();
-        if next == self.theme_generation {
+    /// Phase 1 — detect only. Never adopts; render keeps the previous palette/scale.
+    ///
+    /// GlyphCache keys include color bits and font size ([`crate::glyph_cache`]), so
+    /// palette-only and scale changes both miss cold — both take the pending path.
+    fn detect_theme_slot(&mut self) {
+        let theme_slot = Arc::clone(&self.theme_slot);
+        let advanced = note_theme_slot_advance(
+            &mut self.pending_theme,
+            self.theme_slot.generation(),
+            self.slot_seen_generation,
+            || theme_slot.load(),
+        );
+        if advanced {
+            self.slot_seen_generation = self
+                .pending_theme
+                .as_ref()
+                .map(|p| p.snap.generation)
+                .unwrap_or(self.slot_seen_generation);
+        }
+    }
+
+    /// Phase 2 — after this frame's element tree is built at the OLD theme, warm then adopt.
+    fn warm_and_maybe_adopt_theme(&mut self, window: &mut Window) {
+        if self.pending_theme.is_none() {
             return;
         }
-        let snap = self.theme_slot.load();
-        self.theme_generation = snap.generation;
-        self.palette = Rc::new(snap.palette);
-        self.scale = snap.scale;
+        let viewport_h = f32::from(window.viewport_size().height);
+        let (center, mp_scale, dom_scale) = {
+            let panes = self.panes.borrow();
+            (
+                panes.effective_center(&self.frame_snapshot.dom),
+                panes.mp_scale,
+                panes.dom_scale,
+            )
+        };
+        if let Some(pend) = self.pending_theme.as_mut() {
+            // Install once; keep cursor progress across frames. Empty → retry later.
+            let queue = collect_visible_glyph_jobs(
+                &self.frame_snapshot,
+                center,
+                mp_scale,
+                dom_scale,
+                &pend.snap.palette,
+                pend.snap.scale,
+                viewport_h,
+            );
+            pend.ensure_queue(queue);
+        }
+        let mut cache = self.glyph_cache.borrow_mut();
+        let action = drive_theme_warmup(&mut self.pending_theme, |pend, budget| {
+            shape_pending_batch(pend, &mut cache, window, budget)
+        });
+        drop(cache);
+        match action {
+            ThemeWarmAction::Idle => {}
+            ThemeWarmAction::KeepPending => {
+                window.request_animation_frame();
+            }
+            ThemeWarmAction::Adopt {
+                snap,
+                warm_frames_used,
+                warmed_entries,
+            } => {
+                // Adopt the snapshot we warmed — never re-load the slot here.
+                // A concurrent publish is picked up next frame as a new pending.
+                self.palette = Rc::new(snap.palette);
+                self.scale = snap.scale;
+                eprintln!(
+                    "fft: theme adopted after {warm_frames_used} warm frames, {warmed_entries} glyphs pre-shaped"
+                );
+            }
+        }
     }
 
     fn adopt_replay(&mut self) {
@@ -135,12 +205,14 @@ impl Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.pickup_theme_if_changed();
+        // Detect before building the tree; do not adopt yet.
+        self.detect_theme_slot();
         self.adopt_replay();
         if let Some(slot) = &self.snapshots {
             self.frame_snapshot = slot.load();
             self.wake_dirty.store(false, Ordering::Release);
         }
+        self.glyph_cache.borrow_mut().begin_frame();
         if self.harness.borrow_mut().on_frame(Instant::now()) {
             window.request_animation_frame();
         } else {
@@ -148,6 +220,8 @@ impl Render for Shell {
         }
         self.start_replay_after_first_paint(window);
         if self.snapshots.is_none() {
+            // Warm against whatever snapshot exists (may be empty early on).
+            self.warm_and_maybe_adopt_theme(window);
             return div()
                 .size_full()
                 .bg(self.palette.blank_window)
@@ -174,7 +248,6 @@ impl Render for Shell {
         self.panes
             .borrow_mut()
             .clamp_center_to_dom(&self.frame_snapshot.dom);
-        self.glyph_cache.borrow_mut().begin_frame();
         let center = self
             .panes
             .borrow()
@@ -183,6 +256,7 @@ impl Render for Shell {
             let panes = self.panes.borrow();
             (panes.mp_scale, panes.dom_scale, panes.splitter.ratio())
         };
+        // OLD theme for this frame while a pending warm-up is in flight.
         let ui_scale = self.scale;
         let mp = MarketProfile::new(
             Arc::clone(&self.frame_snapshot),
@@ -226,6 +300,9 @@ impl Render for Shell {
         let split_end_out = Rc::clone(&self.panes);
         let font_family = self.font_family.clone();
 
+        // After the tree is built at the old theme: warm the incoming glyph set, then adopt.
+        self.warm_and_maybe_adopt_theme(window);
+
         div()
             .id("fft-two-pane-shell")
             .size_full()
@@ -238,7 +315,7 @@ impl Render for Shell {
                 if event.keystroke.modifiers.modified() {
                     return;
                 }
-                let (handled, changed) = {
+                let (handled, should_refresh) = {
                     let mut panes = key_panes.borrow_mut();
                     match event.keystroke.key.as_str() {
                         "1" => (true, panes.set_hovered_scale(1)),
@@ -249,7 +326,7 @@ impl Render for Shell {
                         _ => (false, false),
                     }
                 };
-                if changed {
+                if should_refresh {
                     window.refresh();
                 }
                 if handled {
