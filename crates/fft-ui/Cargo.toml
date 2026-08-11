@@ -7,6 +7,8 @@ publish.workspace = true
 [dependencies]
 fft-core = { path = "../fft-core" }
 fft-engine = { path = "../fft-engine" }
+# m5-scrub-burst: event-time bounds from the log index (not on the GUI path).
+fft-log = { path = "../fft-log" }
 gpui.workspace = true
 gpui_platform.workspace = true
 # America/Chicago session bounds + CT clock for the transport strip (same pin as ingest).
@@ -22,3 +24,11 @@ path = "src/main.rs"
 [[bin]]
 name = "m4-agreement"
 path = "src/bin/m4-agreement.rs"
+
+[[bin]]
+name = "m5-scrub-burst"
+path = "src/bin/m5-scrub-burst.rs"
+
+[[bin]]
+name = "m5-rss-week"
+path = "src/bin/m5-rss-week.rs"

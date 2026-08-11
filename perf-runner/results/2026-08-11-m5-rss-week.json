@@ -1,0 +1,26 @@
+{
+  "gate": "M5-RSS-WEEK",
+  "date": "2026-08-11T12:34:01Z",
+  "git_sha": "a50cc49e94ee526bdd63dec3b1ec53cc839ebe74",
+  "git_dirty": true,
+  "current": "/tmp/esu6-2026-07-31.fftlog",
+  "priors": [
+    "/tmp/esu6-2026-07-27.fftlog",
+    "/tmp/esu6-2026-07-28.fftlog",
+    "/tmp/esu6-2026-07-29.fftlog",
+    "/tmp/esu6-2026-07-30.fftlog"
+  ],
+  "label": null,
+  "sessions_in_snapshot": 5,
+  "priors_completed": 4,
+  "prior_skips": 0,
+  "events_applied": 17152053,
+  "vm_hwm_kb": 206160,
+  "vm_hwm_bytes": 211107840,
+  "vm_rss_kb": 163624,
+  "budget_bytes": 2147483648,
+  "under_budget": true,
+  "wall_ms": 18798.014899,
+  "notes": "sessions=5 expected=5; priors_completed=4 prior_skips=0; VmHWM=206160 kB (201.33 MiB) vs budget 2048 MiB",
+  "verdict": "PASS"
+}

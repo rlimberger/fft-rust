@@ -22,6 +22,8 @@ pub mod pane_state;
 pub mod prefs;
 pub mod shell;
 mod shell_panes;
+mod shell_replay;
+pub mod startup_trace;
 pub mod theme;
 pub mod theme_warmup;
 pub mod transport;

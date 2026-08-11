@@ -7,9 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
-use fft_engine::{
-    EngineCmd, EngineConfig, EngineHandle, EngineService, RenderSnapshot, SnapshotSlot, Source,
-};
+use fft_engine::{EngineCmd, EngineHandle, RenderSnapshot, SnapshotSlot};
 use gpui::{Context, FocusHandle, MouseButton, Render, Window, div, prelude::*};
 
 use crate::dom_input::DomInput;
@@ -25,6 +23,7 @@ use crate::os_theme::{ThemeSlot, resolve_font_family, spawn_theme_watcher};
 use crate::pane_state::PaneState;
 use crate::prefs::{Prefs, ShellPrefsHandles};
 use crate::shell_panes;
+use crate::shell_replay::spawn_replay_engine;
 use crate::theme::Palette;
 use crate::theme_warmup::{
     PendingTheme, ThemeWarmAction, collect_visible_glyph_jobs, drive_theme_warmup,
@@ -252,11 +251,15 @@ impl Render for Shell {
             self.frame_snapshot = slot.load();
             self.wake_dirty.store(false, Ordering::Release);
         }
+        if self.frame_snapshot.generation > 0 {
+            crate::startup_trace::note_first_interactive();
+        }
         self.glyph_cache.borrow_mut().begin_frame();
-        if self.harness.borrow_mut().on_frame(Instant::now()) {
-            window.request_animation_frame();
-        } else {
+        let keep_going = self.harness.borrow_mut().on_frame(Instant::now());
+        if crate::startup_trace::complete() || !keep_going {
             cx.defer(|cx| cx.quit());
+        } else {
+            window.request_animation_frame();
         }
         self.start_replay_after_first_paint(window);
         if self.snapshots.is_none() {
@@ -452,51 +455,4 @@ fn scrub_range_from_snapshot(snap: &RenderSnapshot) -> (u64, u64) {
         return session_range_ns(session.trade_date);
     }
     (0, 1)
-}
-
-fn spawn_replay_engine(
-    path: PathBuf,
-    replay_at: Option<u64>,
-    prior_sessions: &[PathBuf],
-    speed: f64,
-) -> (EngineHandle, SnapshotSlot, Arc<AtomicBool>) {
-    let wake_dirty = Arc::new(AtomicBool::new(false));
-    let wake = Arc::clone(&wake_dirty);
-    let handle = EngineService::spawn(
-        EngineConfig {
-            visible_tick_span: 256,
-        },
-        Box::new(move || {
-            wake.store(true, Ordering::Release);
-        }),
-    )
-    .unwrap_or_else(|err| panic!("fft: failed to spawn engine thread: {err}"));
-    handle
-        .send(EngineCmd::SetSource(Source::Replay { path }))
-        .unwrap_or_else(|err| panic!("fft: SetSource failed: {err}"));
-    // Seek pauses; Play follows. Gen 1 is the UI's first seek after SetSource (0).
-    // Transport scrub/step starts at 2 (`FIRST_UI_SEEK_GENERATION`).
-    if let Some(ts) = replay_at {
-        handle
-            .send(EngineCmd::Seek { ts, generation: 1 })
-            .unwrap_or_else(|err| panic!("fft: Seek failed: {err}"));
-    }
-    handle
-        .send(EngineCmd::Play)
-        .unwrap_or_else(|err| panic!("fft: Play failed: {err}"));
-    if (speed - 1.0).abs() > f64::EPSILON {
-        handle
-            .send(EngineCmd::SetSpeed(speed))
-            .unwrap_or_else(|err| panic!("fft: SetSpeed failed: {err}"));
-    }
-    // ENGINE.md §2: one LoadPriorSession per prior, oldest-first (CLI order).
-    for prior in prior_sessions {
-        handle
-            .send(EngineCmd::LoadPriorSession {
-                path: prior.clone(),
-            })
-            .unwrap_or_else(|err| panic!("fft: LoadPriorSession failed: {err}"));
-    }
-    let snapshots = handle.snapshots();
-    (handle, snapshots, wake_dirty)
 }

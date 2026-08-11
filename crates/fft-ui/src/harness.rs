@@ -59,6 +59,7 @@ impl Harness {
 
     /// Returns `false` once the gate window has elapsed and the redraw loop should stop.
     pub fn on_frame(&mut self, now: Instant) -> bool {
+        crate::startup_trace::note_first_paint();
         let gap = self.last_frame.replace(now).map(|last| now - last);
         let phase = self.phase.get_or_insert(Phase::Warmup {
             started: now,

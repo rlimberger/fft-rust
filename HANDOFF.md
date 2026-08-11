@@ -38,11 +38,17 @@ M5 features landed this wave (all reviewed, committed, pushed):
   (Worker died mid-track once; resumed and completed — a worker "report" that is
   mid-work prose means the session ended, check the tree.)
 
-Remaining M5 (not started): hover queue-depth readouts (+ hidden volume there),
-prefs persistence, cold-start budget (<150 ms painted / <500 ms interactive),
-scrub-drag full-frame-rate validation against the seek service, five-claim
-acceptance run. Arrow-step semantics: ±1 s is FINAL (René 2026-08-11, "i dont
-care" — orchestrator's provisional stands; do not re-raise).
+M5 measurables CLOSED (quiet-box evidence committed): cold start first-paint
+85–103 ms / interactive 103–122 ms over 5 runs (budgets 150/500 — PASS;
+--startup-trace instrumentation, normal runs unchanged); scrub burst 120 seeks
+@60/s all answered, monotonic, no wedge (PASS); full-week RSS VmHWM 201 MiB vs
+2 GiB budget (PASS — Fri current + Mon–Thu priors per ENGINE.md §2 date rule).
+Hover readouts + prefs landed (7058505, a50cc49). Arrow-step ±1 s FINAL.
+M5 residue before calling the milestone: a live GUI scrub-drag session on the
+desk display (the headless burst proves the seek service; the GUI frame gate
+during drag is a hands-on run) + the five-claim acceptance sweep writeup.
+shell.rs split via shell_replay.rs (size rule). Next frontier: M6 needs the
+parked Databento work; M7 hardening (soak, fuzz, docs) can start any time.
 
 ## Wave 6 board (2026-08-11 — milestone gates — superseded by Wave 7 above)
 

@@ -4,7 +4,12 @@
 //! ```text
 //! fft [--gate <seconds>] [--trace <path>] [--replay <fftlog>] [--replay-at <ts>]
 //!     [--prior <fftlog>]... [--gate-out <path>] [--manifest <path>] [--conditions <text>]
+//!     [--startup-trace]
 //! ```
+//!
+//! `--startup-trace` emits wall-ms from process entry to first painted frame and to the
+//! first non-empty `RenderSnapshot` (generation > 0), then quits. Used for the M5 cold-
+//! start boring gate (PRD §4); normal runs are unchanged.
 //!
 //! Without `--replay`, the M0 blank/dark window + frame harness is unchanged. With
 //! `--replay`, the dedicated engine thread is spawned, `SetSource(Replay)` + `Play` are
@@ -60,6 +65,8 @@ struct Args {
     manifest: Option<PathBuf>,
     /// Free-form run conditions from the runner — recorded verbatim when supplied.
     conditions: Option<String>,
+    /// Emit cold-start first-paint / first-interactive marks (M5 boring gate).
+    startup_trace: bool,
 }
 
 fn parse_args() -> Args {
@@ -73,6 +80,7 @@ fn parse_args() -> Args {
     let mut gate_out = None;
     let mut manifest = None;
     let mut conditions = None;
+    let mut startup_trace = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--gate" => {
@@ -145,6 +153,9 @@ fn parse_args() -> Args {
                     .unwrap_or_else(|| usage("--conditions requires <text>"));
                 conditions = Some(text);
             }
+            "--startup-trace" => {
+                startup_trace = true;
+            }
             other => usage(&format!("unknown argument: {other}")),
         }
     }
@@ -153,6 +164,9 @@ fn parse_args() -> Args {
     }
     if !prior.is_empty() && replay.is_none() {
         usage("--prior requires --replay");
+    }
+    if startup_trace && replay.is_none() {
+        usage("--startup-trace requires --replay (interactive mark needs a snapshot)");
     }
     Args {
         gate,
@@ -164,6 +178,7 @@ fn parse_args() -> Args {
         gate_out,
         manifest,
         conditions,
+        startup_trace,
     }
 }
 
@@ -171,8 +186,9 @@ fn usage(msg: &str) -> ! {
     eprintln!(
         "fft: {msg}\nusage: fft [--gate <seconds>] [--trace <path>] [--replay <fftlog>] \
          [--replay-at <ts>] [--prior <fftlog>]... [--gate-out <path>] [--manifest <path>] \
-         [--conditions <text>]\n\
-         --prior: earlier trade-date fftlog (repeatable, oldest first; requires --replay)"
+         [--conditions <text>] [--startup-trace]\n\
+         --prior: earlier trade-date fftlog (repeatable, oldest first; requires --replay)\n\
+         --startup-trace: emit first_paint_ms / first_interactive_ms then quit (M5 cold start)"
     );
     std::process::exit(2);
 }
@@ -197,12 +213,17 @@ fn gate_description(args: &Args) -> String {
 }
 
 fn main() -> ExitCode {
+    // M5 cold-start origin: wall clock before any arg parse / GPUI / engine work.
+    fft_ui::startup_trace::mark_process_start();
     // A market display must never render at GPUI's unfocused ~30fps throttle rate —
     // the tape runs whether or not this window holds keyboard focus (opt-out patched
     // into the pinned gpui rev — see the workspace Cargo.toml).
     // SAFETY: before any thread exists; GPUI reads the variable once, later.
     unsafe { std::env::set_var("GPUI_DISABLE_INACTIVE_THROTTLE", "1") };
     let args = parse_args();
+    if args.startup_trace {
+        fft_ui::startup_trace::enable();
+    }
     // Provenance and evidence-file writability are established before the window opens: a
     // 60 s measured run must never be spent to discover the result cannot be recorded.
     let meta = RunMeta {
