@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
-use fft_engine::{EngineCmd, EngineHandle, RenderSnapshot, SnapshotSlot};
+use fft_engine::{EngineHandle, RenderSnapshot, SnapshotSlot};
 use gpui::{Context, FocusHandle, MouseButton, Render, Window, div, prelude::*};
 
 use crate::dom_input::DomInput;
@@ -18,11 +18,11 @@ use crate::header::{FrameCadence, HeaderArgs, contract_context, header_strip};
 use crate::mp_element::MarketProfile;
 #[cfg(debug_assertions)]
 use crate::mp_view::check_pane_agreement;
-use crate::mp_view::display_session;
 use crate::os_theme::{ThemeSlot, resolve_font_family, spawn_theme_watcher};
 use crate::pane_state::PaneState;
 use crate::prefs::{Prefs, ShellPrefsHandles};
 use crate::prior_discovery::PriorOptions;
+use crate::shell_input;
 use crate::shell_panes;
 use crate::shell_replay::spawn_replay_engine;
 use crate::theme::Palette;
@@ -30,7 +30,7 @@ use crate::theme_warmup::{
     PendingTheme, ThemeWarmAction, collect_visible_glyph_jobs, drive_theme_warmup,
     note_theme_slot_advance, shape_pending_batch,
 };
-use crate::transport::{TransportCommand, TransportState, session_range_ns};
+use crate::transport::TransportState;
 use crate::transport_paint::{ScrubTrackGeom, TransportStripArgs, transport_strip};
 
 struct ReplayResources {
@@ -118,30 +118,10 @@ impl Shell {
         ShellPrefsHandles::new(Rc::clone(&self.panes), Rc::clone(&self.transport))
     }
 
-    fn dispatch_transport(engine: &Option<EngineHandle>, commands: &[TransportCommand]) {
-        let Some(handle) = engine.as_ref() else {
-            return;
-        };
-        for cmd in commands {
-            let engine_cmd = match cmd {
-                TransportCommand::Play => EngineCmd::Play,
-                TransportCommand::Pause => EngineCmd::Pause,
-                TransportCommand::SetSpeed(s) => EngineCmd::SetSpeed(*s),
-                TransportCommand::Seek { ts, generation } => EngineCmd::Seek {
-                    ts: *ts,
-                    generation: *generation,
-                },
-            };
-            handle
-                .send(engine_cmd)
-                .unwrap_or_else(|err| panic!("fft: transport command failed: {err}"));
-        }
-    }
-
     fn drain_scrub_seek(&self) {
         let cmd = self.transport.borrow_mut().take_coalesced_seek();
         if let Some(cmd) = cmd {
-            Self::dispatch_transport(&self.engine_slot.borrow(), std::slice::from_ref(&cmd));
+            shell_input::dispatch_transport(&self.engine_slot.borrow(), std::slice::from_ref(&cmd));
         }
     }
 
@@ -369,7 +349,8 @@ impl Render for Shell {
         let key_transport = Rc::clone(&self.transport);
         let key_engine = Rc::clone(&self.engine_slot);
         let key_applied_ts = self.frame_snapshot.applied_ts;
-        let (scrub_first, scrub_last) = scrub_range_from_snapshot(&self.frame_snapshot);
+        let (scrub_first, scrub_last) =
+            shell_input::scrub_range_from_snapshot(&self.frame_snapshot);
         let key_first = scrub_first;
         let key_last = scrub_last;
         let split_move = Rc::clone(&self.panes);
@@ -421,80 +402,37 @@ impl Render for Shell {
                 if event.keystroke.modifiers.modified() {
                     return;
                 }
-                let key = event.keystroke.key.as_str();
-                let (pane_handled, pane_refresh) = {
-                    let mut panes = key_panes.borrow_mut();
-                    match key {
-                        "1" => (true, panes.set_hovered_scale(1)),
-                        "2" => (true, panes.set_hovered_scale(2)),
-                        "4" => (true, panes.set_hovered_scale(4)),
-                        "t" => (true, panes.sync_scale_from_hovered()),
-                        "c" => (true, panes.recenter()),
-                        "d" => {
-                            let visible = panes.toggle_dom();
-                            if !visible {
-                                key_dom_input.borrow_mut().end_drag();
-                            }
-                            (true, true)
-                        }
-                        _ => (false, false),
-                    }
-                };
-                if pane_handled {
-                    if pane_refresh {
-                        window.refresh();
-                    }
-                    cx.stop_propagation();
+                let Some(refresh) = shell_input::handle_key(
+                    event.keystroke.key.as_str(),
+                    &shell_input::KeyCtx {
+                        panes: &key_panes,
+                        dom_input: &key_dom_input,
+                        transport: &key_transport,
+                        engine: &key_engine,
+                        applied_ts: key_applied_ts,
+                        first_ts: key_first,
+                        last_ts: key_last,
+                    },
+                ) else {
                     return;
-                }
-                let action = {
-                    let mut t = key_transport.borrow_mut();
-                    match key {
-                        "r" => t.toggle_mode(),
-                        "space" => t.toggle_play(),
-                        "]" => t.speed_up(),
-                        "[" => t.speed_down(),
-                        "left" => t.step(key_applied_ts, key_first, key_last, false),
-                        "right" => t.step(key_applied_ts, key_first, key_last, true),
-                        "l" => t.go_live_placeholder(),
-                        _ => return,
-                    }
                 };
-                if let Some(hint) = action.status_hint {
-                    eprintln!("fft: {hint}");
-                }
-                Self::dispatch_transport(&key_engine.borrow(), &action.commands);
-                if action.refresh {
+                if refresh {
                     window.refresh();
                 }
                 cx.stop_propagation();
             })
             .on_mouse_move(move |event, window, _| {
-                let mut panes = split_move.borrow_mut();
-                if panes.splitter.is_dragging() && event.dragging() {
-                    panes.splitter.queue(f32::from(event.position.x));
-                    drop(panes);
-                    window.refresh();
-                }
+                shell_input::on_splitter_mouse_move(event, &split_move, window);
             })
             .on_mouse_up(MouseButton::Left, move |_, _, _| {
-                split_end.borrow_mut().splitter.end();
+                shell_input::end_splitter_drag(&split_end);
             })
             .on_mouse_up_out(MouseButton::Left, move |_, _, _| {
-                split_end_out.borrow_mut().splitter.end();
+                shell_input::end_splitter_drag(&split_end_out);
             })
             .child(header)
             .child(panes_row)
             .children(strip)
             .into_any_element()
     }
-}
-
-fn scrub_range_from_snapshot(snap: &RenderSnapshot) -> (u64, u64) {
-    if let Some(session) = display_session(&snap.profile)
-        && session.trade_date > 0
-    {
-        return session_range_ns(session.trade_date);
-    }
-    (0, 1)
 }
