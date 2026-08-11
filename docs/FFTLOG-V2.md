@@ -5,6 +5,41 @@ in the same commit as any implementation change. `fft-log` owns framing and prim
 codecs only; book/profile/engine crates encode their checkpoint sections *through* the
 primitive writers defined here — `fft-log` never depends on their internals.
 
+## 0. Why not raw DBN? (rationale, 2026-08-11)
+
+Databento's DBN is an excellent *delivery* format; fftlog exists because the product's
+core promise — seek any nanosecond, bit-identical, p95 ≤ 250 ms — needs a *storage*
+format DBN cannot be. Measured on the Wednesday session (21,401,139 events; committed
+evidence in `perf-runner/results/`):
+
+1. **Seek.** DBN is a flat stream: showing the book at 09:50 means decoding + applying
+   from file start (whole-file apply ≈ seconds — the M1 gate's budget is 3 s for
+   exactly that pass). fftlog embeds six-section engine-state checkpoints (§5; live
+   cadence 60 s wall-clock, historical `fft-checkpoint` 60 s event-time — ENGINE.md
+   §4), so a seek is restore + short tail: measured **cold p95 6.9 ms over 1,000
+   random targets, bit-identity 100/100** (`2026-08-11-m2-seek-gate.json`,
+   `…-m2-bit-identity-100.json`). No vendor format can carry these checkpoints — the
+   state (L3 FIFO ranks, native-refresh classifier, profile lattices) is ours.
+2. **Replayability.** The raw stream is not naively replayable: daily files open with
+   snapshot blocks carrying original order-entry timestamps and non-channel sequence
+   numbers (§4 "Snapshot records" — replayed as live Adds they panic sequence
+   accounting; the 2026-08-10 incident in HANDOFF), files roll at 00:00 UTC against
+   CT trade dates, and symbol-filtered batch files carry forward seq holes that are
+   artifacts, not gaps (§4 "Batch gap policy"; Wed measures 1,880). Ingest resolves
+   all of this once; every consumer thereafter reads clean canonical frames.
+3. **Live recording.** M6 appends today's session continuously so it is scrubbable
+   mid-day; that requires the §7–8 append-commit rule and torn-tail recovery
+   (adversarially fuzzed: 29,571 mutants, zero findings — commit `e5eee19`). DBN has
+   no append/commit contract; it is not a WAL.
+4. **Size, incidentally.** Wed: 401 MB DBN.zst → 203 MB fftlog (9.47 B/event;
+   0.18–0.20× the legacy v1 logs across the week — m1 evidence); even the
+   checkpointed copy (328 MB) undercuts the source file.
+
+What fftlog deliberately does **not** do: reinterpret Databento's fields. Event records
+keep their `ts_event` UTC-ns basis, 1e-9 fixed-point prices, MBO channel sequences, and
+CME order ids verbatim (§1, §4). The format adds framing, checkpoints, and the commit
+rule — nothing else.
+
 ## 1. Conventions
 
 - All integers **little-endian**, fixed width. No varints.
