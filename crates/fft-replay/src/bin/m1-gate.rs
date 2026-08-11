@@ -181,10 +181,12 @@ fn main() {
         oneshot.seconds, oneshot.events
     );
 
-    let apply_budget_s = 2.0_f64;
-    let apply_pass = oneshot.seconds < apply_budget_s;
+    // ≤ 3 s: revised budget (René 2026-08-11, IMPLEMENTATION-PLAN M1 gate) — the
+    // original < 2 s predates per-event refresh/flow/profile state.
+    let apply_budget_s = 3.0_f64;
+    let apply_pass = oneshot.seconds <= apply_budget_s;
     eprintln!(
-        "m1-gate: apply gate (< {apply_budget_s} s): {} ({timing_label})",
+        "m1-gate: apply gate (<= {apply_budget_s} s): {} ({timing_label})",
         if apply_pass { "PASS" } else { "FAIL" }
     );
 

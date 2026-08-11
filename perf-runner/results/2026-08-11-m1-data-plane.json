@@ -1,6 +1,6 @@
 {
   "gate": "M1-data-plane",
-  "git_sha": "4192ef4de4d4030c3d34022e8cf489aa3c506a52",
+  "git_sha": "6d89b161e6c04423074122e5a48868ef2bd397ff",
   "date": "2026-08-11",
   "timing_label": "QUIET_BOX",
   "smoke": false,
@@ -75,9 +75,9 @@
   },
   "forward_apply": {
     "events": 21401139,
-    "seconds": 3.442979142,
-    "budget_seconds": 2,
-    "verdict": "FAIL",
+    "seconds": 2.859152003,
+    "budget_seconds": 3,
+    "verdict": "PASS",
     "timing_label": "QUIET_BOX",
     "applied_seq": 49143050,
     "applied_ts": 1785362399999689777,
@@ -97,7 +97,7 @@
         "n_chunks": 6,
         "chunk_sizes": [965951, 2242488, 8473885, 1590275, 7883753, 244787],
         "match_oneshot": true,
-        "seconds": 3.129028494,
+        "seconds": 2.854594110,
         "fail_reason": null
       },
       {
@@ -105,7 +105,7 @@
         "n_chunks": 7,
         "chunk_sizes": [5596069, 5588479, 856489, 553222, 4028497, 1948599, 2829784],
         "match_oneshot": true,
-        "seconds": 3.185755962,
+        "seconds": 2.844678633,
         "fail_reason": null
       },
       {
@@ -113,7 +113,7 @@
         "n_chunks": 7,
         "chunk_sizes": [6372754, 1097376, 4487811, 491356, 894921, 3390026, 4666895],
         "match_oneshot": true,
-        "seconds": 3.176727047,
+        "seconds": 2.887671015,
         "fail_reason": null
       },
       {
@@ -121,7 +121,7 @@
         "n_chunks": 4,
         "chunk_sizes": [2866082, 5213162, 12346999, 974896],
         "match_oneshot": true,
-        "seconds": 3.149352701,
+        "seconds": 2.870361438,
         "fail_reason": null
       },
       {
@@ -129,7 +129,7 @@
         "n_chunks": 4,
         "chunk_sizes": [3137325, 3147369, 7106775, 8009670],
         "match_oneshot": true,
-        "seconds": 3.169649397,
+        "seconds": 2.881326337,
         "fail_reason": null
       },
       {
@@ -137,7 +137,7 @@
         "n_chunks": 13,
         "chunk_sizes": [932879, 1516348, 2017226, 2691126, 895676, 4600872, 1433665, 1977717, 447922, 2292240, 730607, 1621932, 242929],
         "match_oneshot": true,
-        "seconds": 3.168953639,
+        "seconds": 2.882088137,
         "fail_reason": null
       },
       {
@@ -145,7 +145,7 @@
         "n_chunks": 4,
         "chunk_sizes": [3609124, 1704074, 845399, 15242542],
         "match_oneshot": true,
-        "seconds": 3.207593161,
+        "seconds": 2.847503631,
         "fail_reason": null
       }
     ]

@@ -10,7 +10,40 @@ CLI workers, no human relay. Full rule in AGENTS.md "Process rules". Standing or
 carry over: commit + push accepted work without asking (scoped commits per track, review
 first); recenter key `c`; models always pinned, never default/auto.
 
-## Wave 6 board (2026-08-11 — milestone gates, READ THIS FIRST)
+## Wave 7 board (2026-08-11 — M5 build-out, READ THIS FIRST)
+
+All measurable milestone gates are now green. M1 closed this wave: apply-path cleanup
+(`da67519`: budget poll every 256 events + reused frame buffer, −0.42 s, proven by
+chunked differential + m2 bit-identity 3/3) brought busiest-day apply to **2.859 s**;
+René ruled option 3 — budget revised to **≤ 3 s** (IMPLEMENTATION-PLAN M1, same-commit
+edit; the < 2 s number predated per-event refresh/flow/profile state, attribution in
+the M1-APPLY-PROFILE report: ~30% decode, ~47% book, ~0% profile, ~30% ReplaySource
+plumbing; refresh-GC exonerated at ~0.1% of wall) — **M1 gate PASS** evidence
+committed. A book-structure optimization track (hasher/pre-size/FIFO hot path, under
+M2 bit-identity) is queued as NON-BLOCKING polish.
+
+M5 features landed this wave (all reviewed, committed, pushed):
+- **UI-TRANSPORT** (`2654d8c`): r strip / space / [ ] speed ladder / arrow step
+  (PROVISIONAL ±1 s Seek — René ruling still open) / scrub with latest-wins one
+  Seek per frame, gens from 2 (anchor owns 1). Scrub range = session bounds from
+  trade_date (snapshot lacks log extent — plumb later if multi-day scrub wanted).
+- **DOM-ICEBERG** (`0a617d3`): per-price refresh badges + ×N fit-gated labels,
+  Mauve role; hidden volume deferred to the hover track (VOL too tight).
+- **LoadPriorSession** (`6836af0`, ENGINE.md §2 frozen same-commit): async
+  profile-only prior-day builds, 2 ms slices, complete-or-invisible, current
+  always last. UI wiring (shell issues oldest-first loads) NOT DONE — orchestrator
+  glue, next action.
+- **MP-PANZOOM** (`6d89b16`): prior sessions as collapsed CP strips, axis-dominant
+  horizontal pan, Ctrl+wheel cursor-anchored zoom 0.5–3×, state in PaneState.
+  (Worker died mid-track once; resumed and completed — a worker "report" that is
+  mid-work prose means the session ended, check the tree.)
+
+Remaining M5 (not started): hover queue-depth readouts (+ hidden volume there),
+prefs persistence, cold-start budget (<150 ms painted / <500 ms interactive),
+scrub-drag full-frame-rate validation against the seek service, five-claim
+acceptance run. Open René rulings: arrow-step semantics (±1 s provisional).
+
+## Wave 6 board (2026-08-11 — milestone gates — superseded by Wave 7 above)
 
 Three gate harnesses landed (`4192ef4`: m1-gate, m2-gate, m4-agreement — headless
 evidence bins with exact quiet-box commands in their --help/source) and the measured

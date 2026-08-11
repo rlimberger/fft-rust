@@ -57,8 +57,13 @@ with zero missed frames over 60 s on the perf runner while the harness records i
   reload count + cumulative hidden volume; any sequence gap ⇒ classification **unavailable**,
   never false.
 
-**Gate:** the full ESU6 week ingests; forward replay of the busiest session (20.6 M events)
-applies through the book in **< 2 s**; `check_invariants()` clean at every snapshot boundary;
+**Gate:** the full ESU6 week ingests; forward replay of the busiest session (21.4 M events —
+the "20.6 M" was a v1-era count) applies through book+profile in **≤ 3 s** (revised from
+< 2 s — decision: René, 2026-08-11, option 3: the original number predates per-event
+refresh/flow/profile state; measured attribution shows decode+book alone at ~2.6 s, evidence
+in perf-runner/results/2026-08-11-m1-data-plane.json and the M1-APPLY-PROFILE report; a
+book-structure optimization track (hasher/pre-size/FIFO hot path, under M2 bit-identity) is
+queued as non-blocking polish); `check_invariants()` clean at every snapshot boundary;
 **differential test: N-chunk replay ≡ one-shot replay, event-for-event** (the legacy bug that
 must never return); truncated-tail recovery test green; native-refresh fixture suite green
 (single refresh · multiple reloads · partial fill + modify · full fill then unrelated order ·
