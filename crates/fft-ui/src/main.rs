@@ -3,8 +3,8 @@
 //!
 //! ```text
 //! fft [--gate <seconds>] [--trace <path>] [--replay <fftlog>] [--replay-at <ts>]
-//!     [--prior <fftlog>]... [--gate-out <path>] [--manifest <path>] [--conditions <text>]
-//!     [--startup-trace]
+//!     [--prior <fftlog>]... [--no-prior-discovery] [--gate-out <path>] [--manifest <path>]
+//!     [--conditions <text>] [--startup-trace]
 //! ```
 //!
 //! `--startup-trace` emits wall-ms from process entry to first painted frame and to the
@@ -25,8 +25,10 @@
 //!
 //! `--prior <fftlog>` (repeatable) loads earlier trade-date logs as profile-only prior
 //! sessions after Play. Order on the CLI is preserved and is the UI contract: **oldest
-//! first**. Wrong dates are skipped loudly by the engine (`docs/ENGINE.md` §2). Requires
-//! `--replay`. Each path is existence-validated at startup (same rationale as `--manifest`).
+//! first**. Existing matching priors are also discovered beside the replay log and under
+//! the session cache unless `--no-prior-discovery` is supplied. Wrong explicit dates are
+//! skipped loudly by the engine (`docs/ENGINE.md` §2). Requires `--replay`. Each explicit
+//! path is existence-validated at startup (same rationale as `--manifest`).
 //!
 //! `--gate-out` writes the run's self-identifying JSON evidence (git SHA + dirty, pinned
 //! `gpui` rev, replay path, frame-time distribution, coverage) — on `FAIL` as well as
@@ -60,6 +62,8 @@ struct Args {
     replay_at_arg: Option<String>,
     /// Prior-day fftlogs, oldest-first (CLI order preserved).
     prior: Vec<PathBuf>,
+    /// Disable sibling/cache prior discovery for deterministic gates and benchmarks.
+    no_prior_discovery: bool,
     gate_out: Option<PathBuf>,
     /// Perf-runner manifest path — validated at startup, recorded verbatim in evidence.
     manifest: Option<PathBuf>,
@@ -77,6 +81,7 @@ fn parse_args() -> Args {
     let mut replay_at = None;
     let mut replay_at_arg = None;
     let mut prior = Vec::new();
+    let mut no_prior_discovery = false;
     let mut gate_out = None;
     let mut manifest = None;
     let mut conditions = None;
@@ -125,6 +130,9 @@ fn parse_args() -> Args {
                     usage(&format!("--prior file does not exist: {}", path.display()));
                 }
                 prior.push(path);
+            }
+            "--no-prior-discovery" => {
+                no_prior_discovery = true;
             }
             "--gate-out" => {
                 let path = args
@@ -175,6 +183,7 @@ fn parse_args() -> Args {
         replay_at,
         replay_at_arg,
         prior,
+        no_prior_discovery,
         gate_out,
         manifest,
         conditions,
@@ -185,9 +194,10 @@ fn parse_args() -> Args {
 fn usage(msg: &str) -> ! {
     eprintln!(
         "fft: {msg}\nusage: fft [--gate <seconds>] [--trace <path>] [--replay <fftlog>] \
-         [--replay-at <ts>] [--prior <fftlog>]... [--gate-out <path>] [--manifest <path>] \
-         [--conditions <text>] [--startup-trace]\n\
+         [--replay-at <ts>] [--prior <fftlog>]... [--no-prior-discovery] \
+         [--gate-out <path>] [--manifest <path>] [--conditions <text>] [--startup-trace]\n\
          --prior: earlier trade-date fftlog (repeatable, oldest first; requires --replay)\n\
+         --no-prior-discovery: disable sibling/cache prior scanning\n\
          --startup-trace: emit first_paint_ms / first_interactive_ms then quit (M5 cold start)"
     );
     std::process::exit(2);
@@ -251,6 +261,7 @@ fn main() -> ExitCode {
     let replay = args.replay;
     let replay_at = args.replay_at;
     let prior = args.prior;
+    let discover_priors = !args.no_prior_discovery;
 
     gpui_platform::application().run(move |cx: &mut App| {
         cx.on_window_closed(|cx, _| cx.quit()).detach();
@@ -267,6 +278,7 @@ fn main() -> ExitCode {
                         replay,
                         replay_at,
                         prior,
+                        discover_priors,
                         engine_for_app,
                         cx,
                     );

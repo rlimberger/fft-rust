@@ -3,13 +3,17 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
 
 use fft_engine::{EngineCmd, EngineConfig, EngineHandle, EngineService, SnapshotSlot, Source};
+
+use crate::prior_discovery::discover_prior_sessions;
 
 pub(crate) fn spawn_replay_engine(
     path: PathBuf,
     replay_at: Option<u64>,
     prior_sessions: &[PathBuf],
+    discover_priors: bool,
     speed: f64,
 ) -> (EngineHandle, SnapshotSlot, Arc<AtomicBool>) {
     let wake_dirty = Arc::new(AtomicBool::new(false));
@@ -23,6 +27,7 @@ pub(crate) fn spawn_replay_engine(
         }),
     )
     .unwrap_or_else(|err| panic!("fft: failed to spawn engine thread: {err}"));
+    let discovery_path = path.clone();
     handle
         .send(EngineCmd::SetSource(Source::Replay { path }))
         .unwrap_or_else(|err| panic!("fft: SetSource failed: {err}"));
@@ -41,13 +46,36 @@ pub(crate) fn spawn_replay_engine(
             .send(EngineCmd::SetSpeed(speed))
             .unwrap_or_else(|err| panic!("fft: SetSpeed failed: {err}"));
     }
-    // ENGINE.md §2: one LoadPriorSession per prior, oldest-first (CLI order).
+    // ENGINE.md §2: one LoadPriorSession per explicit prior, oldest-first (CLI order).
     for prior in prior_sessions {
         handle
             .send(EngineCmd::LoadPriorSession {
                 path: prior.clone(),
             })
             .unwrap_or_else(|err| panic!("fft: LoadPriorSession failed: {err}"));
+    }
+    if discover_priors {
+        let explicit = prior_sessions.to_vec();
+        let tx = handle.command_sender();
+        thread::Builder::new()
+            .name("fft-prior-discovery".into())
+            .spawn(move || {
+                for prior in discover_prior_sessions(&discovery_path, &explicit) {
+                    let (year, month, day) =
+                        crate::datetime::civil_from_days(i64::from(prior.trade_date));
+                    eprintln!(
+                        "fft: discovered prior session {year:04}-{month:02}-{day:02} at {}",
+                        prior.path.display()
+                    );
+                    if tx
+                        .send(EngineCmd::LoadPriorSession { path: prior.path })
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            })
+            .unwrap_or_else(|err| panic!("fft: failed to spawn prior discovery thread: {err}"));
     }
     let snapshots = handle.snapshots();
     (handle, snapshots, wake_dirty)
