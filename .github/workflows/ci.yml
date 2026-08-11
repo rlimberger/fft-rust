@@ -37,8 +37,38 @@ jobs:
           sudo apt-get install -y libwayland-dev libxkbcommon-x11-dev libfontconfig-dev \
             libasound2-dev libvulkan1 libzstd-dev
       - uses: Swatinem/rust-cache@v2
-      # Keep every executable harness buildable even though timing gates never run on
-      # shared runners. Correctness equivalents are already in fft-replay's synthetic
-      # checkpoint tests: chunked_forward (M1) and seek_differential (M2, six sections).
+      # Generic --bins (not a hand list): every [[bin]] in the workspace must compile
+      # on shared CI even though timing gates never run here. New gate bins (m7-soak,
+      # claim4-census, m15-gate, …) are covered automatically. Correctness equivalents
+      # live in fft-replay synthetic checkpoint tests (chunked_forward / seek_differential).
       - run: cargo build --workspace --bins
       - run: cargo test --workspace
+
+  # Shell harnesses under perf-runner/ (incl. lib/) are desk-box only for execution,
+  # but syntax must not rot on shared CI. No gate binaries are invoked here.
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: bash -n (perf-runner + lib)
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          scripts=(perf-runner/*.sh perf-runner/lib/*.sh)
+          if [ ${#scripts[@]} -eq 0 ]; then
+            echo "no perf-runner shell scripts found" >&2
+            exit 1
+          fi
+          for f in "${scripts[@]}"; do
+            echo "bash -n $f"
+            bash -n "$f"
+          done
+      - name: shellcheck (perf-runner + lib)
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          # --severity=warning: existing SC1091 (dynamic source paths) / SC2012 (ls)
+          # are info-level and must not fail CI; real errors/warnings still do.
+          # -x follows `source` of lib/*.sh when the path is static.
+          shellcheck --severity=warning -x perf-runner/*.sh perf-runner/lib/*.sh
