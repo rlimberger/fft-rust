@@ -108,10 +108,12 @@ measured on a two-file ingest; the six-file regen command correctly reports 30,2
 (other days' blocks). Kept bytes are byte-identical (sha256-verified); 21,401,139
 events / 0 gaps / 1880 holes / 7561 kept / 1393 checkpoints all match.
 
-**Model roster (René, this session): subagents = ocx-xai-grok-4-5,
-ocx-cursor-grok-4-5-fast, ocx-gpt-5-6-sol, ocx-anthropic-claude-opus-5 — use them
-liberally, always pinned. Claude Fable 5 is the orchestrator only and off limits as a
-subagent.**
+**Model roster (René 2026-08-11, supersedes the earlier roster order): subagent priority
+is 1. `ocx-gpt-5-6-sol` (Codex Sol) → 2. `ocx-cursor-grok-4-5-fast` (Cursor Grok) →
+3. `ocx-xai-grok-4-5` (xai Grok) — prefer the highest-priority model available for each
+brief, fan out MANY in parallel. Opus 5 remains available for read-only research when the
+Grok/Sol lanes are saturated. Always pinned, never default/auto. Claude Fable 5 is the
+orchestrator only and off limits as a subagent.**
 
 **Standing directive (René, this session): gate/replay sessions run anchored at the PRD
 §6 sim-live head — Wed 2026-07-29 09:50 America/New_York.** (René wrote "wed 7-28"; the
