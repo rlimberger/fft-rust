@@ -8,6 +8,8 @@ pub const MP_FOOTER_H: f32 = 22.0;
 pub const PRIOR_CP_W: f32 = 28.0;
 /// Divider between session blocks at OS scale 1.0.
 pub const SESSION_DIVIDER_W: f32 = 2.0;
+/// Readable pinned price-axis width at OS scale 1.0.
+pub const PRICE_AXIS_W: f32 = 80.0;
 /// Axis-dominant drag threshold in px (classify once past this).
 pub const AXIS_DOMINANCE_PX: f32 = 3.0;
 /// Horizontal zoom clamps.
@@ -175,8 +177,8 @@ pub struct SessionLayout {
 ///
 /// Priors are collapsed letters-only CP columns (oldest left). Current session keeps the
 /// CP→EP→PV→SV body fractions of today's layout, scaled by `zoom`. The price axis stays
-/// pinned on the right and is unaffected by horizontal pan. `pan_px` is content-space
-/// offset (positive shifts content left / reveals older sessions).
+/// pinned on the right and is unaffected by horizontal pan. Positive `pan_px` shifts content
+/// left, revealing the current/right side; dragging right decreases pan and reveals older/left.
 pub fn session_layout(
     origin_x: f32,
     pane_width: f32,
@@ -195,8 +197,8 @@ pub fn session_layout(
         "UI scale must be > 0"
     );
     let zoom = clamp_zoom(zoom);
-    let axis_w = pane_width * FRACTIONS[4];
-    let strip_w = (pane_width - axis_w).max(0.0);
+    let axis_w = (PRICE_AXIS_W * ui_scale).min(pane_width);
+    let strip_w = pane_width - axis_w;
     let axis = Strip {
         x: origin_x + strip_w,
         w: axis_w,
@@ -259,8 +261,9 @@ pub fn clamp_zoom(zoom: f32) -> f32 {
     zoom.clamp(ZOOM_MIN, ZOOM_MAX)
 }
 
-pub fn clamp_pan(pan_px: f32, content_width: f32, viewport_width: f32) -> f32 {
-    assert!(pan_px.is_finite(), "MP pan must be finite");
+/// Furthest valid horizontal pan. At this position the current session's right edge is
+/// aligned with the strip viewport's right edge.
+pub fn current_session_max_pan(content_width: f32, viewport_width: f32) -> f32 {
     assert!(
         content_width.is_finite() && content_width >= 0.0,
         "MP content width must be finite"
@@ -269,15 +272,83 @@ pub fn clamp_pan(pan_px: f32, content_width: f32, viewport_width: f32) -> f32 {
         viewport_width.is_finite() && viewport_width >= 0.0,
         "MP strip viewport must be finite"
     );
-    // Keep the current session's right edge from leaving the strip viewport entirely,
-    // and never pan past the leftmost content edge.
-    let max_pan = (content_width - viewport_width).max(0.0);
-    pan_px.clamp(0.0, max_pan)
+    (content_width - viewport_width).max(0.0)
+}
+
+/// Default/rest pan: current session right-aligned in the strip viewport.
+pub fn current_session_rest_pan(content_width: f32, viewport_width: f32) -> f32 {
+    current_session_max_pan(content_width, viewport_width)
+}
+
+pub fn clamp_pan(pan_px: f32, content_width: f32, viewport_width: f32) -> f32 {
+    assert!(pan_px.is_finite(), "MP pan must be finite");
+    pan_px.clamp(0.0, current_session_max_pan(content_width, viewport_width))
+}
+
+#[derive(Clone, Copy)]
+enum ZoomAnchor {
+    Prior { index: usize, local: f32 },
+    Divider { index: usize, local: f32 },
+    Current { local: f32 },
+}
+
+fn zoom_anchor(layout: &SessionLayout, cursor_x: f32, ui_scale: f32) -> (ZoomAnchor, f32) {
+    let viewport_local = (cursor_x - layout.strip_viewport.x).clamp(0.0, layout.strip_viewport.w);
+    let content_x = (layout.pan_px + viewport_local).clamp(0.0, layout.content_width);
+    let prior_count = layout.blocks.len() - 1;
+    let prior_w = PRIOR_CP_W * ui_scale * layout.zoom;
+    let divider_w = SESSION_DIVIDER_W * ui_scale;
+    let stride = prior_w + divider_w;
+
+    for index in 0..prior_count {
+        let start = index as f32 * stride;
+        if content_x <= start + prior_w {
+            return (
+                ZoomAnchor::Prior {
+                    index,
+                    local: ((content_x - start) / prior_w).clamp(0.0, 1.0),
+                },
+                viewport_local,
+            );
+        }
+        if content_x <= start + stride {
+            return (
+                ZoomAnchor::Divider {
+                    index,
+                    local: ((content_x - start - prior_w) / divider_w).clamp(0.0, 1.0),
+                },
+                viewport_local,
+            );
+        }
+    }
+
+    let current_start = prior_count as f32 * stride;
+    let current_w = layout.blocks.last().expect("current session block").w;
+    let local = if current_w > 0.0 {
+        ((content_x - current_start) / current_w).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (ZoomAnchor::Current { local }, viewport_local)
+}
+
+fn anchored_content_x(anchor: ZoomAnchor, layout: &SessionLayout, ui_scale: f32) -> f32 {
+    let prior_w = PRIOR_CP_W * ui_scale * layout.zoom;
+    let divider_w = SESSION_DIVIDER_W * ui_scale;
+    let stride = prior_w + divider_w;
+    match anchor {
+        ZoomAnchor::Prior { index, local } => index as f32 * stride + local * prior_w,
+        ZoomAnchor::Divider { index, local } => index as f32 * stride + prior_w + local * divider_w,
+        ZoomAnchor::Current { local } => {
+            (layout.blocks.len() - 1) as f32 * stride
+                + local * layout.blocks.last().expect("current session block").w
+        }
+    }
 }
 
 /// Apply a multiplicative zoom step anchored at cursor-x inside the strip viewport.
-/// Returns `(new_zoom, new_pan_px)` such that the content point under `cursor_x`
-/// stays fixed.
+/// Fixed-width dividers retain their width; the block-local point under `cursor_x` stays fixed
+/// unless the resulting pan reaches a navigation bound.
 #[allow(clippy::too_many_arguments)]
 pub fn zoom_at_cursor(
     origin_x: f32,
@@ -301,24 +372,14 @@ pub fn zoom_at_cursor(
     if (new_zoom - before.zoom).abs() <= f32::EPSILON {
         return (before.zoom, before.pan_px);
     }
-    let local = (cursor_x - before.strip_viewport.x).clamp(0.0, before.strip_viewport.w);
-    let content_x = before.pan_px + local;
-    let scaled_content_x = content_x * (new_zoom / before.zoom);
+    let (anchor, viewport_local) = zoom_anchor(&before, cursor_x, ui_scale);
+    let after = session_layout(origin_x, pane_width, session_count, 0.0, new_zoom, ui_scale);
     let new_pan = clamp_pan(
-        scaled_content_x - local,
-        before.content_width * (new_zoom / before.zoom),
-        before.strip_viewport.w,
+        anchored_content_x(anchor, &after, ui_scale) - viewport_local,
+        after.content_width,
+        after.strip_viewport.w,
     );
-    // Recompute against the true content width at the new zoom (axis fraction fixed).
-    let after = session_layout(
-        origin_x,
-        pane_width,
-        session_count,
-        new_pan,
-        new_zoom,
-        ui_scale,
-    );
-    (after.zoom, after.pan_px)
+    (after.zoom, new_pan)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -350,211 +411,5 @@ pub fn classify_drag_axis(dx: f32, dy: f32, threshold: f32) -> DragAxis {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn strips_cover_width_and_pin_axis_right() {
-        let cols = strips(10.0, 500.0);
-        assert!((cols.cp.x - 10.0).abs() < 1e-6);
-        assert!((cols.axis.x + cols.axis.w - 510.0).abs() < 1e-4);
-    }
-
-    #[test]
-    fn pv_sv_scaling_is_linear_and_quiet_at_zero() {
-        assert_eq!(volume_width(0, 10, 80.0), 0.0);
-        assert_eq!(volume_width(5, 10, 80.0), 40.0);
-        assert_eq!(volume_width(10, 10, 80.0), 80.0);
-    }
-
-    #[test]
-    fn sv_bar_width_is_driven_by_session_volume_only() {
-        // Mirror paint_rows: available = cols.sv.w - 4.0; width = volume_width(session_volume, …).
-        // Aggressor buy/sell volumes must not change the SV geometry (René 2026-08-11).
-        let cols = strips(0.0, 500.0);
-        let available = cols.sv.w - 4.0;
-        let max_sv = 100;
-        let session_volume = 50u64;
-        let buy_volume = 90u64;
-        let sell_volume = 90u64;
-        let sv_w = volume_width(session_volume, max_sv, available);
-        assert!((sv_w - available * 0.5).abs() < 1e-4);
-        let legacy_half = (cols.sv.w - 4.0) / 2.0;
-        let legacy_sell = volume_width(sell_volume, max_sv, legacy_half);
-        let legacy_buy = volume_width(buy_volume, max_sv, legacy_half);
-        assert!(
-            (sv_w - legacy_sell).abs() > 1.0 && (sv_w - legacy_buy).abs() > 1.0,
-            "session_volume width must differ from the removed centered aggressor half-bars"
-        );
-    }
-
-    #[test]
-    fn va_line_placement_uses_descending_price_rows() {
-        assert_eq!(price_line_y(100, 104, 2, 10.0, 1.0), Some(50.0));
-        assert_eq!(price_line_y(101, 104, 2, 10.0, 1.0), None);
-        assert_eq!(price_line_y(106, 104, 2, 10.0, 1.0), None);
-    }
-
-    #[test]
-    fn scale_multiplies_row_y_and_max_rows() {
-        assert!((mp_row_h(1.5) - MP_ROW_H * 1.5).abs() < 1e-6);
-        assert!((mp_footer_h(1.5) - MP_FOOTER_H * 1.5).abs() < 1e-6);
-        // height 182, footer 22 → body 160 / 16 = 10 at scale 1.0
-        assert_eq!(max_rows(182.0, 1.0), 10);
-        // footer 33, body 149 / 24 = 6.208 → 6
-        assert_eq!(max_rows(182.0, 1.5), 6);
-        assert!((row_y(10.0, 2, 1.0) - 42.0).abs() < 1e-4);
-        assert!((row_y(10.0, 2, 1.5) - (10.0 + 2.0 * 24.0)).abs() < 1e-4);
-        // price_line_y at scale 1.5: row 2 → 10 + 2*24 + 12 = 70
-        assert_eq!(price_line_y(100, 104, 2, 10.0, 1.5), Some(70.0));
-    }
-
-    #[test]
-    fn single_session_matches_legacy_body_and_pinned_axis() {
-        let layout = session_layout(0.0, 500.0, 1, 0.0, 1.0, 1.0);
-        let legacy = strips(0.0, 500.0);
-        assert_eq!(layout.blocks.len(), 1);
-        assert!(layout.dividers.is_empty());
-        assert!((layout.axis.x - legacy.axis.x).abs() < 1e-4);
-        assert!((layout.axis.w - legacy.axis.w).abs() < 1e-4);
-        let cur = &layout.blocks[0];
-        assert_eq!(cur.kind, SessionBlockKind::Current);
-        assert!((cur.strips.cp.x - legacy.cp.x).abs() < 1e-3);
-        assert!((cur.strips.cp.w - legacy.cp.w).abs() < 1e-3);
-        assert!((cur.strips.ep.w - legacy.ep.w).abs() < 1e-3);
-        assert!((cur.strips.pv.w - legacy.pv.w).abs() < 1e-3);
-        assert!((cur.strips.sv.w - legacy.sv.w).abs() < 1e-3);
-        assert!((layout.pan_px).abs() < 1e-6);
-    }
-
-    #[test]
-    fn three_sessions_place_priors_left_with_dividers() {
-        let layout = session_layout(10.0, 500.0, 3, 0.0, 1.0, 1.0);
-        assert_eq!(layout.blocks.len(), 3);
-        assert_eq!(layout.dividers.len(), 2);
-        assert_eq!(layout.blocks[0].kind, SessionBlockKind::Prior);
-        assert_eq!(layout.blocks[1].kind, SessionBlockKind::Prior);
-        assert_eq!(layout.blocks[2].kind, SessionBlockKind::Current);
-        assert!((layout.blocks[0].w - PRIOR_CP_W).abs() < 1e-4);
-        assert!((layout.blocks[0].x - 10.0).abs() < 1e-4);
-        assert!((layout.dividers[0] - (10.0 + PRIOR_CP_W)).abs() < 1e-4);
-        // Second divider sits after prior1, before the current block — only one
-        // SESSION_DIVIDER_W between the two priors, not two.
-        assert!((layout.dividers[1] - (10.0 + 2.0 * PRIOR_CP_W + SESSION_DIVIDER_W)).abs() < 1e-4);
-        let expected_content = 2.0 * (PRIOR_CP_W + SESSION_DIVIDER_W) + layout.strip_viewport.w;
-        assert!((layout.content_width - expected_content).abs() < 1e-3);
-        // Current starts after two prior blocks + dividers.
-        let expected_current_x = 10.0 + 2.0 * (PRIOR_CP_W + SESSION_DIVIDER_W);
-        assert!((layout.blocks[2].x - expected_current_x).abs() < 1e-3);
-        // Axis pinned right, independent of priors.
-        assert!((layout.axis.x + layout.axis.w - 510.0).abs() < 1e-3);
-    }
-
-    #[test]
-    fn five_sessions_widths_and_offsets() {
-        let layout = session_layout(0.0, 1_000.0, 5, 0.0, 1.0, 1.0);
-        assert_eq!(layout.blocks.len(), 5);
-        assert_eq!(layout.dividers.len(), 4);
-        for block in &layout.blocks[..4] {
-            assert_eq!(block.kind, SessionBlockKind::Prior);
-            assert!((block.w - PRIOR_CP_W).abs() < 1e-4);
-        }
-        assert_eq!(layout.blocks[4].kind, SessionBlockKind::Current);
-        assert!((layout.blocks[4].w - layout.strip_viewport.w).abs() < 1e-3);
-        let expected = 4.0 * (PRIOR_CP_W + SESSION_DIVIDER_W) + layout.strip_viewport.w;
-        assert!((layout.content_width - expected).abs() < 1e-3);
-    }
-
-    #[test]
-    fn pan_clamps_both_ends() {
-        let layout = session_layout(0.0, 500.0, 3, 0.0, 1.0, 1.0);
-        let max_pan = layout.content_width - layout.strip_viewport.w;
-        assert!(max_pan > 0.0);
-        let left = session_layout(0.0, 500.0, 3, -50.0, 1.0, 1.0);
-        assert!((left.pan_px - 0.0).abs() < 1e-4);
-        let right = session_layout(0.0, 500.0, 3, max_pan + 80.0, 1.0, 1.0);
-        assert!((right.pan_px - max_pan).abs() < 1e-3);
-        // At max pan, current session's right edge meets the strip viewport's right edge.
-        let current = right.blocks.last().unwrap();
-        assert!(
-            ((current.x + current.w) - (right.strip_viewport.x + right.strip_viewport.w)).abs()
-                < 1e-2
-        );
-    }
-
-    #[test]
-    fn zoom_anchor_keeps_cursor_content_invariant() {
-        let origin = 0.0;
-        let width = 500.0;
-        let sessions = 3usize;
-        let pan = 20.0;
-        let zoom = 1.0;
-        let cursor = 120.0;
-        let before = session_layout(origin, width, sessions, pan, zoom, 1.0);
-        let local = cursor - before.strip_viewport.x;
-        let content_before = before.pan_px + local;
-        let (new_zoom, new_pan) =
-            zoom_at_cursor(origin, width, sessions, pan, zoom, 1.0, cursor, 1.0);
-        assert!((new_zoom - ZOOM_STEP).abs() < 1e-4);
-        let after = session_layout(origin, width, sessions, new_pan, new_zoom, 1.0);
-        let content_after = after.pan_px + local;
-        let expected = content_before * (new_zoom / zoom);
-        assert!(
-            (content_after - expected).abs() < 0.05,
-            "content under cursor drifted: before_scaled={expected} after={content_after}"
-        );
-    }
-
-    /// Plain wheel over the MP maps to discrete notches → `zoom_at_cursor` factor math
-    /// (Ctrl is optional at the shell binding; the pure path is identical either way).
-    #[test]
-    fn wheel_over_mp_produces_zoom_deltas() {
-        assert_eq!(scroll_notches(1.0), 1.0);
-        assert_eq!(scroll_notches(-3.5), -1.0);
-        assert_eq!(scroll_notches(0.0), 0.0);
-        assert_eq!(scroll_notches(f32::NAN), 0.0);
-
-        let origin = 0.0;
-        let width = 500.0;
-        let sessions = 2usize;
-        let pan = 10.0;
-        let zoom = 1.0;
-        let cursor = 80.0;
-        let notches = scroll_notches(2.0);
-        let (zoomed_in, _) =
-            zoom_at_cursor(origin, width, sessions, pan, zoom, 1.0, cursor, notches);
-        assert!((zoomed_in - ZOOM_STEP).abs() < 1e-4);
-
-        let notches_out = scroll_notches(-1.0);
-        let (zoomed_out, _) =
-            zoom_at_cursor(origin, width, sessions, pan, zoom, 1.0, cursor, notches_out);
-        assert!((zoomed_out - 1.0 / ZOOM_STEP).abs() < 1e-4);
-
-        // Clamp ceiling / floor unchanged.
-        let (at_max, _) = zoom_at_cursor(origin, width, sessions, pan, ZOOM_MAX, 1.0, cursor, 1.0);
-        assert!((at_max - ZOOM_MAX).abs() < 1e-6);
-        let (at_min, _) = zoom_at_cursor(origin, width, sessions, pan, ZOOM_MIN, 1.0, cursor, -1.0);
-        assert!((at_min - ZOOM_MIN).abs() < 1e-6);
-    }
-
-    #[test]
-    fn axis_dominance_classifier() {
-        assert_eq!(
-            classify_drag_axis(1.0, 1.0, AXIS_DOMINANCE_PX),
-            DragAxis::Undecided
-        );
-        assert_eq!(
-            classify_drag_axis(4.0, 1.0, AXIS_DOMINANCE_PX),
-            DragAxis::Horizontal
-        );
-        assert_eq!(
-            classify_drag_axis(1.0, 4.0, AXIS_DOMINANCE_PX),
-            DragAxis::Vertical
-        );
-        // Equal past threshold prefers vertical (price pan is the legacy path).
-        assert_eq!(
-            classify_drag_axis(5.0, 5.0, AXIS_DOMINANCE_PX),
-            DragAxis::Vertical
-        );
-    }
-}
+#[path = "mp_layout_tests.rs"]
+mod tests;

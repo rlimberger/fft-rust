@@ -37,8 +37,8 @@ pub(crate) fn prepare_tpos(
         },
     );
     let cp_count = cp_eth.len().max(1);
-    let cp_font = px(((cols.cp.w - 6.0) / cp_count as f32 / 0.62).clamp(5.0, 8.0) * scale);
-    let ep_font = px((cols.ep.w / ETH_PERIOD_COUNT as f32 / 0.62).clamp(5.0, 9.0) * scale);
+    let cp_font = px(cp_font_size(cols.cp.w, cp_count, scale));
+    let ep_font = px(ep_font_size(cols.ep.w, scale));
     prepare_line(
         cache,
         window,
@@ -114,7 +114,7 @@ pub(crate) fn prepare_cp_only(
         },
     );
     let cp_count = cp_eth.len().max(1);
-    let cp_font = px(((cp.w - 6.0) / cp_count as f32 / 0.62).clamp(5.0, 8.0) * scale);
+    let cp_font = px(cp_font_size(cp.w, cp_count, scale));
     prepare_line(
         cache,
         window,
@@ -123,7 +123,7 @@ pub(crate) fn prepare_cp_only(
         cp,
         y,
         cp_font,
-        palette.eth_tpo,
+        dimmed(palette.eth_tpo),
         scale,
     );
     prepare_line(
@@ -134,9 +134,26 @@ pub(crate) fn prepare_cp_only(
         cp,
         y,
         cp_font,
-        palette.rth_tpo,
+        dimmed(palette.rth_tpo),
         scale,
     );
+}
+
+fn fitted_font_size(width: f32, glyphs: usize, side_padding: f32, min: f32, max: f32) -> f32 {
+    ((width - side_padding) / glyphs.max(1) as f32 / 0.62).clamp(min, max)
+}
+
+fn cp_font_size(width: f32, glyphs: usize, scale: f32) -> f32 {
+    fitted_font_size(width, glyphs, 6.0 * scale, 7.0 * scale, 8.0 * scale)
+}
+
+fn ep_font_size(width: f32, scale: f32) -> f32 {
+    fitted_font_size(width, ETH_PERIOD_COUNT, 0.0, 7.0 * scale, 9.0 * scale)
+}
+
+fn dimmed(mut color: Hsla) -> Hsla {
+    color.a *= 0.55;
+    color
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -151,15 +168,16 @@ fn prepare_line(
     color: Hsla,
     scale: f32,
 ) {
-    if text.trim().is_empty() {
+    if text.trim().is_empty() || strip.w <= 0.0 {
         return;
     }
     let rh = mp_row_h(scale);
     let line = cache.get_or_shape(window, text, color, font_size);
+    let horizontal_padding = 3.0 * scale;
     texts.push(PreparedText {
         line,
-        origin: point(px(strip.x + 3.0), px(y)),
-        align_width: px((strip.w - 6.0).max(0.0)),
+        origin: point(px(strip.x + horizontal_padding), px(y)),
+        align_width: px((strip.w - 2.0 * horizontal_padding).max(0.0)),
         align: TextAlign::Left,
         line_height: px(rh - 1.0 * scale),
         clip: Bounds::new(
@@ -167,4 +185,18 @@ fn prepare_line(
             size(px(strip.w), px(rh)),
         ),
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fitted_fonts_use_physical_width_without_scale_squared() {
+        assert_eq!(cp_font_size(28.0, 1, 1.0), 8.0);
+        assert_eq!(cp_font_size(42.0, 1, 1.5), 12.0);
+        assert_eq!(cp_font_size(42.0, 20, 1.5), 10.5);
+        assert_eq!(ep_font_size(380.0, 1.0), 9.0);
+        assert_eq!(ep_font_size(570.0, 1.5), 13.5);
+    }
 }

@@ -135,29 +135,6 @@ pub fn visible_rows(
     VisibleProfile { scaled_tick, rows }
 }
 
-pub fn pan_center(
-    session: &ProfileSessionRender,
-    tick: Price,
-    scale: u8,
-    center: Option<Price>,
-    delta: i64,
-) -> Option<Price> {
-    validate_scale(scale);
-    let (first, last) = (session.rows.first()?, session.rows.last()?);
-    let scaled_tick = tick
-        .0
-        .checked_mul(i64::from(scale))
-        .expect("scaled MP tick overflows i64");
-    assert!(scaled_tick > 0, "MP tick size must be positive");
-    let midpoint = i64::try_from((i128::from(first.price.0) + i128::from(last.price.0)) / 2)
-        .expect("MP range midpoint fits i64");
-    let current = center.unwrap_or(Price(midpoint));
-    let moved = i128::from(current.0) + i128::from(delta) * i128::from(scaled_tick);
-    Some(Price(
-        i64::try_from(moved).expect("MP pan center overflows i64"),
-    ))
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VolumeMismatch {
     pub price: Price,

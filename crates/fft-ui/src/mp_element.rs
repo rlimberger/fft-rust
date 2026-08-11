@@ -18,7 +18,8 @@ use crate::mp_layout::{SessionBlock, SessionLayout, mp_footer_h, mp_row_h, row_y
 use crate::mp_paint::{paint_dividers, paint_period_cursor, paint_rows, paint_semantic_lines};
 use crate::mp_prepare::prepare_tpos;
 use crate::mp_sessions::{
-    is_prior, paint_prior_va_vpoc, paint_session_dividers, prepare_prior_session, prior_markers,
+    block_intersects_viewport, clip_prepared_texts, is_prior, paint_prior_va_vpoc,
+    paint_session_dividers, prepare_prior_session, prior_markers, same_price_ladder,
 };
 use crate::mp_view::{VisibleProfile, current_session, session_open_footer, visible_rows};
 use crate::theme::Palette;
@@ -101,6 +102,7 @@ pub struct MpPrepaint {
     pub(crate) markers: Markers,
     pub(crate) layout: SessionLayout,
     pub(crate) prior_markers: Vec<(usize, Markers)>,
+    pub(crate) has_current_session: bool,
 }
 
 impl Element for MarketProfile {
@@ -151,6 +153,7 @@ impl Element for MarketProfile {
                 markers: Markers::default(),
                 layout: session_layout(origin_x, width, 1, 0.0, 1.0, scale),
                 prior_markers: Vec::new(),
+                has_current_session: false,
             };
         };
         let sessions = &self.snapshot.profile.sessions;
@@ -188,18 +191,26 @@ impl Element for MarketProfile {
         let mut cache = self.glyph_cache.borrow_mut();
         let body_h = (height - footer_h).max(0.0);
 
-        // Prior sessions: letters-only CP + footer (oldest leftmost).
+        // Prior sessions: letters-only CP + footer on the shared visible price ladder.
+        // Cull before visible_rows / glyph shaping — offscreen priors cost zero.
+        let shared_center = profile
+            .rows
+            .get(profile.rows.len() / 2)
+            .map(|row| row.price);
         let mut prior_markers_out = Vec::with_capacity(prior_count);
         for block in layout.blocks.iter().filter(|b| is_prior(b)) {
+            if !block_intersects_viewport(block, layout.strip_viewport) {
+                continue;
+            }
             let session = &sessions[block.session_index];
-            // Reuse the current window's price ladder; lettering comes from this session's rows.
             let prior_profile = visible_rows(
                 session,
                 self.snapshot.dom.tick_size,
                 self.tick_scale,
-                self.center,
+                shared_center,
                 max_rows,
             );
+            debug_assert!(same_price_ladder(&profile, &prior_profile));
             prepare_prior_session(
                 session,
                 &prior_profile,
@@ -243,10 +254,10 @@ impl Element for MarketProfile {
             texts.push(PreparedText {
                 line,
                 origin: point(
-                    px(footer_x + 6.0),
+                    px(footer_x + 6.0 * scale),
                     px(f32::from(bounds.origin.y) + height - footer_h + 4.0 * scale),
                 ),
-                align_width: px((footer_w - 12.0).max(0.0)),
+                align_width: px((footer_w - 12.0 * scale).max(0.0)),
                 align: TextAlign::Left,
                 line_height: px(footer_h - 4.0 * scale),
                 clip: Bounds::new(
@@ -274,6 +285,7 @@ impl Element for MarketProfile {
             },
             layout,
             prior_markers: prior_markers_out,
+            has_current_session: true,
         }
     }
 
@@ -301,39 +313,56 @@ impl Element for MarketProfile {
         window.paint_quad(fill(footer, palette.footer_bg));
 
         let layout = &prepaint.layout;
-        let current_block = layout
-            .blocks
-            .last()
-            .expect("session layout has a current block");
-        let mut cols = current_block.strips;
-        cols.axis = layout.axis;
+        if prepaint.has_current_session && !prepaint.profile.rows.is_empty() {
+            let current_block = layout
+                .blocks
+                .last()
+                .expect("session layout has a current block");
+            let mut cols = current_block.strips;
+            cols.axis = layout.axis;
 
-        paint_period_cursor(bounds, body_h, cols, prepaint.markers, palette, window);
-        paint_rows(bounds, cols, prepaint, palette, scale, window);
-        // Current-session semantic lines span the full pane (axis included).
-        paint_semantic_lines(bounds, body_h, prepaint, palette, scale, window);
-        // Prior VA/VPOC hairlines, subtle, clipped to each prior block.
-        for block in layout.blocks.iter().filter(|b| is_prior(b)) {
-            if let Some((_, markers)) = prepaint
-                .prior_markers
-                .iter()
-                .find(|(idx, _)| *idx == block.session_index)
-            {
-                paint_prior_va_vpoc(
-                    body_h,
-                    block,
-                    layout,
-                    &prepaint.profile,
-                    *markers,
-                    palette,
-                    scale,
-                    origin_y,
-                    window,
-                );
+            paint_period_cursor(
+                bounds,
+                body_h,
+                cols,
+                layout.strip_viewport,
+                prepaint.markers,
+                palette,
+                window,
+            );
+            paint_rows(bounds, cols, prepaint, palette, scale, window);
+            paint_semantic_lines(bounds, body_h, prepaint, palette, scale, window);
+            // Prior semantic hairlines are clipped to their own blocks.
+            for block in layout.blocks.iter().filter(|b| is_prior(b)) {
+                if let Some((_, markers)) = prepaint
+                    .prior_markers
+                    .iter()
+                    .find(|(idx, _)| *idx == block.session_index)
+                {
+                    paint_prior_va_vpoc(
+                        body_h,
+                        block,
+                        layout,
+                        &prepaint.profile,
+                        *markers,
+                        palette,
+                        scale,
+                        origin_y,
+                        window,
+                    );
+                }
             }
+            paint_dividers(
+                bounds,
+                body_h,
+                cols,
+                layout.strip_viewport,
+                palette,
+                scale,
+                window,
+            );
+            paint_session_dividers(bounds, layout, palette, scale, window);
         }
-        paint_dividers(bounds, body_h, cols, palette, window);
-        paint_session_dividers(bounds, layout, palette, window);
 
         for prepared in prepaint.texts.drain(..) {
             window
@@ -400,33 +429,26 @@ fn prepare_current_rows(
             scale,
         );
         // Clip CP/EP/PV/SV glyphs to the strip viewport (axis stays unclipped).
-        for prepared in &mut texts[before..] {
-            let left = f32::from(prepared.clip.origin.x).max(strip_left);
-            let right = (f32::from(prepared.clip.origin.x) + f32::from(prepared.clip.size.width))
-                .min(strip_right);
-            let w = (right - left).max(0.0);
-            prepared.clip = Bounds::new(
-                point(px(left), prepared.clip.origin.y),
-                size(px(w), prepared.clip.size.height),
+        clip_prepared_texts(texts, before, strip_left, strip_right);
+        if cols.axis.w > 0.0 {
+            let line = cache.get_or_shape(
+                window,
+                format_price(row.price.0),
+                palette.text,
+                px(10.0 * scale),
             );
+            texts.push(PreparedText {
+                line,
+                origin: point(px(cols.axis.x + 2.0), px(y)),
+                align_width: px((cols.axis.w - 4.0).max(0.0)),
+                align: TextAlign::Right,
+                line_height: px(rh - 1.0 * scale),
+                clip: Bounds::new(
+                    point(px(cols.axis.x), px(y - 1.0 * scale)),
+                    size(px(cols.axis.w), px(rh)),
+                ),
+            });
         }
-        let line = cache.get_or_shape(
-            window,
-            format_price(row.price.0),
-            palette.text,
-            px(10.0 * scale),
-        );
-        texts.push(PreparedText {
-            line,
-            origin: point(px(cols.axis.x + 2.0), px(y)),
-            align_width: px((cols.axis.w - 4.0).max(0.0)),
-            align: TextAlign::Right,
-            line_height: px(rh - 1.0 * scale),
-            clip: Bounds::new(
-                point(px(cols.axis.x), px(y - 1.0 * scale)),
-                size(px(cols.axis.w), px(rh)),
-            ),
-        });
     }
 }
 
@@ -442,7 +464,7 @@ fn prepare_number(
     scale: f32,
 ) {
     let text = format_size(value);
-    if text.is_empty() {
+    if text.is_empty() || strip.w <= 0.0 {
         return;
     }
     let rh = mp_row_h(scale);
