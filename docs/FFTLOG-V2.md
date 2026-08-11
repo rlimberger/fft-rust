@@ -17,8 +17,10 @@ evidence in `perf-runner/results/`):
    exactly that pass). fftlog embeds six-section engine-state checkpoints (§5; live
    cadence 60 s wall-clock, historical `fft-checkpoint` 60 s event-time — ENGINE.md
    §4), so a seek is restore + short tail: measured **cold p95 6.9 ms over 1,000
-   random targets, bit-identity 100/100** (`2026-08-11-m2-seek-gate.json`,
-   `…-m2-bit-identity-100.json`). No vendor format can carry these checkpoints — the
+   random targets** (`2026-08-11-m2-seek-gate.json`; 25/25 sections bit-identical
+   in that run; identity separately expanded to **100/100** in
+   `…-m2-bit-identity-100.json`, whose latencies are not claimable —
+   soak-concurrent). No vendor format can carry these checkpoints — the
    state (L3 FIFO ranks, native-refresh classifier, profile lattices) is ours.
 2. **Replayability.** The raw stream is not naively replayable: daily files open with
    snapshot blocks carrying original order-entry timestamps and non-channel sequence
