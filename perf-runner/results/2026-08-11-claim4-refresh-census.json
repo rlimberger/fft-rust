@@ -1,0 +1,44 @@
+{
+  "gate": "claim4-refresh-census",
+  "date": "2026-08-11",
+  "git_sha": "fda7dc767721f0348f27add7d712065ca55809c8",
+  "git_dirty": true,
+  "log": "/tmp/esu6-wed-v3-ckpt.fftlog",
+  "symbol": "ESU6",
+  "trade_date": 20663,
+  "expected_events": 21401139,
+  "events_applied": 21401139,
+  "eof": true,
+  "applied_seq": 49143050,
+  "applied_ts": 1785362399999689777,
+  "wall_s": 3.560856432,
+  "events_per_sec": 6010110.041976553,
+  "refresh": {
+    "cumulative_hidden_volume": 26483,
+    "distinct_refreshed_order_ids": 2685,
+    "eod_native_live_orders": 1,
+    "eod_unavailable_live_orders": 666,
+    "gaps_encountered": 0,
+    "live_orders_eod": 5837,
+    "max_reloads": 87,
+    "refresh_unavailable_count": 0,
+    "refresh_window_ns": 1000000,
+    "reload_histogram": {
+      "1": 1360,
+      "10_plus": 137,
+      "2_4": 917,
+      "5_9": 271
+    },
+    "total_classifications": 8614
+  },
+  "checks": {
+    "coverage": "PASS",
+    "hidden_implies_reload": "PASS",
+    "same_order_id_signature": "PASS",
+    "signature_checked": 14435,
+    "signature_ok": 14435,
+    "zero_gap_unavailable": "PASS"
+  },
+  "notes": "refresh_window_ns=1000000; book_apply only; live_orders_eod=5837",
+  "verdict": "PASS"
+}
