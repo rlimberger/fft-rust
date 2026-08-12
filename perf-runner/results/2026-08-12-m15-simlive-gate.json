@@ -1,13 +1,15 @@
 {
   "schema_version": 1,
   "gate": "m15-simlive",
-  "date": "2026-08-12T07:31:48Z",
+  "date": "2026-08-12T16:05:12Z",
   "binary": "m15-gate",
-  "git_sha": "67b936c5b5d784e5e0106ca96e8413008f5f86c8",
-  "git_dirty": true,
-  "replay": "/tmp/esu6-wed-v3-ckpt.fftlog",
+  "git_sha": "39e2dd7873e78ed3baef19560a7d2ef02c8ce0c7",
+  "git_dirty": false,
+  "replay": "/home/rlimberger/.cache/fft/gates/ESU6-2026-07-29-ckpt.fftlog",
+  "replay_bytes": 327155580,
+  "replay_sha256": "73fdd3e03c72b2cc81f5d4b0b0bc3cda01ff682c0af127c0234e447fec418062",
   "head_ts": 1785333000000000000,
-  "live_out": "/tmp/m15-live-final.fftlog",
+  "live_out": "/tmp/m15-live-39e2dd7.fftlog",
   "source": {
     "requested_head_ts": 1785333000000000000,
     "pinned_event_ts": 1785332999998093635,
@@ -29,22 +31,22 @@
     "events_read": 5955247,
     "events_applied": 5955247,
     "seek_generation": 0,
-    "join_wall_s": 5.12758236,
+    "join_wall_s": 2.709646421,
     "reached_head": true,
     "applied_from_open": true,
     "clean_coverage": true,
     "ok": true
   },
   "lag": {
-    "distinct_publications_sampled": 10739,
+    "distinct_publications_sampled": 10754,
     "abs_head_lag": {
-      "n": 10739,
-      "p50_ns": 381286,
-      "p95_ns": 985218,
-      "p99_ns": 1049142,
-      "max_ns": 2966001,
-      "min_ns": 406,
-      "mean_ns": 431429.78834155883
+      "n": 10754,
+      "p50_ns": 375713,
+      "p95_ns": 987074,
+      "p99_ns": 1048122,
+      "max_ns": 2522448,
+      "min_ns": 501,
+      "mean_ns": 427918.2933792077
     },
     "apply_budget_ns": 4000000,
     "advanced_ts_ns": 59986175744,
@@ -55,9 +57,9 @@
     "scrub_target_ts": 1785304529992134690,
     "scrubbed_ts": 1785304529290017425,
     "tip_before_scrub_ts": 1785333059984269379,
-    "resumed_ts": 1785333061106737239,
+    "resumed_ts": 1785333061061187869,
     "resumed_seek_generation": 0,
-    "resumed_abs_head_lag_ns": 441370,
+    "resumed_abs_head_lag_ns": 81776,
     "scrubbed_behind_tip": true,
     "reached_prior_tip": true,
     "ok": true
@@ -74,16 +76,16 @@
     "ok": true
   },
   "append": {
-    "live_out_bytes": 57759158,
-    "events_read": 9462936,
-    "events_applied": 9462936,
+    "live_out_bytes": 57758692,
+    "events_read": 9462900,
+    "events_applied": 9462900,
     "gap_records": 0,
     "watermarks": {
-      "received_seq": 34917327,
-      "decoded_seq": 34917327,
-      "applied_seq": 34917327,
-      "logged_seq": 34917327,
-      "published_seq": 34917327
+      "received_seq": 34917292,
+      "decoded_seq": 34917292,
+      "applied_seq": 34917292,
+      "logged_seq": 34917292,
+      "published_seq": 34917292
     },
     "source_warnings": [],
     "live_lifecycle": {
@@ -99,9 +101,9 @@
     "ok": true
   },
   "identity": {
-    "replayed_events": 6003663,
-    "replayed_applied_seq": 34917327,
-    "replayed_applied_ts": 1785333061112381831,
+    "replayed_events": 6003627,
+    "replayed_applied_seq": 34917292,
+    "replayed_applied_ts": 1785333061066065185,
     "compared_sections": [
       "BOOK",
       "FLOW",
