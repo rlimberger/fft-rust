@@ -1,4 +1,129 @@
-# FFT — Session Handoff (2026-08-10, independently audited)
+# FFT — Session Handoff (2026-08-12, Wave 10)
+
+## Wave 10 board (2026-08-12 — M1.5 sim-live LANDED, READ THIS FIRST)
+
+**M1.5 is implemented, adversarially audited, and its gate PASSES on real data.**
+Formal evidence: `perf-runner/results/2026-08-12-m15-simlive-gate.json` — 60 s gate on
+the Wed checkpointed log at the PRD §6 anchor (`--head 2026-07-29T13:50:00Z`): join
+5,955,247 events from open in 5.13 s (zero seeks, exact prefix count), wall-pin
+|head_lag| p99 1.049 ms vs 4 ms budget over 10,739 distinct publications, scrub +
+SetSpeed + GoLive resume the pin, honest resequenced gap fixture (expected=42 →
+observed=141, post-gap watermarks + six-section identity of the gap-bearing live-out),
+LIVE-flag lifecycle proven (LIVE mid-run; footer-indexed, flag cleared, warning-free
+after Shutdown), full six-section identity of the appended live log. PASS. (JSON says
+git_dirty=true — it ran pre-commit; rerun post-commit if a clean-provenance copy is
+wanted.)
+
+What landed (all uncommitted-tree work this wave, orchestrator-reviewed, workspace
+fmt/clippy/test green):
+- **Engine core (fft-engine):** service.rs split into runtime/forward/pacing/prior/
+  sim_live/live_log (500-line rule); strict batch-local post-seek intent
+  (`[Seek,Play,Seek]` paused, `[Seek,GoLive]` live, `[GoLive,Seek]` scrubbed,
+  SetSource clears intent — 4 new protocol tests); exact-head validation before
+  live_out creation (invalid head can never truncate an existing live log);
+  **ordinal-based append frontier** (same-ts burst at the tip cannot double-append or
+  leak past a scrub — unit-tested); signed saturating head-lag math; `logged_seq` =
+  last committed channel seq in wire order with one-shot Gap re-anchor.
+- **fft-replay:** `ReplaySource::event_ordinal()` + `SeekReport.event_ordinal`
+  (exact across checkpoint restore; engine seek no longer rescans from open); splice
+  rewritten as one validated monotonic transformer with typed errors (5 tests).
+- **fft-book:** post-gap retained-ID reconciliation — duplicate Add replaces tainted
+  order, Fill side-mismatch and sideless Fill on tainted orders skip stale depletion
+  evidence (venue-wins tape/flow kept), `gap_desync_{adds,fills}` counters; 13
+  gap_desync tests, fresh post-gap malformed events still panic.
+- **m15-gate:** evidence-on-failure everywhere (engine panic ⇒ FAIL JSON, forced-fail
+  artifacts proven); source/head validation fails closed before engine spawn;
+  distinct-generation lag sampling; in-gate GoLive with settle-race fix
+  (CatchingToWall lag samples wait for the pin to settle); honest gap fixture built
+  directly via LogWriter (no splicer resequencing lie); LIVE lifecycle assertions.
+- **Docs same-commit:** ENGINE.md §4 post-seek intent + §5 exact-head/ordinal-
+  frontier/logged-seq/gate text; PRD §6 + IMPLEMENTATION-PLAN M1.5 join/pin wording.
+- **New bench:** `fft-engine/benches/live_checkpoint.rs` — six-section live checkpoint
+  write measured ~98 µs (~40× under the 4 ms slice) on a dense fixture; the feared
+  checkpoint stall is quantified as a non-issue at current state sizes.
+
+**24 h m7-soak still RUNNING and healthy** (started Aug 11 21:12 CEST, ETA ~21:12
+CEST tonight): 31/31 cycles ok at last check, 30 s heartbeats fresh, RSS peak steady
+~328 MB, zero ok=false lines. When it ends PASS, chain
+`perf-runner/after-soak-gates.sh <pid>` (env inputs verified ready this wave).
+
+Residuals (non-blocking, next wave): 60 s wall-clock checkpoint cadence unproven
+in-gate (bench says cost is trivial; a ≥61 s gate window or fake-clock LiveLog test
+would close it); provenance not hard-fail in m15-gate (git_sha="unknown" can still
+PASS); prior-session-in-checkpoint vs live-out replay contract needs a ruling if
+priors are ever loaded during SimLive; UI wiring for SimLive (CLI flag, GoLive key,
+LIVE indicator) is an M3/M5 track — planning lane died without output, re-brief when
+needed. Sol quota was cooling down this wave; roster fallback to Cursor/xai Grok
+worked and Sol is usable again.
+
+## Wave 9 board (2026-08-11 evening — superseded by Wave 10 above)
+
+The 24 h m7-soak from Wave 8 was found WEDGED and killed: launched on a binary that
+was rebuilt underneath it (`/proc` exe "(deleted)"), `--cycle-secs 0` mapped to a
+hidden 86 400 s wall deadline, and `play_until` required events_applied>0 before its
+EOF check — cycle 1 sat in a poll loop for 3 h with zero JSONL (the rig had no
+heartbeat). The rig was reworked and PROVEN (`67b936c`): cycle_secs=0 = EOF under a
+finite `(span/speed)×2+120 s` deadline, 30 s heartbeat JSONL lines, 60 s ready
+timeout + readiness Seek, post-scrub EOF rewind, honesty split to honesty.rs. Full
+EOF smoke on the new binary: 21.42 M events to EOF in 1309.5 s, 43 heartbeats,
+25/25 seeks answered, RSS peak 328 MB, clean self-exit, PASS. **24 h soak
+RELAUNCHED on the fixed binary (PID noted in session; out /tmp/m7-soak-24h.jsonl;
+watchdog monitor: silence >15 min, ok=false, and final verdict).** When it ends
+PASS, chain `perf-runner/after-soak-gates.sh <pid>` (now split: 181-line driver +
+lib/{soak-validate,cold-start}.sh) for the full-RTH claim-2 gate + cold-start JSON.
+
+Committed + pushed this wave (all diff-reviewed by independent read-only lanes,
+workspace fmt/clippy/test green at each commit):
+- **DOM-hidden-default** (`cd40794`): MP is the launch surface; `d` toggles the DOM
+  without resetting MP nav; transport keys armed by `r` (silent no-ops off);
+  zero-filled scaled-tick lattice when linked center exits engine depth (no
+  fabricated sizes); prefs clamp loudly; dom_ladder split (500-line rule);
+  PRD/README/OPERATOR same-commit.
+- **MP polish** (`854301b`): session-scoped semantic lines (review caught a zoom<1
+  overpaint — current session now clips to block∩viewport like priors, test at
+  zoom=0.5), prior IB hairlines, draw order open<IB<VA<VPOC<price, scale-aware
+  thickness, fixed 80px·ui_scale axis, prior TPO dim 0.55.
+- **Claim-3 queue gate** (`01dcaa5`): Book vs two independent oracles (Shadow Vec CME
+  model + BookFifo prefix sums over BOOK v3 bytes), 15 scenarios incl. the depleted
+  Fill→Modify tail-reinsert and snapshot-origin modify demotions; after-soak-gates
+  honesty rework + 500-line split.
+- **Claim-4 census** (`2e87549`): full-Wed headless refresh census — 8,614 native
+  classifications / 2,685 ids / 26,483 hidden / max 87 reloads, consistency-checked,
+  PASS evidence committed. (666 EOD Unavailable are snapshot-origin, not gap.)
+- Housekeeping splits (`3cdae7d` fft-log fuzz, `f1b6d40` fft-ingest, `708b08a`
+  m1-gate) — pure mechanical, test counts identical. Doc fix `78cb5b7` (FFTLOG-V2 §0
+  had conflated the 25/25 and 100/100 identity citations).
+
+**Five-claim evidence audit (adversarial, this wave):** claim 5 EVIDENCED
+(m4-agreement 1089/1089); RSS + 60× EVIDENCED; claim 3 now gate-tested (synthetic);
+claim 4 now censused on real data; claim 1 PARTIAL (seek p95 + identity yes;
+scrub-release→rendered path unmeasured); claim 2 PARTIAL (60 s anchored PASS; full
+RTH 6.5 h gate not yet run — post-soak chain); cold-start/interactive numbers exist
+only as HANDOFF prose — the committed JSON is owed by the post-soak chain (commit
+83e3606's message overclaims: no cold-start JSON landed). v1 tag blocks on: clean
+24 h soak on the fixed rig → full-RTH gate + cold-start JSON → GUI scrub-drag
+hands-on → acceptance writeup (orchestrator-authored).
+
+**Week-soak fixtures READY (2026-08-11, /tmp — regenerate after reboot with the
+canonical recipe):** all five ESU6 trade dates as checkpointed logs,
+`/tmp/esu6-{mon,tue,wed,thu,fri}-v3-ckpt.fftlog` — 85.3 M events total, 0 gaps every
+day, Mon/Tue byte-identical to the cached `~/.cache/fft/sessions` logs (ingest
+determinism confirmed). Per-day: Mon 16.05 M ev/1391 ckpts, Tue 14.05 M/1392,
+Wed 21.40 M/1393, Thu 16.60 M/1393, Fri 17.15 M/1377. Fri's −16 checkpoint count is
+**investigated and benign**: the offline cadence is event-driven (60 s event-time,
+quiet minutes emit nothing — checkpoint.rs:23,189–208) and Friday's bucket ends at
+~16:00 CT (weekend halt, no Sunday-open traffic) ⇒ ~23 h span vs midweek ~24 h;
+actual ≤ ceil(span/60) on all five days. Not a checkpoint-pass defect.
+
+**M1.5 sim-live is now specced and in flight:** ENGINE.md §5 frozen this wave
+(Source::SimLive { path, head_ts }, join = budgeted catch-up from open, absolute
+wall pin at head, GoLive to head, engine live-log append with 60 s wall-clock
+checkpoints + logged_seq decoupling, watermark stage split, harness-side gap
+injection, m15-gate bin). Implementation track was running at session close — if
+its diff is in the tree unreviewed, review before committing; the gap inventory
+(file:line, in the Wave-9 transcript) is the ground truth for what existed before.
+
+## Prior handoff (2026-08-10, independently audited)
 
 ## Binding
 
