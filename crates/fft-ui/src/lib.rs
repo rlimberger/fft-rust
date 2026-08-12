@@ -25,6 +25,7 @@ pub mod pane_state;
 pub mod prefs;
 pub mod prior_discovery;
 mod prior_ingest;
+pub mod scrub_latency;
 pub mod shell;
 mod shell_input;
 mod shell_panes;

@@ -89,6 +89,24 @@ fn scrub_coalesces_to_one_seek_with_last_position() {
 }
 
 #[test]
+fn script_scrub_release_sets_pending_dirty_not_dragging() {
+    let mut t = TransportState::default();
+    t.toggle_mode();
+    t.script_scrub_release(1_500);
+    assert!(!t.is_scrubbing());
+    assert_eq!(t.pending_scrub_ts(), Some(1_500));
+    let cmd = t.take_coalesced_seek().expect("scripted seek");
+    match cmd {
+        TransportCommand::Seek { ts, generation } => {
+            assert_eq!(ts, 1_500);
+            assert_eq!(generation, FIRST_UI_SEEK_GENERATION);
+        }
+        other => panic!("expected Seek, got {other:?}"),
+    }
+    assert!(t.pending_scrub_ts().is_none());
+}
+
+#[test]
 fn seek_generation_is_monotonic_from_two() {
     let mut t = TransportState::default();
     t.toggle_mode();

@@ -288,6 +288,20 @@ impl TransportState {
     /// End scrub drag; a dirty pending target still drains on the next frame.
     pub fn end_scrub(&mut self) {
         self.scrub.dragging = false;
+        if self.scrub.dirty {
+            crate::scrub_latency::note_release();
+        }
+    }
+
+    /// Scripted scrub-release for `--scrub-latency-gate` (no pointer drag).
+    pub fn script_scrub_release(&mut self, ts: u64) {
+        if !self.mode_on {
+            return;
+        }
+        self.scrub.pending_ts = Some(ts);
+        self.scrub.dirty = true;
+        self.scrub.dragging = false;
+        crate::scrub_latency::note_release();
     }
 
     /// Drain at most one seek for the latest pending scrub target (frame boundary).
@@ -303,7 +317,11 @@ impl TransportState {
         if !self.scrub.dragging {
             self.scrub.pending_ts = None;
         }
-        Some(self.issue_seek(ts))
+        let cmd = self.issue_seek(ts);
+        if let TransportCommand::Seek { generation, .. } = &cmd {
+            crate::scrub_latency::bind_generation(*generation);
+        }
+        Some(cmd)
     }
 
     fn issue_seek(&mut self, ts: u64) -> TransportCommand {

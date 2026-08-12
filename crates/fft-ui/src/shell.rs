@@ -86,8 +86,8 @@ impl Shell {
         let prefs = Prefs::load();
         let panes = Rc::new(RefCell::new(PaneState::from_prefs(&prefs)));
         let mut transport = TransportState::from_prefs(&prefs);
-        // Sim-live: arm transport keys/strip at spawn (scrub/speed over the joined range).
-        if matches!(startup, StartupSource::SimLive { .. }) {
+        // Sim-live / scrub-latency gate: arm transport keys/strip at spawn.
+        if matches!(startup, StartupSource::SimLive { .. }) || crate::scrub_latency::enabled() {
             transport.mode_on = true;
         }
         let startup = match startup {
@@ -251,12 +251,13 @@ impl Render for Shell {
         }
         if self.frame_snapshot.generation > 0 {
             crate::startup_trace::note_first_interactive();
+            crate::scrub_latency::note_rendered(self.frame_snapshot.seek_generation);
         }
         self.glyph_cache.borrow_mut().begin_frame();
         let frame_now = Instant::now();
         let fps = self.frame_cadence.record(frame_now);
         let keep_going = self.harness.borrow_mut().on_frame(frame_now);
-        if crate::startup_trace::complete() || !keep_going {
+        if crate::startup_trace::complete() || crate::scrub_latency::should_quit() || !keep_going {
             cx.defer(|cx| cx.quit());
         } else {
             window.request_animation_frame();
@@ -300,6 +301,18 @@ impl Render for Shell {
         );
 
         self.drain_scrub_seek();
+        if crate::scrub_latency::enabled()
+            && self.frame_snapshot.generation > 0
+            && self.engine_slot.borrow().is_some()
+        {
+            let (first_ts, last_ts) = shell_input::scrub_range_from_snapshot(&self.frame_snapshot);
+            let transport = Rc::clone(&self.transport);
+            if crate::scrub_latency::drive_script_if_needed(first_ts, last_ts, move |ts| {
+                transport.borrow_mut().script_scrub_release(ts);
+            }) {
+                cx.defer(|cx| cx.quit());
+            }
+        }
 
         let viewport_width = f32::from(window.viewport_size().width);
         if self.panes.borrow().dom_visible() {

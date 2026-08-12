@@ -11,6 +11,7 @@ fft [--gate <seconds>] [--trace <path>] [--replay <fftlog>] [--replay-at <ts>]
     [--sim-live <fftlog>] [--head <ts>] [--live-out <path>]
     [--prior <fftlog>]... [--no-prior-discovery] [--no-auto-ingest] [--dbn-dir <path>]
     [--gate-out <path>] [--manifest <path>] [--conditions <text>] [--startup-trace]
+    [--scrub-latency-gate <N>] [--scrub-latency-out <path>] [--scrub-latency-seed <u64>]
 ```
 
 | Flag | Meaning | Rules |
@@ -28,6 +29,9 @@ fft [--gate <seconds>] [--trace <path>] [--replay <fftlog>] [--replay-at <ts>]
 | `--manifest <path>` | Perf-runner manifest recorded in evidence | must exist |
 | `--conditions <text>` | Free-form run conditions recorded verbatim | |
 | `--startup-trace` | Print first-paint / first-interactive ms, then exit | needs `--replay` or `--sim-live` |
+| `--scrub-latency-gate <N>` | Script N scrub-releases; measure release→rendered p95 (claim 1 letter) | needs `--replay` + `--scrub-latency-out`; exclusive with `--startup-trace` / `--gate`; forces no priors |
+| `--scrub-latency-out <path>` | Evidence JSON for the scrub-latency gate | needs `--scrub-latency-gate` |
+| `--scrub-latency-seed <u64>` | RNG seed for scripted targets (default `0x5343525542`) | optional |
 
 Bad flags/values → usage on stderr, exit 2. Evidence always carries git SHA+dirty and the
 pinned gpui rev (baked at build time from Cargo.lock).
@@ -130,6 +134,7 @@ otherwise-idle machine — concurrent builds measurably inject ~33 ms two-vsync 
 | M5 scrub | `m5-scrub-burst --replay <ckpt> --out <json>` |
 | M5 RSS | `m5-rss-week --current <fri> --prior <mon>.. --prior <thu> --out <json>` |
 | Cold start | `fft --replay <ckpt> --replay-at <ts> --startup-trace` ×5 |
+| Claim 1 scrub-release→rendered | `fft --replay <ckpt> --replay-at 2026-07-29T13:50:00Z --scrub-latency-gate 200 --scrub-latency-out perf-runner/results/<date>-claim1-scrub-latency.json` (quiet box; p95 ≤ 250 ms) |
 
 Evidence files are committed by the orchestrator only when a run is accepted;
 history is append-only.
