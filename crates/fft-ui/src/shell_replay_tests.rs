@@ -3,9 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use fft_core::{
-    CanonicalEvent, EventKind, InstrumentMeta, OrderId, Price, Seq, Side, Ts,
-};
+use fft_core::{CanonicalEvent, EventKind, InstrumentMeta, OrderId, Price, Seq, Side, Ts};
 use fft_log::LogWriter;
 
 use super::*;

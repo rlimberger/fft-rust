@@ -9,12 +9,84 @@ is the test fixture for everything through M5.
 **Rules of engagement**
 
 - A milestone is done when its gate passes in CI, not when the code "works on my machine."
-- Perf gates are merge-blocking from M1 onward and run on the dedicated perf runner
-  provisioned in M0 (TECH-STACK §7); ordinary shared CI gates correctness only. A red frame
-  budget is a red build.
+- Perf gates are merge-blocking from M1 onward. **Amended (René 2026-08-11, PERF-RUNNER.md):
+  there is no dedicated perf box — ever, for now.** Timing evidence is valid only on the
+  desk machine under the quiet-box protocol (idle host, no concurrent builds); `perf.yml`
+  is manual-dispatch; the orchestrator alone accepts evidence JSON into
+  `perf-runner/results/` (append-only). Ordinary shared CI gates correctness only. A red
+  frame budget is a red build.
 - Scope changes are PRD edits first (same commit), implementation second.
 - Work inside a milestone is split into parallel tracks with crate-level ownership so
   subagents never collide; the orchestrator reviews every diff against the doctrine rules.
+
+---
+
+## Status board — 2026-08-12 (full-project review; evidence = `perf-runner/results/`)
+
+| Milestone | Verdict | Evidence / note |
+|---|---|---|
+| M0 foundation | **DONE** | Freezes committed; CI green; blank-window 60 s zero-miss (`2026-08-10-m0-frame-gate.json`) |
+| M1 data plane | **DONE** | `2026-08-11-m1-data-plane.json` — busiest-day apply 2.859 s vs ≤ 3 s (revised budget, René 2026-08-11); size 0.17–0.20× legacy; 7/7 chunk differential |
+| M1.5 sim-live | **DONE** (sim half) | `2026-08-12-m15-simlive-gate.json` PASS — join 5.96 M events/5.13 s zero seeks, lag p99 1.049 ms vs 4 ms, gap + LIVE lifecycle + six-section identity. **Databento headless spike still owed the day credentials land — hard prereq for M6** |
+| M2 seek/derived | **DONE** | `2026-08-11-m2-seek-gate.json` — cold p95 6.9 ms vs 250 ms, identity 25/25; extended to 100/100 (`2026-08-11-m2-bit-identity-100.json`); 25,230× realtime vs ≥ 60× |
+| M3 DOM + shell | **DONE** (60 Hz letter) | `2026-08-10-m3-frame-gate.json` — 3600/3600 frames, 0 missed, coverage 0 drops. 240 Hz validation deferred with the perf box (release-claim gate, not merge gate) |
+| M4 MP pane | **DONE** | Two-pane anchored gate PASS (`2026-08-10-m4-two-pane-gate-anchored.json`); pane agreement 1089/1089 (`2026-08-11-m4-agreement.json`) |
+| M5 time travel | **NEARLY DONE** | Scrub burst 120/120 + RSS week 201 MiB committed PASS. **Owed:** cold-start numbers exist only as HANDOFF prose (85–122 ms) — committed JSON comes from the post-soak chain; hands-on GUI scrub-drag session on the desk display |
+| M6 live | **NOT STARTED** | Blocked on the funded Databento key + the deferred M1.5 spike. Do not start otherwise |
+| M7 hardening | **IN FLIGHT** | 24 h soak running since Aug 11 21:12 CEST (50 cycles, 0 failures, RSS peak 328 MB at review time); LOG-FUZZ 29,571 mutants clean; README + OPERATOR.md done. Owed: soak verdict → `after-soak-gates.sh` chain → acceptance writeup → v1 tag |
+
+**Five PRD §4 acceptance claims:** 3 (queue, synthetic oracle gate), 4 (iceberg, full-Wed
+census), 5 (pane agreement) — evidenced. 1 (seek) — identity + service-side p95 evidenced;
+the letter reads *scrub-release → rendered* and that GUI-side path is unmeasured. 2 (frames)
+— 60 s anchored PASS; the full-RTH 6.5 h run is owed by the post-soak chain.
+
+### Findings from this review (things done incorrectly)
+
+1. **fmt drift committed to `main`:** Wave-11 commits `24ae684`/`6e5f058` landed with four
+   rustfmt diffs — `cargo fmt --check` failed at HEAD, so the CI fmt lane on `main` was
+   red. Violates the "green at each commit" standing rule. Fixed in this review's commit;
+   the lesson stands: run the full pre-commit trio even on "trivial" follow-up commits.
+2. **Soak binary rebuilt underneath the running soak — again.** `/proc/<pid>/exe` of the
+   live 24 h soak reads "(deleted)": builds ran on the box after launch (the exact
+   Wave-8 antipattern; harmless to the already-running process, but it means the box was
+   NOT quiet during the soak window — fine for this correctness/RSS soak, fatal for any
+   timing gate). The post-soak RTH gate must run with zero concurrent builds.
+3. **Committed gate evidence is almost all `git_dirty: true`** (gates ran pre-commit).
+   Values stand, provenance is weak. `m15-gate` now hard-fails provenance (`51c4199`);
+   a clean-tree m15 rerun is cheap and should replace the dirty JSON.
+4. **Commit `83e3606`'s message overclaims:** it says cold-start evidence landed; no
+   cold-start JSON exists in `perf-runner/results/`. The post-soak chain writes it.
+5. All Wave-10 residuals are otherwise **closed** (verified in source): 60 s wall-clock
+   live-checkpoint cadence unit-tested with injectable `Instant` (`live_log.rs`),
+   provenance hard-fail, `LoadPriorSession` forbidden under SimLive (ENGINE.md §2 ruled +
+   engine panic), SimLive UI wiring (`--sim-live`/`--head`/`--live-out`, `l` = GoLive,
+   LIVE header chrome). The three ASSERT-HUNT findings (locked book, post-gap desync,
+   zero-size trades) are all fixed and regression-tested.
+
+### Continue here — next orchestrator, ordered
+
+Topology and roster are binding, in CLAUDE.md/AGENTS.md: Claude Fable 5 orchestrates
+in-session; subagent priority Sol → Cursor Grok → xai Grok, pinned, target 12 parallel;
+workers never run git mutation in the shared tree; commit + push accepted work without
+asking. Fixtures: `/tmp/esu6-{mon..fri}-v3[-ckpt].fftlog` (volatile — regen recipe in
+HANDOFF.md Wave-4 board); gate replays use the `-ckpt` copies.
+
+1. **Watch the 24 h soak** (`/tmp/m7-soak-24h.jsonl`, PID in `pgrep -af m7-soak`; ETA
+   ~21:12 CEST Aug 12). On PASS, run `perf-runner/after-soak-gates.sh <pid>` on a
+   **quiet box** — it validates the soak JSONL, then runs the 6.5 h full-RTH frame gate
+   (claim 2) and the cold-start ×5 gate, writing both JSONs. Commit the evidence.
+2. **Close claim 1's letter:** either measure scrub-release → rendered p95 in the GUI
+   (instrument the existing `--startup-trace`-style path) or put the
+   headless-service + hands-on argument to René for a ruling. Don't quietly re-scope.
+3. **Hands-on desk sessions (M5/M3 residue):** GUI scrub-drag at the display refresh, and
+   a `--sim-live` GUI session (join → catch-up → LIVE → scrub → `l` GoLive). The
+   headless gates prove the services; the GUI frame behavior under drag is a human run.
+4. **Clean-provenance m15 rerun** on the committed HEAD; replace the dirty-tree JSON.
+5. **Acceptance writeup** (orchestrator-authored, never pasted from a worker): five
+   claims + boring gates, each with its evidence file. Then **tag v1**.
+6. **M6 stays parked** until René funds the Databento key; first action then is the
+   deferred M1.5 headless spike (entitlement, symbology, real replay-join, forced
+   reconnect, persistent recording), before any `fft-feed` production work.
 
 ---
 

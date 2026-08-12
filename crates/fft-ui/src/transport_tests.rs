@@ -134,10 +134,11 @@ fn step_arithmetic_clamps_to_range() {
 #[test]
 fn go_live_inactive_is_hint_only() {
     let mut t = TransportState::default();
-    assert!(t
-        .go_live(LiveTransportPhase::Inactive)
-        .status_hint
-        .is_none());
+    assert!(
+        t.go_live(LiveTransportPhase::Inactive)
+            .status_hint
+            .is_none()
+    );
     t.toggle_mode();
     let a = t.go_live(LiveTransportPhase::Inactive);
     assert!(a.commands.is_empty());

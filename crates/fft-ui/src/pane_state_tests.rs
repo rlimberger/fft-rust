@@ -250,7 +250,10 @@ fn horizontal_drag_leaves_rest_and_geometry_keeps_canvas_pan() {
     assert_eq!(state.mp_pan_px, 140.0, "growth must not snap to new rest");
     // Free canvas: narrow geometry does not clamp the chosen pan.
     assert!(!state.reconcile_mp_pan(500.0, 450.0));
-    assert_eq!(state.mp_pan_px, 140.0, "canvas pan survives narrow geometry");
+    assert_eq!(
+        state.mp_pan_px, 140.0,
+        "canvas pan survives narrow geometry"
+    );
     assert!(!state.mp_at_rest());
 }
 
@@ -276,7 +279,10 @@ fn user_pan_is_free_canvas_across_geometry_changes() {
     assert!(!state.reconcile_mp_pan(600.0, 400.0));
     assert_eq!(state.mp_pan_px, 320.0, "canvas pan is not content-clamped");
     assert!(!state.reconcile_mp_pan(900.0, 400.0));
-    assert_eq!(state.mp_pan_px, 320.0, "consecutive renders do not oscillate");
+    assert_eq!(
+        state.mp_pan_px, 320.0,
+        "consecutive renders do not oscillate"
+    );
 }
 
 #[test]
