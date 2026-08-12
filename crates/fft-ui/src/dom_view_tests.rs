@@ -344,14 +344,18 @@ fn normal_in_range_aggregation_and_window_are_unchanged() {
 }
 
 #[test]
-fn panning_clamps_to_present_aggregated_rows() {
+fn panning_is_free_canvas_beyond_present_rows() {
     let aggregated = aggregate_rows(&dom(1, &[10, 11, 12]), 1);
     let mut view = DomView::default();
-    assert!(view.pan_rows(&aggregated, i64::MAX));
-    assert_eq!(view.anchor, Some(Price(12)));
-    assert!(!view.pan_rows(&aggregated, i64::MAX));
-    assert!(view.pan_rows(&aggregated, i64::MIN));
-    assert_eq!(view.anchor, Some(Price(10)));
+    // Leave the book above the last present row.
+    assert!(view.pan_rows(&aggregated, 10));
+    assert_eq!(view.anchor, Some(Price(21))); // 11 (follow mid) + 10
+    // And below the first present row.
+    assert!(view.pan_rows(&aggregated, -20));
+    assert_eq!(view.anchor, Some(Price(1)));
+    // Explicit anchor continues in pure price space (no re-clamp to 10..=12).
+    assert!(view.pan_rows(&aggregated, 100));
+    assert_eq!(view.anchor, Some(Price(101)));
 }
 
 #[test]

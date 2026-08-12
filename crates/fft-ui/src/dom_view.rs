@@ -101,15 +101,27 @@ impl DomView {
         start..start + count
     }
 
-    /// Pin and move the center by rendered-row units, clamped to present rows.
+    /// Pin and move the center by rendered-row units. Free canvas: not clamped to
+    /// present engine rows (paint synthesizes empty buckets outside depth).
     /// Positive deltas move toward higher prices.
     pub fn pan_rows(&mut self, dom: &AggregatedDom, delta: i64) -> bool {
-        let Some(center) = self.center_index(dom) else {
+        if delta == 0 || dom.scaled_tick_size.0 <= 0 {
             return false;
+        }
+        let base = match self.anchor {
+            Some(anchor) => bucket_price(anchor, dom.scaled_tick_size),
+            None => {
+                let Some(center) = self.center_index(dom) else {
+                    return false;
+                };
+                dom.rows[center].price
+            }
         };
-        let last = dom.rows.len() - 1;
-        let target = ((center as i128) + i128::from(delta)).clamp(0, last as i128) as usize;
-        let anchor = Some(dom.rows[target].price);
+        let movement = i128::from(delta) * i128::from(dom.scaled_tick_size.0);
+        let next = Price(
+            i64::try_from(i128::from(base.0) + movement).expect("DOM pan center overflows i64"),
+        );
+        let anchor = Some(next);
         if self.anchor == anchor {
             return false;
         }
