@@ -101,6 +101,7 @@ impl SimLiveState {
         event: &CanonicalEvent,
         book: &Book,
         profile: &MultiProfile,
+        now: Instant,
     ) -> LiveLogCommit {
         self.cursor_ordinal = self.cursor_ordinal.saturating_add(1);
         match self.phase {
@@ -122,7 +123,7 @@ impl SimLiveState {
             .live_log
             .as_mut()
             .expect("sim-live append after live log closed");
-        log.append(event, book, profile)
+        log.append(event, book, profile, now)
     }
 }
 

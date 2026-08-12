@@ -119,6 +119,25 @@ pub struct ProfileRenderState {
     pub sessions: Vec<ProfileSessionRender>,
 }
 
+/// Sim-live transport phase exposed on [`RenderSnapshot`] (`docs/ENGINE.md` §3/§5).
+///
+/// Engine-private `Instant`s stay out of the snapshot; the UI draws LIVE /
+/// CATCHING-UP chrome from this Copy enum without inferring phase from lag.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LiveTransportPhase {
+    /// No sim-live source (plain replay, or before any source).
+    #[default]
+    Inactive,
+    /// Unpaced join from session open through `head_ts`.
+    CatchingUp,
+    /// Absolute wall-pinned streaming at the join head.
+    Live,
+    /// Scrubbed/paused behind the tip.
+    Scrubbed,
+    /// `GoLive` unpaced catch-up of the interim to the wall head.
+    CatchingToWall,
+}
+
 /// Event-coverage accounting for forward/live flow (`docs/ENGINE.md` §3). Seek
 /// resolution is accounted by its bit-identical gate, not these counters.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -157,6 +176,8 @@ pub struct RenderSnapshot {
     /// `RenderSnapshot` each time (`service.rs` → [`SnapshotSlot::publish`]), and the
     /// symbol string itself is allocated once at `SetSource`.
     pub symbol: Arc<str>,
+    /// Sim-live transport phase for LIVE / CATCHING-UP chrome (one Copy byte).
+    pub live_phase: LiveTransportPhase,
     /// Bounded DOM state.
     pub dom: DomRenderState,
     /// Session profile state.
@@ -173,6 +194,7 @@ impl Default for RenderSnapshot {
             applied_ts: 0,
             seek_generation: 0,
             symbol: empty_symbol(),
+            live_phase: LiveTransportPhase::Inactive,
             dom: DomRenderState::default(),
             profile: ProfileRenderState::default(),
             coverage: CoverageCounters::default(),
@@ -290,6 +312,7 @@ pub fn build_snapshot(
         seek_generation,
         // Stamped by the engine service at publication; build stays symbol/coverage-agnostic.
         symbol: empty_symbol(),
+        live_phase: LiveTransportPhase::Inactive,
         coverage: CoverageCounters::default(),
         dom: DomRenderState {
             tick_size: tick,

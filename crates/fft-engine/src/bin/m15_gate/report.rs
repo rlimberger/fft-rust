@@ -1,7 +1,11 @@
 //! JSON evidence schema + provenance for the M1.5 sim-live gate.
 
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::any::Any;
+use std::fs::File;
+use std::io::Read;
+use std::path::Path;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -35,6 +39,7 @@ impl DistNs {
         })
     }
 }
+
 fn percentile(sorted: &[u64], p: f64) -> u64 {
     let n = sorted.len();
     if n == 1 {
@@ -50,7 +55,7 @@ pub struct Budgets {
     pub join_timeout_s: u64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct SourceCheck {
     pub requested_head_ts: u64,
     pub pinned_event_ts: u64,
@@ -66,7 +71,7 @@ pub struct SourceCheck {
     pub ok: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct JoinCheck {
     pub pinned_head_ts: u64,
     pub applied_ts: u64,
@@ -81,7 +86,7 @@ pub struct JoinCheck {
     pub ok: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct LagCheck {
     pub distinct_publications_sampled: usize,
     pub abs_head_lag: Option<DistNs>,
@@ -104,7 +109,7 @@ pub struct GoLiveCheck {
     pub ok: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct GapCheck {
     pub injected_gap_ts: u64,
     pub injected_expected_seq: u64,
@@ -127,7 +132,7 @@ pub struct IdentityCheck {
     pub ok: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct WatermarkEvidence {
     pub received_seq: u64,
     pub decoded_seq: u64,
@@ -136,7 +141,7 @@ pub struct WatermarkEvidence {
     pub published_seq: u64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct LiveLifecycle {
     pub during_is_live: bool,
     pub during_index_source_live_recovery: bool,
@@ -146,20 +151,7 @@ pub struct LiveLifecycle {
     pub after_warnings_empty: bool,
 }
 
-impl LiveLifecycle {
-    pub fn unavailable() -> Self {
-        Self {
-            during_is_live: false,
-            during_index_source_live_recovery: false,
-            after_not_live: false,
-            after_index_source_footer: false,
-            after_recovery_none: false,
-            after_warnings_empty: false,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct AppendCheck {
     pub live_out_bytes: u64,
     pub events_read: u64,
@@ -182,6 +174,8 @@ pub struct Evidence {
     pub git_sha: String,
     pub git_dirty: Option<bool>,
     pub replay: String,
+    pub replay_bytes: u64,
+    pub replay_sha256: String,
     pub head_ts: u64,
     pub live_out: String,
     pub source: SourceCheck,
@@ -203,17 +197,7 @@ impl SourceCheck {
     pub fn unavailable(head_ts: u64) -> Self {
         Self {
             requested_head_ts: head_ts,
-            pinned_event_ts: 0,
-            head_snap_back_ns: 0,
-            session_open_ts: 0,
-            first_event_ts: 0,
-            last_event_ts: 0,
-            events_through_head: 0,
-            last_ts_through_head: 0,
-            checkpoint_count: 0,
-            head_in_log: false,
-            starts_at_session_open: false,
-            ok: false,
+            ..Self::default()
         }
     }
 }
@@ -221,28 +205,15 @@ impl JoinCheck {
     pub fn unavailable(pinned_head_ts: u64) -> Self {
         Self {
             pinned_head_ts,
-            applied_ts: 0,
-            applied_seq: 0,
-            events_read: 0,
-            events_applied: 0,
-            seek_generation: 0,
-            join_wall_s: 0.0,
-            reached_head: false,
-            applied_from_open: false,
-            clean_coverage: false,
-            ok: false,
+            ..Self::default()
         }
     }
 }
 impl LagCheck {
     pub fn unavailable(apply_budget_ns: u64) -> Self {
         Self {
-            distinct_publications_sampled: 0,
-            abs_head_lag: None,
             apply_budget_ns,
-            advanced_ts_ns: 0,
-            clean_coverage: false,
-            ok: false,
+            ..Self::default()
         }
     }
 }
@@ -263,39 +234,12 @@ impl GoLiveCheck {
 }
 impl GapCheck {
     pub fn unavailable() -> Self {
-        Self {
-            injected_gap_ts: 0,
-            injected_expected_seq: 0,
-            injected_observed_seq: 0,
-            gap_records: 0,
-            applied_seq: 0,
-            logged_seq: 0,
-            refresh_order_id: 0,
-            refresh_unavailable: false,
-            ok: false,
-        }
+        Self::default()
     }
 }
 impl AppendCheck {
     pub fn unavailable() -> Self {
-        Self {
-            live_out_bytes: 0,
-            events_read: 0,
-            events_applied: 0,
-            gap_records: 0,
-            watermarks: WatermarkEvidence {
-                received_seq: 0,
-                decoded_seq: 0,
-                applied_seq: 0,
-                logged_seq: 0,
-                published_seq: 0,
-            },
-            source_warnings: Vec::new(),
-            live_lifecycle: LiveLifecycle::unavailable(),
-            clean_coverage: false,
-            logged_through_applied: false,
-            ok: false,
-        }
+        Self::default()
     }
 }
 impl IdentityCheck {
@@ -327,34 +271,22 @@ pub struct EvidenceInput<'a> {
 }
 
 pub fn assemble_evidence(input: EvidenceInput<'_>) -> Evidence {
+    let dims = [
+        (input.source.ok, "source/head validation"),
+        (input.join.ok, "join from session open to pinned head"),
+        (input.lag.ok, "absolute 1x wall pin"),
+        (input.go_live.ok, "GoLive catch-up to wall head"),
+        (
+            input.gap.ok,
+            "injected-gap loudness/unavailable classification",
+        ),
+        (input.append.ok, "live append coverage/watermarks"),
+        (input.identity.ok, "append-log six-section replay identity"),
+    ];
     let mut failures = Vec::new();
-    push_failure(&mut failures, input.source.ok, "source/head validation");
-    push_failure(
-        &mut failures,
-        input.join.ok,
-        "join from session open to pinned head",
-    );
-    push_failure(&mut failures, input.lag.ok, "absolute 1x wall pin");
-    push_failure(
-        &mut failures,
-        input.go_live.ok,
-        "GoLive catch-up to wall head",
-    );
-    push_failure(
-        &mut failures,
-        input.gap.ok,
-        "injected-gap loudness/unavailable classification",
-    );
-    push_failure(
-        &mut failures,
-        input.append.ok,
-        "live append coverage/watermarks",
-    );
-    push_failure(
-        &mut failures,
-        input.identity.ok,
-        "append-log six-section replay identity",
-    );
+    for (ok, dim) in dims {
+        push_failure(&mut failures, ok, dim);
+    }
     finish_evidence(input, failures)
 }
 
@@ -409,16 +341,19 @@ pub fn runtime_fail_evidence(fail: RuntimeFail<'_>) -> Evidence {
     finish_evidence(input, vec![fail.dimension.to_string()])
 }
 
-fn finish_evidence(input: EvidenceInput<'_>, failures: Vec<String>) -> Evidence {
-    let (git_sha, git_dirty) = git_info();
+fn finish_evidence(input: EvidenceInput<'_>, mut failures: Vec<String>) -> Evidence {
+    let provenance = capture_provenance(input.replay);
+    push_failure(&mut failures, provenance.ok, "provenance");
     Evidence {
         schema_version: 1,
         gate: "m15-simlive".into(),
         date: rfc3339_now(),
         binary: "m15-gate".into(),
-        git_sha,
-        git_dirty,
+        git_sha: provenance.git_sha,
+        git_dirty: provenance.git_dirty,
         replay: input.replay.to_string(),
+        replay_bytes: provenance.replay_bytes,
+        replay_sha256: provenance.replay_sha256,
         head_ts: input.head_ts,
         live_out: input.live_out.to_string(),
         source: input.source,
@@ -449,14 +384,65 @@ pub fn panic_message(payload: &(dyn Any + Send)) -> String {
         .unwrap_or_else(|| "non-string panic payload".into())
 }
 
-pub fn git_info() -> (String, Option<bool>) {
-    match (git(&["rev-parse", "HEAD"]), git(&["status", "--porcelain"])) {
+struct Provenance {
+    git_sha: String,
+    git_dirty: Option<bool>,
+    replay_bytes: u64,
+    replay_sha256: String,
+    ok: bool,
+}
+
+fn capture_provenance(replay: &str) -> Provenance {
+    let mut ok = true;
+    let (git_sha, git_dirty) = match (git(&["rev-parse", "HEAD"]), git(&["status", "--porcelain"]))
+    {
         (Ok(sha), Ok(status)) => (sha.trim().to_string(), Some(!status.trim().is_empty())),
         (Err(err), _) | (_, Err(err)) => {
-            eprintln!("m15-gate: WARNING no git provenance ({err}); sha=\"unknown\"");
+            eprintln!("m15-gate: no git provenance ({err}); sha=\"unknown\"");
+            ok = false;
             ("unknown".into(), None)
         }
+    };
+    let (replay_bytes, replay_sha256) = match stream_sha256(Path::new(replay)) {
+        Ok(v) => v,
+        Err(err) => {
+            eprintln!("m15-gate: no replay fixture identity ({err})");
+            ok = false;
+            (0, "unknown".into())
+        }
+    };
+    Provenance {
+        git_sha,
+        git_dirty,
+        replay_bytes,
+        replay_sha256,
+        ok,
     }
+}
+
+fn stream_sha256(path: &Path) -> Result<(u64, String), String> {
+    let mut file = File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 1024 * 1024];
+    let mut bytes = 0u64;
+    loop {
+        let n = file
+            .read(&mut buf)
+            .map_err(|e| format!("read {}: {e}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        bytes += n as u64;
+        hasher.update(&buf[..n]);
+    }
+    Ok((
+        bytes,
+        hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect(),
+    ))
 }
 
 fn git(args: &[&str]) -> Result<String, String> {

@@ -6,14 +6,17 @@
 
 mod checkpoint;
 mod command;
+mod dispatch;
 mod forward;
 mod live_log;
 mod pacing;
 mod prior;
 mod runtime;
+mod seek;
 mod service;
 mod sim_live;
 mod snapshot;
+mod sources;
 mod watermarks;
 
 pub use checkpoint::{
@@ -23,7 +26,8 @@ pub use command::{EngineCmd, LiveConfig, Source};
 pub use pacing::APPLY_BUDGET;
 pub use service::{EngineConfig, EngineExit, EngineHandle, EngineService, EngineStateError};
 pub use snapshot::{
-    CoverageCounters, DomPriceRow, DomRenderState, PriceRefreshRender, ProfilePriceRow,
-    ProfileRenderState, ProfileSessionRender, RenderSnapshot, SnapshotSlot, build_snapshot,
+    CoverageCounters, DomPriceRow, DomRenderState, LiveTransportPhase, PriceRefreshRender,
+    ProfilePriceRow, ProfileRenderState, ProfileSessionRender, RenderSnapshot, SnapshotSlot,
+    build_snapshot,
 };
 pub use watermarks::Watermarks;

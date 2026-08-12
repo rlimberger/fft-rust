@@ -1855,6 +1855,7 @@ dependencies = [
  "fft-replay",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tempfile",
 ]
 
@@ -1916,6 +1917,7 @@ dependencies = [
  "fft-engine",
  "fft-ingest",
  "fft-log",
+ "fft-replay",
  "gpui",
  "gpui_platform",
  "jiff",

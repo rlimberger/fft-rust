@@ -40,7 +40,10 @@ enum EngineCmd {
 **Prior sessions (2026-08-11, René: "all prior sessions we have, async"):**
 `LoadPriorSession` builds the PROFILE-side state of an earlier trade date on the engine
 thread in **time-budgeted slices interleaved with forward work** — playback and input
-latency are never blocked (budgets in time, doctrine rule 4). Rules:
+latency are never blocked (budgets in time, doctrine rule 4). **Forbidden under
+`Source::SimLive`** (2026-08-12): live-out checkpoints serialize the full `MultiProfile`,
+so engine-memory priors would poison §5 live-log bit-identity; UI rejects `--prior` with
+`--sim-live`; the engine panics on the command if anything bypasses the CLI. Rules:
 
 1. Profile-only: prior days build no book, no flow, no refresh state. Fast path: when the
    log carries CHECKPOINT frames, restore PROFILE/CVD/SESSION from the **last** checkpoint
@@ -87,6 +90,7 @@ struct RenderSnapshot {
     symbol: Arc<str>,      // contract from the source's header meta (2026-08-11);
                            // captured once at SetSource, refcount-cloned per publish,
                            // empty before any source exists
+    live_phase: LiveTransportPhase, // sim-live transport chrome (Inactive/CatchingUp/Live/…); one Copy byte, §3.5 budgets unchanged
     dom: DomRenderState,       // ladder window: per-price aggregates, flow counters,
                                // refresh badges, selected-order queue rank
     profile: ProfileRenderState, // per-session TPO/volume arrays, VA/IB/VPOC, CVD

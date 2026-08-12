@@ -3,7 +3,7 @@
 use crate::pacing::{self, APPLY_BUDGET};
 use crate::runtime::{Runtime, replay_panic};
 use crate::sim_live::SimLivePhase;
-use crate::snapshot::build_snapshot;
+use crate::snapshot::{LiveTransportPhase, build_snapshot};
 use fft_core::{CanonicalEvent, EventKind};
 use fft_replay::ReplayError;
 use std::time::Instant;
@@ -148,14 +148,15 @@ impl Runtime {
         if let Some(live) = self.sim_live.as_mut() {
             let book = self.book.as_ref().expect("live append needs Book");
             let profile = self.profile.as_ref().expect("live append needs profile");
-            let commit = live.note_applied(&event, book, profile);
+            let now = Instant::now();
+            let commit = live.note_applied(&event, book, profile, now);
             if let Some(seq) = commit.committed_logged_seq {
                 self.watermarks.set_logged(seq);
             }
             if commit.gap_reanchor {
                 self.watermarks.note_logged_gap();
             }
-            self.coverage.head_lag_ns = live.head_lag_ns(self.applied_ts, Instant::now());
+            self.coverage.head_lag_ns = live.head_lag_ns(self.applied_ts, now);
             match live.phase {
                 SimLivePhase::CatchingUp { head_ts } if self.applied_ts >= head_ts => {
                     // Pin only when the next event is past head so same-ts bursts
@@ -222,6 +223,13 @@ impl Runtime {
         );
         snapshot.symbol = self.symbol.clone();
         snapshot.coverage = self.coverage;
+        snapshot.live_phase = match self.sim_live.as_ref().map(|live| live.phase) {
+            None => LiveTransportPhase::Inactive,
+            Some(SimLivePhase::CatchingUp { .. }) => LiveTransportPhase::CatchingUp,
+            Some(SimLivePhase::WallPinned { .. }) => LiveTransportPhase::Live,
+            Some(SimLivePhase::ScrubbedBack { .. }) => LiveTransportPhase::Scrubbed,
+            Some(SimLivePhase::CatchingToWall { .. }) => LiveTransportPhase::CatchingToWall,
+        };
         assert!(
             snapshot.estimated_heap_bytes() <= 8 * 1024 * 1024,
             "fft-engine snapshot heap {} exceeds 8 MiB",
@@ -230,5 +238,67 @@ impl Runtime {
         self.snapshots.publish(snapshot);
         self.publications += 1;
         (self.wake)();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::service::EngineConfig;
+    use crate::sim_live::SimLiveState;
+    use crate::snapshot::{RenderSnapshot, SnapshotSlot};
+    use fft_book::Book;
+    use fft_core::Price;
+    use fft_profile::MultiProfile;
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    fn publish_runtime(sim_live: Option<SimLiveState>) -> Arc<RenderSnapshot> {
+        let snapshots = SnapshotSlot::new(Arc::new(RenderSnapshot::default()));
+        let mut rt = Runtime::new(
+            EngineConfig {
+                visible_tick_span: 8,
+            },
+            snapshots.clone(),
+            Box::new(|| {}),
+        );
+        let tick = Price(250_000_000);
+        rt.book = Some(Book::new(tick));
+        let mut profile = MultiProfile::new(tick);
+        profile.begin_session(20_663);
+        rt.profile = Some(profile);
+        rt.sim_live = sim_live;
+        rt.publish(0);
+        snapshots.load()
+    }
+
+    #[test]
+    fn publish_maps_sim_live_phase_to_live_transport_phase() {
+        let inactive = publish_runtime(None);
+        assert_eq!(inactive.live_phase, LiveTransportPhase::Inactive);
+
+        let catching = publish_runtime(Some(SimLiveState {
+            head_ts: 1,
+            phase: SimLivePhase::CatchingUp { head_ts: 1 },
+            tip_ts: 0,
+            tip_ordinal: 0,
+            cursor_ordinal: 0,
+            sealed_tip_ordinal: None,
+            live_log: None,
+        }));
+        assert_eq!(catching.live_phase, LiveTransportPhase::CatchingUp);
+
+        let live = publish_runtime(Some(SimLiveState {
+            head_ts: 1,
+            phase: SimLivePhase::WallPinned {
+                wall_at_head: Instant::now(),
+            },
+            tip_ts: 0,
+            tip_ordinal: 0,
+            cursor_ordinal: 0,
+            sealed_tip_ordinal: None,
+            live_log: None,
+        }));
+        assert_eq!(live.live_phase, LiveTransportPhase::Live);
     }
 }
