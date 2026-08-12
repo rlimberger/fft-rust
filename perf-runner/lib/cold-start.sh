@@ -44,8 +44,10 @@ run_cold_start_gate() {
   fi
   date_iso="$(date -u --iso-8601=seconds)"
 
+  local conditions="${FFT_COLD_START_CONDITIONS:-quiet box, post-soak, post-RTH-gate}"
   python3 - "$out_path" "$tmp_path" "$run_dir" "$git_sha" "$git_dirty" "$date_iso" \
-    "$REPLAY_LOG_PATH" "$REPLAY_AT_COLD" "$BUDGET_PAINT_MS" "$BUDGET_INTERACTIVE_MS" <<'PY'
+    "$REPLAY_LOG_PATH" "$REPLAY_AT_COLD" "$BUDGET_PAINT_MS" "$BUDGET_INTERACTIVE_MS" \
+    "$conditions" <<'PY'
 import json
 import re
 import sys
@@ -62,6 +64,7 @@ from pathlib import Path
     replay_at,
     budget_paint,
     budget_interactive,
+    conditions,
 ) = sys.argv[1:]
 
 budget_paint = float(budget_paint)
@@ -110,7 +113,7 @@ doc = {
     "date": date_iso,
     "git_sha": git_sha,
     "git_dirty": git_dirty == "true",
-    "conditions": "quiet box, post-soak, post-RTH-gate",
+    "conditions": conditions,
     "replay": replay,
     "replay_at": replay_at,
     "runs": runs,
