@@ -122,7 +122,9 @@ Omarchy state exists (CI, non-Omarchy hosts) and as the unit-test fixture.
   seamlessly go live). Session states from the `status` schema — the 15:15 CT halt is
   *tolerated, never assumed*.
 - **Live stand-in (no Databento live credentials yet):** a **sim-live source** — the recorded
-  week streamed at wall-clock 1× through the identical engine path, stream head anchored at
+  week through the identical engine path: unpaced join from session open to the anchored
+  head, then absolute wall-pinned 1× streaming (scrub/speed/go-live over the
+  already-streamed range per ENGINE.md §5), stream head anchored at
   **Wed 2026-07-29 09:50 America/New_York** (08:50 CT, twenty minutes into RTH). To the engine
   and UI it is indistinguishable from live; when credentials land, swapping in the real
   gateway changes the source only, never the path.

@@ -26,13 +26,13 @@ mutates engine state. The UI thread never blocks on I/O or seeks.
 
 ```rust
 enum EngineCmd {
-    SetSource(Source),          // Replay { path } | Live { config }
+    SetSource(Source),          // Replay { path } | SimLive { path, head_ts, live_out } | Live { config }
     LoadPriorSession { path },  // async profile-only build of an earlier trade date
     Play,
     Pause,
-    SetSpeed(f64),              // replay only; 0.0 < speed, go-live cancels it
+    SetSpeed(f64),              // replay / sim-live transport; 0.0 < speed, go-live cancels it
     Seek { ts: u64, generation: u64 },
-    GoLive,                     // live source only; jump to head
+    GoLive,                     // SimLive / Live only; jump to wall-pinned head
     Shutdown,                   // engine flushes + closes the log, then exits
 }
 ```
@@ -97,13 +97,17 @@ struct CoverageCounters {
     events_read: u64,    // events decoded from the source since SetSource
     events_applied: u64, // events applied to book+profile exactly once
     gap_records: u64,    // gap events encountered (downstream state = unavailable)
+    head_lag_ns: i64,    // sim-live wall-pin lag (coverage note); 0 for replay / steady state
 }
 ```
 
 `events_read == events_applied` is an invariant (debug-asserted in the engine); the UI
 renders `events_read - events_applied` as the dropped-event counter and the M3 gate
 requires it to read zero for the whole run. `gap_records` is informational (a gap is loud
-data, not a drop). Counters reset on `SetSource`; a seek neither resets nor advances them —
+data, not a drop). `head_lag_ns` is the §5 wall-pin observability surface:
+`(applied_ts - head_ts) - (now - wall_at_head)` while pinned or catching to the wall,
+computed in signed saturating wide arithmetic (backward timestamps legal, never wraps);
+zero before pin, while scrubbed back, and on plain replay. Counters reset on `SetSource`; a seek neither resets nor advances them —
 seek resolution is accounted by its own bit-identical gate, the counters cover forward/live
 flow only.
 
@@ -175,6 +179,97 @@ drained batch apply **in order**; a `SetSource` discards any seek selected earli
 same batch (it targeted the old source) and resets `latest_seek` to 0; a `Seek` after the
 `SetSource` executes against the new source.
 
+**Post-seek intent (strict, batch-local — 2026-08-12, same-commit with the
+implementation).** Each drained batch tracks the coalesced `Seek` (highest generation)
+plus one `after_seek ∈ {Paused, Play, GoLive}`:
+
+- Every `Seek` selects/replaces the coalesced target, forces pause, and **resets**
+  `after_seek = Paused` — a later `Seek` clears any earlier `Play`/`GoLive` intent in
+  the same batch.
+- `Play` / `Pause` / `GoLive` arriving after a selected `Seek` set only `after_seek`;
+  they run when that seek completes, and only if its generation is still `latest_seek`.
+- Consequences, each protocol-tested: `[Seek, Play]` resumes from the anchor;
+  `[Seek, Pause]` stays paused; `[Seek, Play, Seek]` ends paused at the final seek;
+  `[Seek, GoLive]` ends live; `[GoLive, Seek]` ends scrubbed.
+- `SetSource` discards the selected seek **and** clears `after_seek` (resume intent
+  dies with the old source).
+
 Restore equivalence stays the M2 bar: checkpoint-restore + tail-replay bit-identical to
 forward replay, compared order-exact (FFTLOG-V2 §5), `check_invariants()` after every
 restore.
+
+## 5. Sim-live source (M1.5 freeze, 2026-08-11)
+
+The recorded week stands in for Databento live (PRD §6): identical engine path, so M6
+swaps the inlet, never the path. Frozen interface:
+
+```rust
+Source::SimLive {
+    path: PathBuf,
+    head_ts: u64,          // ns-UTC, an EXACT in-log event timestamp
+    live_out: PathBuf,     // LIVE-flagged append destination (§5.4 / gate --live-out)
+}
+```
+
+`live_out` is additive to the original freeze listing (same-commit): required by the
+live-append contract and the M1.5 gate's `--live-out`; without it the engine has no
+single-writer destination for clause 4.
+
+`head_ts` must be an **exact event timestamp present in the log** — not merely within
+its range. `SetSource(SimLive)` validates the whole source for that exact timestamp
+**before** creating `live_out`; an invalid head (empty source, before open, past EOF,
+or between events) is a loud panic that never truncates an existing `live_out`.
+(The `m15-gate` CLI accepts a wall-clock `--head` and snaps it to the last event
+at-or-before that instant before issuing `SetSource` — a harness convenience; the
+engine contract stays exact.)
+
+Semantics (each clause is gate-tested, not advisory):
+
+1. **Join = catch-up.** `SetSource(SimLive)` opens the log and applies from session open
+   to `head_ts` unpaced in **time-budgeted slices** (same doctrine as prior builds —
+   forward publication cadence and command latency are never blocked; budgets in time).
+   Catch-up progress publishes normally: the UI shows the book racing to the head, which
+   is exactly the M6 intraday-replay-join UX. `--replay-at`'s Seek-based anchor is NOT
+   the join path — a sim-live join replays through the open, it never checkpoint-skips.
+2. **Wall pin at head.** When `applied_ts` reaches `head_ts`, the engine records
+   `wall_at_head = Instant::now()` and thereafter paces so that
+   `applied_ts - head_ts` tracks `now - wall_at_head` **absolutely** — the pin is to the
+   origin, never relative re-anchoring, so a multi-hour session cannot drift. Falling
+   behind (slice exhaustion) is caught up on the next slice; the lag is observable as
+   `head_lag_ns` in the snapshot's coverage notes (0 in steady state).
+3. **Speed/GoLive.** `SetSpeed` is legal while paused-behind or scrubbed-back
+   (transport still works over the already-streamed range); `GoLive` jumps to the
+   current wall-pinned head (unpaced catch-up of the interim), cancels any `SetSpeed`
+   to 1×, and resumes wall-pinned streaming. `GoLive` on a plain `Replay` source stays
+   a panic.
+4. **Live-log append.** The engine (single writer, §1) appends every applied canonical
+   event to a LIVE-flagged fftlog v2 (`FFTLOG-V2` §7 commit protocol) and emits a
+   CHECKPOINT frame every 60 s **wall-clock** (§4.1). The append frontier is an
+   **event ordinal**, not a timestamp: each consumed source event advances a cursor
+   ordinal, and a successful append records it as the tip ordinal — so a slice that
+   stops mid same-timestamp burst cannot double-append or skip the burst's tail.
+   `Seek`/`GoLive` seal the tip; scrubbed replay behind the tip never appends, and a
+   GoLive re-catch suppresses appends until the sealed tip ordinal is crossed.
+   `logged_seq` advances only on a committed append and means the **last non-snapshot
+   channel seq in committed wire order** (a committed Gap re-anchors it exactly once,
+   mirroring the applied-side re-anchor); it is no longer an alias of `applied_seq`
+   on this source. `Shutdown` closes the log cleanly (LIVE flag cleared).
+5. **Watermarks.** `received_seq`/`decoded_seq` advance at the sim-live inlet as events
+   are drawn from the cursor, before apply — the five stages become real, in
+   preparation for M6's network inlet.
+6. **Gap injection is harness-side.** The M1.5 gate bin wraps the cursor and injects
+   synthetic Gap records mid-stream; the engine treats them as wire truth (loud
+   `gap_records`, book/refresh → unavailable). No injection hooks live in the engine.
+
+**Gate bin** (`m15-gate`, bin target in fft-engine — headless): inventories the source
+and validates the head, joins at session open (exact join-prefix event count, zero
+seeks), streams wall-pinned (measured drift bound over the gate window: |head_lag_ns|
+p99 ≤ one slice budget, sampled on distinct publications), exercises scrub +
+`SetSpeed` + `GoLive` back to the wall head, injects a gap via a harness-built
+resequenced fixture and asserts loud records + unavailable classification + post-gap
+watermarks + six-section identity of the gap-bearing live log, verifies the LIVE-flag
+lifecycle on `live_out` (LIVE while streaming; footer-indexed, flag cleared, warning-free
+after `Shutdown`), then **re-replays the appended live log bit-identically** through the
+standard replay path (order-exact section compare at EOF). Every failure path still
+writes the evidence JSON with `verdict: FAIL` and the failed dimension — a panic never
+destroys evidence.

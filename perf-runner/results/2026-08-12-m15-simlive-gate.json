@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "gate": "m15-simlive",
+  "date": "2026-08-12T07:31:48Z",
+  "binary": "m15-gate",
+  "git_sha": "67b936c5b5d784e5e0106ca96e8413008f5f86c8",
+  "git_dirty": true,
+  "replay": "/tmp/esu6-wed-v3-ckpt.fftlog",
+  "head_ts": 1785333000000000000,
+  "live_out": "/tmp/m15-live-final.fftlog",
+  "source": {
+    "requested_head_ts": 1785333000000000000,
+    "pinned_event_ts": 1785332999998093635,
+    "head_snap_back_ns": 1906365,
+    "session_open_ts": 1785276000000000000,
+    "first_event_ts": 1785276000000000000,
+    "last_event_ts": 1785362399999689777,
+    "events_through_head": 5955247,
+    "last_ts_through_head": 1785332999998093635,
+    "checkpoint_count": 1393,
+    "head_in_log": true,
+    "starts_at_session_open": true,
+    "ok": true
+  },
+  "join": {
+    "pinned_head_ts": 1785332999998093635,
+    "applied_ts": 1785332999998093635,
+    "applied_seq": 34873761,
+    "events_read": 5955247,
+    "events_applied": 5955247,
+    "seek_generation": 0,
+    "join_wall_s": 5.12758236,
+    "reached_head": true,
+    "applied_from_open": true,
+    "clean_coverage": true,
+    "ok": true
+  },
+  "lag": {
+    "distinct_publications_sampled": 10739,
+    "abs_head_lag": {
+      "n": 10739,
+      "p50_ns": 381286,
+      "p95_ns": 985218,
+      "p99_ns": 1049142,
+      "max_ns": 2966001,
+      "min_ns": 406,
+      "mean_ns": 431429.78834155883
+    },
+    "apply_budget_ns": 4000000,
+    "advanced_ts_ns": 59986175744,
+    "clean_coverage": true,
+    "ok": true
+  },
+  "go_live": {
+    "scrub_target_ts": 1785304529992134690,
+    "scrubbed_ts": 1785304529290017425,
+    "tip_before_scrub_ts": 1785333059984269379,
+    "resumed_ts": 1785333061106737239,
+    "resumed_seek_generation": 0,
+    "resumed_abs_head_lag_ns": 441370,
+    "scrubbed_behind_tip": true,
+    "reached_prior_tip": true,
+    "ok": true
+  },
+  "gap": {
+    "injected_gap_ts": 1785276000041000000,
+    "injected_expected_seq": 42,
+    "injected_observed_seq": 141,
+    "gap_records": 1,
+    "applied_seq": 180,
+    "logged_seq": 180,
+    "refresh_order_id": 1,
+    "refresh_unavailable": true,
+    "ok": true
+  },
+  "append": {
+    "live_out_bytes": 57759158,
+    "events_read": 9462936,
+    "events_applied": 9462936,
+    "gap_records": 0,
+    "watermarks": {
+      "received_seq": 34917327,
+      "decoded_seq": 34917327,
+      "applied_seq": 34917327,
+      "logged_seq": 34917327,
+      "published_seq": 34917327
+    },
+    "source_warnings": [],
+    "live_lifecycle": {
+      "during_is_live": true,
+      "during_index_source_live_recovery": true,
+      "after_not_live": true,
+      "after_index_source_footer": true,
+      "after_recovery_none": true,
+      "after_warnings_empty": true
+    },
+    "clean_coverage": true,
+    "logged_through_applied": true,
+    "ok": true
+  },
+  "identity": {
+    "replayed_events": 6003663,
+    "replayed_applied_seq": 34917327,
+    "replayed_applied_ts": 1785333061112381831,
+    "compared_sections": [
+      "BOOK",
+      "FLOW",
+      "REFRESH",
+      "PROFILE",
+      "CVD",
+      "SESSION"
+    ],
+    "first_mismatch": null,
+    "ok": true
+  },
+  "budgets": {
+    "apply_budget_ns": 4000000,
+    "gate_secs": 60,
+    "join_timeout_s": 600
+  },
+  "failures": [],
+  "verdict": "PASS",
+  "notes": "lag samples=distinct pubs; gap harness-spliced; identity=BOOK/FLOW/REFRESH/PROFILE/CVD/SESSION"
+}

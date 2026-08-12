@@ -82,10 +82,13 @@ and continuous live-log fftlog append all exercise exactly the code the real gat
 drive. (The review's minimal linked MP/DOM UI slice remains **declined** — M3/M4 own the
 product surface.)
 
-**Gate:** the engine joins at session open, catches up to the 09:50 NY head, then streams at
-1× with clean sequence accounting; an injected gap produces a loud gap record and
-*unavailable* iceberg classification; the continuously appended live log replays
-bit-identically through the same path.
+**Gate** (`m15-gate`, bin in fft-engine): the engine joins at session open (exact
+join-prefix count, zero seeks), catches up to the 09:50 NY head, then streams
+wall-pinned at 1× with |head_lag_ns| p99 ≤ one apply slice and clean sequence
+accounting; scrub + GoLive resume the pin; an injected gap produces a loud gap record,
+*unavailable* iceberg classification, and correct post-gap watermarks; the continuously
+appended live log passes the LIVE-flag lifecycle and replays bit-identically (six-section
+order-exact) through the same path; every failure path still writes FAIL evidence.
 
 ## M2 — Derived state + seek anywhere  *(2 parallel tracks)*
 

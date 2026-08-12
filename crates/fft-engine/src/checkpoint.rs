@@ -94,7 +94,8 @@ fn file_len(path: &Path) -> Result<u64, CheckpointError> {
         })
 }
 
-fn write_state_checkpoint(
+/// Serialize the six sections through the same path live + historical use.
+pub(crate) fn write_state_checkpoint(
     writer: &mut LogWriter,
     book: &Book,
     profile: &MultiProfile,

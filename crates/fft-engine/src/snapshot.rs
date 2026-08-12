@@ -129,6 +129,10 @@ pub struct CoverageCounters {
     pub events_applied: u64,
     /// Gap events encountered (downstream state = unavailable, loud, not a drop).
     pub gap_records: u64,
+    /// Sim-live wall-pin lag (`applied_ts - head_ts` − `(now - wall_at_head)`),
+    /// nanoseconds. Zero for plain replay and in sim-live steady state
+    /// (`docs/ENGINE.md` §5 clause 2).
+    pub head_lag_ns: i64,
 }
 
 fn empty_symbol() -> Arc<str> {
