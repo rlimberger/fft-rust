@@ -58,6 +58,8 @@ fn seek_matches_forward_at_multiple_targets() {
         assert_eq!(seek_profile.serialize(), forward_profile.serialize());
         assert_eq!(seek_src.applied_seq(), forward_src.applied_seq());
         assert_eq!(seek_src.applied_ts(), forward_src.applied_ts());
+        assert_eq!(seek_src.event_ordinal(), forward_src.event_ordinal());
+        assert_eq!(report.event_ordinal, seek_src.event_ordinal());
     }
 }
 

@@ -16,6 +16,31 @@ pub enum ReplayError {
         /// Version required by the state crate.
         expected: u16,
     },
+    /// Harness splice input carried log-open recovery or rebuild warnings.
+    SpliceOpenWarnings(Vec<String>),
+    /// Harness splice input timestamps moved backwards.
+    NonMonotonicSpliceInput {
+        /// Zero-based event position in the source.
+        event_index: u64,
+        /// Timestamp of the preceding event.
+        previous_ts: u64,
+        /// Timestamp that violated monotonic order.
+        observed_ts: u64,
+    },
+    /// No event in the copied range followed the requested splice boundary.
+    SpliceAnchorNotFound {
+        /// Timestamp after which the Gap was requested.
+        inject_after_ts: u64,
+        /// Inclusive end of the copied range.
+        copy_through_ts: u64,
+    },
+    /// Gap sequence bounds did not describe a forward discontinuity.
+    InvalidGapSequences {
+        /// First missing source sequence.
+        expected: u64,
+        /// First source sequence observed after the discontinuity.
+        observed: u64,
+    },
     /// A book-owned checkpoint payload was malformed.
     BookRestore(fft_book::RestoreError),
     /// The profile checkpoint payload was malformed.
@@ -39,6 +64,30 @@ impl fmt::Display for ReplayError {
             } => write!(
                 f,
                 "fft-replay {section} section version {found}, expected {expected}"
+            ),
+            Self::SpliceOpenWarnings(warnings) => write!(
+                f,
+                "fft-replay splice rejected source open warnings: {}",
+                warnings.join("; ")
+            ),
+            Self::NonMonotonicSpliceInput {
+                event_index,
+                previous_ts,
+                observed_ts,
+            } => write!(
+                f,
+                "fft-replay splice source event {event_index} timestamp {observed_ts} is before {previous_ts}"
+            ),
+            Self::SpliceAnchorNotFound {
+                inject_after_ts,
+                copy_through_ts,
+            } => write!(
+                f,
+                "fft-replay splice found no event after {inject_after_ts} through {copy_through_ts}"
+            ),
+            Self::InvalidGapSequences { expected, observed } => write!(
+                f,
+                "fft-replay splice Gap observed sequence {observed} must be greater than expected {expected}"
             ),
             Self::BookRestore(error) => write!(f, "fft-replay book restore: {error}"),
             Self::ProfileRestore(error) => write!(f, "fft-replay profile restore: {error}"),

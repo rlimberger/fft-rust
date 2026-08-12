@@ -1,3 +1,4 @@
+use crate::ordinal;
 use crate::{ReplayError, Result};
 use fft_book::{
     BOOK_SECTION_ID, BOOK_SECTION_VERSION, Book, FLOW_SECTION_ID, FLOW_SECTION_VERSION,
@@ -49,6 +50,8 @@ pub struct SeekReport {
     pub applied_seq: u64,
     /// Last applied event timestamp.
     pub applied_ts: u64,
+    /// Source-event ordinal after this seek (`ReplaySource::event_ordinal`).
+    pub event_ordinal: u64,
     /// True when a newer seek cancelled this operation.
     pub cancelled: bool,
 }
@@ -60,6 +63,8 @@ pub struct ReplaySource {
     frame: usize,
     frame_events: Vec<CanonicalEvent>,
     event: usize,
+    /// Canonical events consumed by this cursor since log open.
+    event_ordinal: u64,
     applied_seq: u64,
     applied_ts: u64,
 }
@@ -75,6 +80,7 @@ impl ReplaySource {
             frame: 0,
             frame_events: Vec::new(),
             event: 0,
+            event_ordinal: 0,
             applied_seq: 0,
             applied_ts: 0,
         })
@@ -106,6 +112,18 @@ impl ReplaySource {
             .count()
     }
 
+    /// Monotonic count of canonical source events consumed since log open.
+    ///
+    /// Advances on [`ReplaySource::next_event`] / [`ReplaySource::apply_next`] (not on
+    /// peek). Exact across [`ReplaySource::seek`] and [`ReplaySource::prepare_prior_build`]:
+    /// after a checkpoint restore it equals the number of source events preceding the
+    /// restored cursor. Restores derive that count by decoding EVENTS frames before the
+    /// restore frame — the footer index has no per-frame event counts, and frame-header
+    /// `count` includes TsReset wire records that never become canonical events.
+    pub fn event_ordinal(&self) -> u64 {
+        self.event_ordinal
+    }
+
     /// Last source sequence applied by this cursor.
     pub fn applied_seq(&self) -> u64 {
         self.applied_seq
@@ -128,7 +146,7 @@ impl ReplaySource {
             let header = self.reader.frame_header(frame)?;
             self.applied_seq = header.last_seq;
             self.applied_ts = header.last_ts;
-            self.reset_cursor(frame + 1);
+            self.reset_cursor_after_frame(frame)?;
             Ok((book, profile))
         } else {
             let book = Book::new(self.reader.meta().min_price_increment);
@@ -136,6 +154,7 @@ impl ReplaySource {
             self.applied_seq = 0;
             self.applied_ts = 0;
             self.reset_cursor(0);
+            self.event_ordinal = 0;
             Ok((book, profile))
         }
     }
@@ -157,9 +176,9 @@ impl ReplaySource {
             self.frame += 1;
             // Reuse the persistent buffer (clear + push) instead of a fresh
             // collect::<Vec<_>> per frame (M1-APPLY-PROFILE: ~0.3–0.5 s over Wed).
-            // Seek/prepare_prior_build call `reset_cursor`, which clears the
-            // buffer and zeroes `event` before any restore-tail load — no
-            // cross-restore alias. Callers only see Copy peeks (`CanonicalEvent`).
+            // Seek/prepare_prior_build reset the cursor (and clear this buffer)
+            // before any restore-tail load — no cross-restore alias.
+            // Callers only see Copy peeks (`CanonicalEvent`).
             self.frame_events.clear();
             for item in self.reader.events(frame..frame + 1) {
                 self.frame_events.push(item?);
@@ -184,23 +203,33 @@ impl ReplaySource {
         Ok(self.ensure_event()?.then(|| self.frame_events[self.event]))
     }
 
+    /// Advance the cursor and return the next event without applying it.
+    ///
+    /// Harness copy/splice paths use this so event rewriting does not pay book
+    /// + profile apply cost (ENGINE.md §5.6 gap injection).
+    pub fn next_event(&mut self) -> Result<Option<CanonicalEvent>> {
+        let Some(event) = self.peek_event()? else {
+            return Ok(None);
+        };
+        self.event += 1;
+        self.event_ordinal += 1;
+        if event.seq.0 != 0 && !event.is_snapshot() {
+            self.applied_seq = u64::from(event.seq.0);
+        }
+        self.applied_ts = event.ts.0;
+        Ok(Some(event))
+    }
+
     /// Apply the next event to book and profile, returning `None` at EOF.
     pub fn apply_next(
         &mut self,
         book: &mut Book,
         profile: &mut MultiProfile,
     ) -> Result<Option<CanonicalEvent>> {
-        let Some(event) = self.peek_event()? else {
+        let Some(event) = self.next_event()? else {
             return Ok(None);
         };
-        self.event += 1;
         apply(event, book, profile);
-        // Snapshot records carry original order-entry seqs (FFTLOG-V2 §4): non-channel,
-        // non-monotonic, and excluded from seq accounting.
-        if event.seq.0 != 0 && !event.is_snapshot() {
-            self.applied_seq = u64::from(event.seq.0);
-        }
-        self.applied_ts = event.ts.0;
         Ok(Some(event))
     }
 
@@ -264,13 +293,14 @@ impl ReplaySource {
             let header = self.reader.frame_header(frame)?;
             self.applied_seq = header.last_seq;
             self.applied_ts = header.last_ts;
-            self.reset_cursor(frame + 1);
+            self.reset_cursor_after_frame(frame)?;
         } else {
             *book = Book::new(self.reader.meta().min_price_increment);
             *profile = initial_profile(self.reader.meta());
             self.applied_seq = 0;
             self.applied_ts = 0;
             self.reset_cursor(0);
+            self.event_ordinal = 0;
         }
 
         let mut tail_events = 0u64;
@@ -312,6 +342,7 @@ impl ReplaySource {
             tail_events,
             applied_seq: self.applied_seq,
             applied_ts: self.applied_ts,
+            event_ordinal: self.event_ordinal,
             cancelled,
         }
     }
@@ -330,6 +361,14 @@ impl ReplaySource {
         self.frame = frame;
         self.frame_events.clear();
         self.event = 0;
+    }
+
+    /// Place the cursor immediately after `frame` and set `event_ordinal` to the
+    /// exact count of canonical events in frames `0..frame+1`.
+    fn reset_cursor_after_frame(&mut self, frame: usize) -> Result<()> {
+        self.event_ordinal = ordinal::events_before_frame(&self.reader, frame + 1)?;
+        self.reset_cursor(frame + 1);
+        Ok(())
     }
 }
 
