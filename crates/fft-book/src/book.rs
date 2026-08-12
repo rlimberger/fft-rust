@@ -40,12 +40,19 @@ pub struct Book {
     pub(crate) unknown_refs: u64,
     /// Snapshot-flagged Clear records ignored (FFTLOG-V2 §4 block framing).
     pub(crate) snapshot_clears: u64,
+    /// Gap-tainted Add that replaced a retained order with the same id
+    /// (runtime diagnostic; not seek-relevant — restarts at 0 on restore).
+    pub(crate) gap_desync_adds: u64,
     /// Gap-tainted Cancel whose size/price/side disagreed with retained depth
     /// (runtime diagnostic; not seek-relevant — restarts at 0 on restore).
     pub(crate) gap_desync_cancels: u64,
     /// Gap-tainted Modify whose side/price disagreed with retained depth
     /// (runtime diagnostic; not seek-relevant — restarts at 0 on restore).
     pub(crate) gap_desync_modifies: u64,
+    /// Fill on a gap-tainted retained order that skipped refresh depletion/
+    /// off-display evidence (sided venue mismatch, or sideless Fill resolved
+    /// via order-id lookup). Runtime diagnostic; restarts at 0 on restore.
+    pub(crate) gap_desync_fills: u64,
 }
 
 impl Book {
@@ -76,8 +83,10 @@ impl Book {
             last_gap: None,
             unknown_refs: 0,
             snapshot_clears: 0,
+            gap_desync_adds: 0,
             gap_desync_cancels: 0,
             gap_desync_modifies: 0,
+            gap_desync_fills: 0,
         }
     }
 
@@ -174,9 +183,20 @@ impl Book {
             "fft-book: Add without side: {ev:?}"
         );
         assert!(ev.size > 0, "fft-book: Add with size 0: {ev:?}");
-        // Duplicate-id detection lives in `insert_order` (single hash lookup).
+        let id = ev.order_id.0;
         let price = self.to_ticks(ev.price);
-        self.insert_order(ev.order_id.0, ev.side, price, ev.size, ts);
+        if let Some(&slot) = self.index.get(&id) {
+            let retained = self.orders[slot as usize].clone();
+            if self.is_gap_tainted(&retained) {
+                // The venue has begun a new life for an id whose retained
+                // pre-gap life may already have ended in the missing interval.
+                self.gap_desync_adds += 1;
+                self.refresh.on_book_change(id);
+                self.remove_live_order(slot, &retained, None);
+            }
+        }
+        // Fresh duplicate-id detection remains strict in `insert_order`.
+        self.insert_order(id, ev.side, price, ev.size, ts);
     }
 
     fn do_snapshot_add(&mut self, ev: &CanonicalEvent) {
@@ -279,13 +299,24 @@ impl Book {
             .index
             .get(&id)
             .map(|&slot| self.orders[slot as usize].clone());
-        if let Some(o) = &order {
-            assert!(
-                ev.side == Side::None || ev.side == o.side,
-                "fft-book: Fill side {:?} != resting side {:?} (id {id})",
-                ev.side,
-                o.side
-            );
+        let side_mismatch = order
+            .as_ref()
+            .is_some_and(|o| ev.side != Side::None && ev.side != o.side);
+        if side_mismatch {
+            let o = order
+                .as_ref()
+                .expect("side mismatch requires a known order");
+            if self.is_gap_tainted(o) {
+                // Fill does not mutate depth. Attribute tape/flow from the
+                // venue side, but do not attach depletion evidence to stale
+                // retained state from before the gap.
+                self.gap_desync_fills += 1;
+            } else {
+                panic!(
+                    "fft-book: Fill side {:?} != resting side {:?} (id {id})",
+                    ev.side, o.side
+                );
+            }
         }
         let side = match (ev.side, &order) {
             (Side::None, Some(o)) => o.side,
@@ -313,6 +344,18 @@ impl Book {
             self.unknown_refs += 1;
             return;
         };
+        if side_mismatch {
+            return;
+        }
+        if self.is_gap_tainted(&o) && ev.side == Side::None {
+            // Sideless Fill resolves the resting side by order-id lookup
+            // (FFTLOG-V2 §4), but that retained state may be stale across the
+            // gap. Tape/flow were already attributed above from the resolved
+            // side; skip depletion/off-display evidence — same stale-evidence
+            // class the sided-mismatch path already avoids.
+            self.gap_desync_fills += 1;
+            return;
+        }
         if price != o.price {
             self.refresh.note_fill_off_display();
         }

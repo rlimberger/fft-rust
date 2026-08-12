@@ -194,6 +194,12 @@ impl Book {
         self.snapshot_clears
     }
 
+    /// Add events that replaced a gap-tainted retained order with the same id
+    /// (venue values re-applied via remove+reinsert).
+    pub fn gap_desync_adds(&self) -> u64 {
+        self.gap_desync_adds
+    }
+
     /// Cancel events on gap-tainted ids whose size/price/side disagreed with
     /// retained depth (venue-wins full removal; see FFTLOG-V2 §4).
     pub fn gap_desync_cancels(&self) -> u64 {
@@ -204,6 +210,13 @@ impl Book {
     /// retained depth (venue values re-applied via remove+reinsert).
     pub fn gap_desync_modifies(&self) -> u64 {
         self.gap_desync_modifies
+    }
+
+    /// Fill events on gap-tainted retained orders that would otherwise attach
+    /// stale depletion/off-display evidence (sided venue mismatch, or sideless
+    /// Fill resolved via order-id lookup). Tape/flow attribution still runs.
+    pub fn gap_desync_fills(&self) -> u64 {
+        self.gap_desync_fills
     }
 
     fn walk_level(

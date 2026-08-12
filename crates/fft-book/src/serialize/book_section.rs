@@ -131,8 +131,10 @@ pub(super) fn restore(bytes: &[u8]) -> Result<Book, RestoreError> {
         // restart at 0. Per-order gap taint reconstructs from order.epoch vs
         // REFRESH.gap_epoch (and gap_pending when the book is mid-gap).
         snapshot_clears: 0,
+        gap_desync_adds: 0,
         gap_desync_cancels: 0,
         gap_desync_modifies: 0,
+        gap_desync_fills: 0,
     })
 }
 
