@@ -20,13 +20,13 @@ die() {
   exit 1
 }
 
-# date  expected_events  expected_bytes  expected_ckpts
+# date  expected_events  expected_raw_bytes  expected_ckpts  expected_ckpt_bytes
 DAYS=(
-  "2026-07-27 16050064 151671425 1391"
-  "2026-07-28 14054511 134377944 1392"
-  "2026-07-29 21401139 202632683 1393"
-  "2026-07-30 16595979 158098435 1393"
-  "2026-07-31 17152053 160034446 1377"
+  "2026-07-27 16050064 151671425 1391 268661705"
+  "2026-07-28 14054511 134377944 1392 259081504"
+  "2026-07-29 21401139 202632683 1393 327155580"
+  "2026-07-30 16595979 158098435 1393 289901922"
+  "2026-07-31 17152053 160034446 1377 287328737"
 )
 
 mkdir -p "$GATES"
@@ -51,6 +51,7 @@ for spec in "${DAYS[@]}"; do
   want_events="$2"
   want_bytes="$3"
   want_ckpts="$4"
+  want_ckpt_bytes="$5"
   raw="$GATES/ESU6-${date}.fftlog"
   ckpt="$GATES/ESU6-${date}-ckpt.fftlog"
 
@@ -80,8 +81,13 @@ for spec in "${DAYS[@]}"; do
   fi
 
   if [[ -f "$ckpt" ]]; then
-    echo "regen-week-fixtures: skip checkpoint $date (exists: $ckpt)"
-    continue
+    have_ckpt_bytes="$(stat -c '%s' "$ckpt")"
+    if [[ "$have_ckpt_bytes" -eq "$want_ckpt_bytes" ]]; then
+      echo "regen-week-fixtures: skip checkpoint $date (bytes=$have_ckpt_bytes)"
+      continue
+    fi
+    echo "regen-week-fixtures: re-checkpoint $date (bytes $have_ckpt_bytes != $want_ckpt_bytes)"
+    rm -f -- "$ckpt"
   fi
 
   echo "regen-week-fixtures: checkpoint $date -> $ckpt"
