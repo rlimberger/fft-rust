@@ -17,9 +17,11 @@
 //! Quiet-box 24 h (Fri current + Mon–Thu):
 //! ```text
 //! cargo run --release -p fft-ui --bin m7-soak -- \
-//!   --replay /tmp/esu6-fri-ckpt.fftlog \
-//!   --prior /tmp/esu6-2026-07-27.fftlog --prior /tmp/esu6-2026-07-28.fftlog \
-//!   --prior /tmp/esu6-2026-07-29.fftlog --prior /tmp/esu6-2026-07-30.fftlog \
+//!   --replay ~/.cache/fft/gates/ESU6-2026-07-31-ckpt.fftlog \
+//!   --prior ~/.cache/fft/gates/ESU6-2026-07-27.fftlog \
+//!   --prior ~/.cache/fft/gates/ESU6-2026-07-28.fftlog \
+//!   --prior ~/.cache/fft/gates/ESU6-2026-07-29.fftlog \
+//!   --prior ~/.cache/fft/gates/ESU6-2026-07-30.fftlog \
 //!   --speed 64 --out perf-runner/results/<date>-m7-soak.jsonl --max-hours 24
 //! ```
 //!
@@ -27,26 +29,29 @@
 //! week-long engine — each cycle restarts. Single-engine week-long is a remaining non-goal.
 //! ```text
 //! cargo run --release -p fft-ui --bin m7-soak -- \
-//!   --replay /tmp/esu6-fri-ckpt.fftlog \
-//!   --prior /tmp/esu6-2026-07-27.fftlog --prior /tmp/esu6-2026-07-28.fftlog \
-//!   --prior /tmp/esu6-2026-07-29.fftlog --prior /tmp/esu6-2026-07-30.fftlog \
+//!   --replay ~/.cache/fft/gates/ESU6-2026-07-31-ckpt.fftlog \
+//!   --prior ~/.cache/fft/gates/ESU6-2026-07-27.fftlog \
+//!   --prior ~/.cache/fft/gates/ESU6-2026-07-28.fftlog \
+//!   --prior ~/.cache/fft/gates/ESU6-2026-07-29.fftlog \
+//!   --prior ~/.cache/fft/gates/ESU6-2026-07-30.fftlog \
 //!   --speed 64 --out perf-runner/results/<date>-m7-soak-week.jsonl --max-hours 168
 //! ```
 //!
 //! Smoke (short cycles; use only earlier-date priors so honesty can pass):
 //! ```text
 //! cargo run --release -p fft-ui --bin m7-soak -- \
-//!   --replay /tmp/esu6-wed-v3-ckpt.fftlog \
-//!   --prior /tmp/esu6-2026-07-27.fftlog --prior /tmp/esu6-2026-07-28.fftlog \
+//!   --replay ~/.cache/fft/gates/ESU6-2026-07-29-ckpt.fftlog \
+//!   --prior ~/.cache/fft/gates/ESU6-2026-07-27.fftlog \
+//!   --prior ~/.cache/fft/gates/ESU6-2026-07-28.fftlog \
 //!   --speed 64 --cycle-secs 120 --max-cycles 3 --out /tmp/m7-soak-smoke.jsonl
 //! ```
 //!
 //! EOF-driven single cycle (`--cycle-secs 0`): ends at source EOF; heartbeats every 30 s.
 //! ```text
 //! cargo run --release -p fft-ui --bin m7-soak -- \
-//!   --replay /tmp/esu6-wed-v3-ckpt.fftlog \
-//!   --prior ~/.cache/fft/sessions/ESU6-2026-07-27.fftlog \
-//!   --prior ~/.cache/fft/sessions/ESU6-2026-07-28.fftlog \
+//!   --replay ~/.cache/fft/gates/ESU6-2026-07-29-ckpt.fftlog \
+//!   --prior ~/.cache/fft/gates/ESU6-2026-07-27.fftlog \
+//!   --prior ~/.cache/fft/gates/ESU6-2026-07-28.fftlog \
 //!   --speed 64 --cycle-secs 0 --max-cycles 1 --out /tmp/m7-soak-eof-smoke.jsonl
 //! ```
 //!

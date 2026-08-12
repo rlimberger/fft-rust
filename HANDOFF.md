@@ -1,6 +1,19 @@
-# FFT — Session Handoff (2026-08-12, Wave 10)
+# FFT — Session Handoff (2026-08-12 evening, Wave 11)
 
-## Wave 10 board (2026-08-12 — M1.5 sim-live LANDED, READ THIS FIRST)
+## Wave 11 board (2026-08-12 17:50 CEST — READ THIS FIRST)
+
+Authoritative status + critique + queue: **IMPLEMENTATION-PLAN.md "Status board — 2026-08-12 evening"**.
+
+Machine rebooted 17:18 CEST (kernel 7.1.7 → 7.1.8). Consequences:
+- 24 h m7-soak (started Aug 11 21:12) is **dead**. `/tmp/m7-soak-24h.jsonl` **gone**. No soak credit.
+- Week fixtures in `/tmp` **gone** except a 17:44 Wed pair. Durable freeze: `~/.cache/fft/gates/ESU6-YYYY-MM-DD[-ckpt].fftlog`.
+- HEAD is `8bb0d1d` (claim-1 `--scrub-latency-gate` harness). Tree was clean at review.
+
+Do **not** treat Wave 10's "soak healthy, 50 cycles" as evidence. Next soak `--out` must be `perf-runner/results/<date>-m7-soak.jsonl` under `systemd-inhibit`. Offline the desk `actions-runner` before any quiet-box timing gate (`perf.yml` dispatch would `cargo build --release` here).
+
+Sol native quota was cooling at review (until 16:01 UTC); use Cursor/xai Grok until it lifts.
+
+## Wave 10 board (2026-08-12 — M1.5 sim-live LANDED, superseded by Wave 11)
 
 **M1.5 is implemented, adversarially audited, and its gate PASSES on real data.**
 Formal evidence: `perf-runner/results/2026-08-12-m15-simlive-gate.json` — 60 s gate on

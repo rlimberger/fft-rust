@@ -64,36 +64,50 @@ no fabricated sizes/inside).
 
 ## 3. Fixtures & recipes
 
-Volatile fixtures live in `/tmp` and die on reboot. Regeneration (expected counts are a
-defect check — any deviation: stop and investigate):
+**Durable root (2026-08-12 freeze):** `~/.cache/fft/gates/ESU6-YYYY-MM-DD[-ckpt].fftlog`.
+`/tmp` dies on reboot — the 2026-08-12 17:18 kernel upgrade voided a 24 h soak JSONL
+and four of five week logs. Do not put soak evidence or gate logs there.
+
+One command regenerates the week and **fails** if event/checkpoint counts drift:
 
 ```bash
-cargo run --release -p fft-ingest -- write /tmp/esu6-wed-v3.fftlog \
+./perf-runner/regen-week-fixtures.sh
+```
+
+Manual single-day (Wed example; expected counts are a defect check):
+
+```bash
+mkdir -p ~/.cache/fft/gates
+cargo run --release -p fft-ingest -- write ~/.cache/fft/gates/ESU6-2026-07-29.fftlog \
   data/GLBX-20260803-4WJS899FNL/*.mbo.dbn.zst --trade-date 2026-07-29 \
   --tick 250000000 --uom-qty 50000000000 --display-factor 1
 # Expect: 21,401,139 events · 0 gaps · 1880 seq_holes_ignored ·
 #         7561 snapshots kept / 30,200 dropped (six-file run)
 
 cargo run --release -p fft-engine --bin fft-checkpoint -- \
-  /tmp/esu6-wed-v3.fftlog /tmp/esu6-wed-v3-ckpt.fftlog
+  ~/.cache/fft/gates/ESU6-2026-07-29.fftlog \
+  ~/.cache/fft/gates/ESU6-2026-07-29-ckpt.fftlog
 # Expect: 1393 checkpoints
 ```
 
-Other trade dates: same command with `--trade-date 2026-07-27 … 2026-07-31` →
-`/tmp/esu6-<date>.fftlog` (per-day counts in the m1 evidence JSON).
+Per-day ingest counts (m1 evidence): Mon 16,050,064 · Tue 14,054,511 · Wed 21,401,139 ·
+Thu 16,595,979 · Fri 17,152,053. Ckpt counts: 1391 / 1392 / 1393 / 1393 / 1377.
+Gate replays always use the `-ckpt` copy.
 
 **Canonical anchored replay** (Seek at the PRD §6 head; priors replay-only):
 
 ```bash
-./target/release/fft --replay /tmp/esu6-wed-v3-ckpt.fftlog \
+GATES=~/.cache/fft/gates
+./target/release/fft --replay $GATES/ESU6-2026-07-29-ckpt.fftlog \
   --replay-at 2026-07-29T13:50:00Z \
-  --prior /tmp/esu6-2026-07-27.fftlog --prior /tmp/esu6-2026-07-28.fftlog
+  --prior $GATES/ESU6-2026-07-27.fftlog --prior $GATES/ESU6-2026-07-28.fftlog
 ```
 
 **Canonical sim-live** (join open → wall-pin; LIVE append to a distinct path):
 
 ```bash
-./target/release/fft --sim-live /tmp/esu6-wed-v3-ckpt.fftlog \
+GATES=~/.cache/fft/gates
+./target/release/fft --sim-live $GATES/ESU6-2026-07-29-ckpt.fftlog \
   --head 2026-07-29T13:50:00Z \
   --live-out /tmp/esu6-wed-live.fftlog
 ```
@@ -123,18 +137,22 @@ built-in Mocha.
 No dedicated perf hardware (ruling 2026-08-11). Gate runs are valid only on an
 otherwise-idle machine — concurrent builds measurably inject ~33 ms two-vsync spikes
 (blank-window control evidence committed). Check `pgrep -c rustc` reads 0 first.
+Offline the desk `actions-runner` (`perf-runner/actions-runner/svc.sh stop`) so a
+`perf.yml` dispatch cannot rebuild this box mid-gate. `$GATES` below is
+`~/.cache/fft/gates`.
 
 | Gate | Command |
 |---|---|
-| Frame (M3/M4) | `fft --gate 60 --replay <ckpt> --replay-at 2026-07-29T13:50:00Z --gate-out perf-runner/results/<date>-<gate>.json` |
-| M1 data plane | `m1-gate --out <json> --legacy-dir data/sessions --diff-trials 7 <day.fftlog>...` |
-| M1.5 sim-live | `m15-gate --replay <ckpt> --head 2026-07-29T13:50:00Z --live-out <path> --gate-secs <n> --out <json>` (`cargo run --release -p fft-engine --bin m15-gate -- --help`) |
-| M2 seek | `m2-gate --log <ckpt> --seeks 1000 --verify 25 --out <json>` |
-| M4 agreement | `m4-agreement --replay <ckpt> --out <json>` |
-| M5 scrub | `m5-scrub-burst --replay <ckpt> --out <json>` |
-| M5 RSS | `m5-rss-week --current <fri> --prior <mon>.. --prior <thu> --out <json>` |
-| Cold start | `fft --replay <ckpt> --replay-at <ts> --startup-trace` ×5 |
-| Claim 1 scrub-release→rendered | `fft --replay <ckpt> --replay-at 2026-07-29T13:50:00Z --scrub-latency-gate 200 --scrub-latency-out perf-runner/results/<date>-claim1-scrub-latency.json` (quiet box; p95 ≤ 250 ms) |
+| Frame (M3/M4) | `fft --gate 60 --replay $GATES/ESU6-2026-07-29-ckpt.fftlog --replay-at 2026-07-29T13:50:00Z --gate-out perf-runner/results/<date>-<gate>.json` |
+| M1 data plane | `m1-gate --out <json> --legacy-dir data/sessions --diff-trials 7 $GATES/ESU6-2026-07-2{7,8,9,30,31}.fftlog` |
+| M1.5 sim-live | `m15-gate --replay $GATES/ESU6-2026-07-29-ckpt.fftlog --head 2026-07-29T13:50:00Z --live-out /tmp/m15-live.fftlog --gate-secs 60 --out perf-runner/results/<date>-m15-simlive-gate.json` |
+| M2 seek | `m2-gate --log $GATES/ESU6-2026-07-29-ckpt.fftlog --seeks 1000 --verify 25 --out <json>` |
+| M4 agreement | `m4-agreement --replay $GATES/ESU6-2026-07-29-ckpt.fftlog --out <json>` |
+| M5 scrub | `m5-scrub-burst --replay $GATES/ESU6-2026-07-29-ckpt.fftlog --out <json>` |
+| M5 RSS | `m5-rss-week --current $GATES/ESU6-2026-07-31.fftlog --prior $GATES/ESU6-2026-07-27.fftlog … --prior $GATES/ESU6-2026-07-30.fftlog --out <json>` |
+| Cold start | `fft --replay $GATES/ESU6-2026-07-29-ckpt.fftlog --replay-at 2026-07-29T13:50:00Z --startup-trace` ×5 |
+| Claim 1 scrub-release→rendered | `fft --replay $GATES/ESU6-2026-07-29-ckpt.fftlog --replay-at 2026-07-29T13:50:00Z --scrub-latency-gate 200 --scrub-latency-out perf-runner/results/<date>-claim1-scrub-latency.json` (quiet focused DP-2; p95 ≤ 250 ms) |
+| 24 h soak | `systemd-inhibit --what=idle:sleep:shutdown --why='fft m7-soak' ./target/release/m7-soak --replay $GATES/ESU6-2026-07-31-ckpt.fftlog --prior $GATES/ESU6-2026-07-27.fftlog --prior $GATES/ESU6-2026-07-28.fftlog --prior $GATES/ESU6-2026-07-29.fftlog --prior $GATES/ESU6-2026-07-30.fftlog --speed 64 --max-hours 24 --out perf-runner/results/<date>-m7-soak.jsonl` — then **no cargo** until it exits |
 
 Evidence files are committed by the orchestrator only when a run is accepted;
 history is append-only.

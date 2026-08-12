@@ -28,8 +28,8 @@ usage: after-soak-gates.sh <soak-pid>
        after-soak-gates.sh --dry-run
 
 Environment (optional; defaults shown):
-  FFT_SOAK_JSONL=/tmp/m7-soak-24h.jsonl
-  FFT_REPLAY_LOG=/tmp/esu6-wed-v3-ckpt.fftlog
+  FFT_SOAK_JSONL=$PWD/perf-runner/results/<date>-m7-soak.jsonl
+  FFT_REPLAY_LOG=$HOME/.cache/fft/gates/ESU6-2026-07-29-ckpt.fftlog
   FFT_BIN=./target/release/fft
   FFT_RESULTS_DIR=perf-runner/results
   FFT_GATE_SECS=23400
@@ -85,8 +85,8 @@ if [[ "$#" -ne 1 ]]; then
   exit 2
 fi
 
-SOAK_JSONL="${FFT_SOAK_JSONL:-/tmp/m7-soak-24h.jsonl}"
-REPLAY_LOG="${FFT_REPLAY_LOG:-/tmp/esu6-wed-v3-ckpt.fftlog}"
+SOAK_JSONL="${FFT_SOAK_JSONL:-$ROOT/perf-runner/results/$(date -u +%Y-%m-%d)-m7-soak.jsonl}"
+REPLAY_LOG="${FFT_REPLAY_LOG:-$HOME/.cache/fft/gates/ESU6-2026-07-29-ckpt.fftlog}"
 FFT_BIN="${FFT_BIN:-./target/release/fft}"
 RESULTS_DIR="${FFT_RESULTS_DIR:-perf-runner/results}"
 GATE_SECS="${FFT_GATE_SECS:-23400}"

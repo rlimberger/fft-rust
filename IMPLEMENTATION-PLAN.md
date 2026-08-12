@@ -21,72 +21,115 @@ is the test fixture for everything through M5.
 
 ---
 
-## Status board — 2026-08-12 (full-project review; evidence = `perf-runner/results/`)
+## Status board — 2026-08-12 evening (post-reboot review)
+
+HEAD at review: `8bb0d1d` (claim-1 harness landed). Tree clean, `main == origin/main`.
+Evidence dir: `perf-runner/results/`. **0 of 15 committed JSONs record this SHA;
+0 record `git_dirty: false`.** Values stand as engineering history; they are not
+v1-tag provenance.
 
 | Milestone | Verdict | Evidence / note |
 |---|---|---|
-| M0 foundation | **DONE** | Freezes committed; CI green; blank-window 60 s zero-miss (`2026-08-10-m0-frame-gate.json`) |
-| M1 data plane | **DONE** | `2026-08-11-m1-data-plane.json` — busiest-day apply 2.859 s vs ≤ 3 s (revised budget, René 2026-08-11); size 0.17–0.20× legacy; 7/7 chunk differential |
-| M1.5 sim-live | **DONE** (sim half) | `2026-08-12-m15-simlive-gate.json` PASS — join 5.96 M events/5.13 s zero seeks, lag p99 1.049 ms vs 4 ms, gap + LIVE lifecycle + six-section identity. **Databento headless spike still owed the day credentials land — hard prereq for M6** |
-| M2 seek/derived | **DONE** | `2026-08-11-m2-seek-gate.json` — cold p95 6.9 ms vs 250 ms, identity 25/25; extended to 100/100 (`2026-08-11-m2-bit-identity-100.json`); 25,230× realtime vs ≥ 60× |
-| M3 DOM + shell | **DONE** (60 Hz letter) | `2026-08-10-m3-frame-gate.json` — 3600/3600 frames, 0 missed, coverage 0 drops. 240 Hz validation deferred with the perf box (release-claim gate, not merge gate) |
-| M4 MP pane | **DONE** | Two-pane anchored gate PASS (`2026-08-10-m4-two-pane-gate-anchored.json`); pane agreement 1089/1089 (`2026-08-11-m4-agreement.json`) |
-| M5 time travel | **NEARLY DONE** | Scrub burst 120/120 + RSS week 201 MiB committed PASS. **Owed:** cold-start numbers exist only as HANDOFF prose (85–122 ms) — committed JSON comes from the post-soak chain; hands-on GUI scrub-drag session on the desk display |
-| M6 live | **NOT STARTED** | Blocked on the funded Databento key + the deferred M1.5 spike. Do not start otherwise |
-| M7 hardening | **IN FLIGHT** | 24 h soak running since Aug 11 21:12 CEST (50 cycles, 0 failures, RSS peak 328 MB at review time); LOG-FUZZ 29,571 mutants clean; README + OPERATOR.md done. Owed: soak verdict → `after-soak-gates.sh` chain → acceptance writeup → v1 tag |
+| M0 foundation | **DONE** | Freezes committed; CI green; `2026-08-10-m0-frame-gate.json` 3601/0 miss (no git fields — archive) |
+| M1 data plane | **DONE** | `2026-08-11-m1-data-plane.json` — apply 2.859 s ≤ 3 s; size 0.17–0.20×; 7/7 chunk. SHA only, no `git_dirty` |
+| M1.5 sim-live | **DONE** (sim half) | Dirty-tree PASS on `67b936c` (`2026-08-12-m15-simlive-gate.json`): join 5.96 M / 5.13 s, lag p99 1.049 ms vs 4 ms. **Clean-HEAD rerun owed.** Databento spike still blocked on the key |
+| M2 seek/derived | **DONE** | `2026-08-11-m2-seek-gate.json` cold p95 6.9 ms / identity 25/25 / 25,230×. `m2-bit-identity-100` is 100/100 identity; its latencies self-label as non-claimable (soak concurrent) |
+| M3 DOM + shell | **DONE** (60 Hz letter) | `2026-08-10-m3-frame-gate.json` 3600/0. 240 Hz deferred |
+| M4 MP pane | **DONE** | Anchored two-pane PASS; agreement 1089/1089 |
+| M5 time travel | **NEARLY DONE** | Scrub burst 120/120 + RSS 201 MiB PASS. Harness for claim-1 letter is in `8bb0d1d` (`--scrub-latency-gate`); **no evidence JSON yet**. Cold-start still prose-only (85–122 ms) |
+| M6 live | **NOT STARTED** | Parked. `fft-feed` is a one-line stub. Do not start without the key + deferred M1.5 spike |
+| M7 hardening | **RESET** | 24 h soak started Aug 11 21:12 CEST was **killed by the 17:18 CEST reboot** (kernel 7.1.7 → 7.1.8). Process gone; `/tmp/m7-soak-24h.jsonl` gone with `/tmp`. **No soak credit.** LOG-FUZZ 29,571 + README/OPERATOR stand |
 
-**Five PRD §4 acceptance claims:** 3 (queue, synthetic oracle gate), 4 (iceberg, full-Wed
-census), 5 (pane agreement) — evidenced. 1 (seek) — identity + service-side p95 evidenced;
-the letter reads *scrub-release → rendered* and that GUI-side path is unmeasured. 2 (frames)
-— 60 s anchored PASS; the full-RTH 6.5 h run is owed by the post-soak chain.
+**Five PRD §4 claims (honest scope):**
+| # | Letter | What is actually proven | v1 status |
+|---|---|---|---|
+| 1 | scrub-release → rendered exact book, p95 ≤ 250 ms; bit-identical | M2: identity + headless seek p95 6.9 ms. GUI letter: instrumented (`T0=end_scrub`, `T1=Shell::render` adopt matching `seek_generation` — snapshot-adopt, not photon). **No N=200 JSON** | PARTIAL |
+| 2 | full RTH, 0 missed frames, 0 drops | 60 s anchored PASS (DP-2 60 Hz). **6.5 h RTH unrun** | PARTIAL |
+| 3 | exact queue, any resting order | Triple-agree vs two independent oracles, **100% synthetic**. Not a real-day census | SYNTHETIC (ask René: accept as v1 or require real-day sample) |
+| 4 | native refresh, 1 ms window, gap → unavailable | SM fixtures + Wed census 8,614 / 2,685 ids on 21.4 M events. 1 ms is code+PRD aligned. Census is self-consistency, not venue-truth. Wed had 0 gaps | EVIDENCED (engine) |
+| 5 | MP VOL ≡ DOM VOL, continuously | 1089/1089 on real Wed. Compare is snapshot intersection (visible DOM ∩ current-session MP); `debug_assert` only — release is not continuous | EVIDENCED (narrower than letter) |
 
-### Findings from this review (things done incorrectly)
+Boring gates: 60× and RSS evidenced. Cold-start JSON **missing**. Full-RTH JSON **missing**.
 
-1. **fmt drift committed to `main`:** Wave-11 commits `24ae684`/`6e5f058` landed with four
-   rustfmt diffs — `cargo fmt --check` failed at HEAD, so the CI fmt lane on `main` was
-   red. Violates the "green at each commit" standing rule. Fixed in this review's commit;
-   the lesson stands: run the full pre-commit trio even on "trivial" follow-up commits.
-2. **Soak binary rebuilt underneath the running soak — again.** `/proc/<pid>/exe` of the
-   live 24 h soak reads "(deleted)": builds ran on the box after launch (the exact
-   Wave-8 antipattern; harmless to the already-running process, but it means the box was
-   NOT quiet during the soak window — fine for this correctness/RSS soak, fatal for any
-   timing gate). The post-soak RTH gate must run with zero concurrent builds.
-3. **Committed gate evidence is almost all `git_dirty: true`** (gates ran pre-commit).
-   Values stand, provenance is weak. `m15-gate` now hard-fails provenance (`51c4199`);
-   a clean-tree m15 rerun is cheap and should replace the dirty JSON.
-4. **Commit `83e3606`'s message overclaims:** it says cold-start evidence landed; no
-   cold-start JSON exists in `perf-runner/results/`. The post-soak chain writes it.
-5. All Wave-10 residuals are otherwise **closed** (verified in source): 60 s wall-clock
-   live-checkpoint cadence unit-tested with injectable `Instant` (`live_log.rs`),
-   provenance hard-fail, `LoadPriorSession` forbidden under SimLive (ENGINE.md §2 ruled +
-   engine panic), SimLive UI wiring (`--sim-live`/`--head`/`--live-out`, `l` = GoLive,
-   LIVE header chrome). The three ASSERT-HUNT findings (locked book, post-gap desync,
-   zero-size trades) are all fixed and regression-tested.
+### Critique — 2026-08-12 evening (what is actually wrong)
 
-### Continue here — next orchestrator, ordered
+The architecture is the first of the three attempts that looks like it can ship: dedicated
+engine thread, latest-value snapshots, one custom Element per pane, fail-loud gates, M1
+apply 2.859 s, seek p95 6.9 ms, sim-live join + wall-pin measured. The remaining risk is
+not design — it is **operational honesty** around evidence and the last 24 h.
 
-Topology and roster are binding, in CLAUDE.md/AGENTS.md: Claude Fable 5 orchestrates
-in-session; subagent priority Sol → Cursor Grok → xai Grok, pinned, target 12 parallel;
-workers never run git mutation in the shared tree; commit + push accepted work without
-asking. Fixtures: `/tmp/esu6-{mon..fri}-v3[-ckpt].fftlog` (volatile — regen recipe in
-HANDOFF.md Wave-4 board); gate replays use the `-ckpt` copies.
+1. **`/tmp` is not an evidence store.** Documented as volatile, then used for the 24 h
+   soak JSONL *and* the week fixtures. Reboot at 17:18 CEST voided the soak and left
+   only a freshly rewritten Wed pair in `/tmp`. Three names for the same files
+   (HANDOFF `esu6-{mon..fri}-v3[-ckpt]`, OPERATOR `esu6-<date>`, m7-soak comment
+   `esu6-fri-ckpt` + `esu6-2026-07-27`) is an operational landmine. **Freeze:
+   `~/.cache/fft/gates/ESU6-YYYY-MM-DD[-ckpt].fftlog`.** Recipe:
+   `perf-runner/regen-week-fixtures.sh`.
+2. **24 h soak has no surviving artifact.** Mid-run "50 cycles ok, RSS 328 MB" is
+   not a summary line. `after-soak-gates.sh` refuses inferred-green. Relaunch on a
+   durable `--out` under `perf-runner/results/`, under `systemd-inhibit`, after
+   short quiet-box gates. Do not rebuild under it (Wave-8 + this morning: exe
+   `(deleted)`).
+3. **Claim 1 was closed as a harness, not a measurement.** `8bb0d1d` is the right
+   letter (don't re-scope to headless). T1 is pre-paint snapshot adopt — same bar as
+   `--startup-trace` first-interactive, **one frame short of photon**. Exact-book
+   identity stays the M2 gate. Rec: keep this bar; do not invent a swapchain probe.
+   Owed: quiet-box N=200 JSON on a focused DP-2.
+4. **v1-tag provenance is empty.** Every PASS JSON is dirty-tree and/or a historical
+   SHA. `m15-gate` hard-fails *unknown* SHA, **not** `git_dirty: true` — the morning
+   board overstated that. Replace the m15 JSON on clean HEAD; do not mass-rerun M0–M4.
+5. **`83e3606` still overclaims** cold-start JSON that does not exist. Cold-start ×5
+   does **not** depend on soak — run it on this quiet post-reboot box *before* the
+   24 h soak. Full-RTH 6.5 h stays post-soak (only one long quiet window after).
+6. **Quiet-box is not operationalized.** Desk `actions-runner` (labels
+   `self-hosted, fft-perf`) is live; a fat-finger `perf.yml` dispatch starts
+   `cargo build --release --workspace --bins` on this machine. Preflight does not
+   fail on `rustc`. Offline the runner for soak + RTH. `pgrep -c rustc` must read 0
+   before any timing gate.
+7. **500-line rule:** `scrub_latency.rs` 503 (product); tests
+   `protocol.rs` 882, `queue_position_gate.rs` 633, `restore.rs` 518. Split the
+   product file this wave; test splits are debt, not a v1 block.
+8. **fmt drift to `main`** (`24ae684`/`6e5f058`) — already fixed. Trio before every
+   commit, including doc follow-ups. CI fmt lane is the backstop; no local hook.
+9. **Hands-on GUI** (human scrub-drag + `--sim-live` join→LIVE→scrub→`l`) is still a
+   René desk session. Scripted claim-1 is not a substitute for "drag at refresh."
 
-1. **Watch the 24 h soak** (`/tmp/m7-soak-24h.jsonl`, PID in `pgrep -af m7-soak`; ETA
-   ~21:12 CEST Aug 12). On PASS, run `perf-runner/after-soak-gates.sh <pid>` on a
-   **quiet box** — it validates the soak JSONL, then runs the 6.5 h full-RTH frame gate
-   (claim 2) and the cold-start ×5 gate, writing both JSONs. Commit the evidence.
-2. **Close claim 1's letter:** either measure scrub-release → rendered p95 in the GUI
-   (instrument the existing `--startup-trace`-style path) or put the
-   headless-service + hands-on argument to René for a ruling. Don't quietly re-scope.
-3. **Hands-on desk sessions (M5/M3 residue):** GUI scrub-drag at the display refresh, and
-   a `--sim-live` GUI session (join → catch-up → LIVE → scrub → `l` GoLive). The
-   headless gates prove the services; the GUI frame behavior under drag is a human run.
-4. **Clean-provenance m15 rerun** on the committed HEAD; replace the dirty-tree JSON.
-5. **Acceptance writeup** (orchestrator-authored, never pasted from a worker): five
-   claims + boring gates, each with its evidence file. Then **tag v1**.
-6. **M6 stays parked** until René funds the Databento key; first action then is the
-   deferred M1.5 headless spike (entitlement, symbology, real replay-join, forced
-   reconnect, persistent recording), before any `fft-feed` production work.
+Wave-10 residuals that **are** closed in source (re-verified): 60 s wall-clock live
+checkpoint via injectable `Instant`; `LoadPriorSession` forbidden under SimLive
+(CLI reject + engine panic); SimLive UI (`--sim-live`/`--head`/`--live-out`, `l`,
+LIVE chrome); ASSERT-HUNT three (locked book, post-gap desync, zero-size trades).
+
+### Continue here — ordered
+
+Topology/roster unchanged: Fable 5 orchestrates; Sol → Cursor Grok → xai Grok;
+pinned; target 12; workers never git-mutate; commit+push accepted work.
+
+Fixtures (durable, this wave): `~/.cache/fft/gates/ESU6-2026-07-2{7,8,9,30,31}[-ckpt].fftlog`.
+Expected ingest counts (defect if they differ): Mon 16,050,064 · Tue 14,054,511 ·
+Wed 21,401,139 · Thu 16,595,979 · Fri 17,152,053. Ckpt counts: 1391 / 1392 / 1393 /
+1393 / 1377. Gate replays use the `-ckpt` copy.
+
+1. **Regen durable week fixtures** (`perf-runner/regen-week-fixtures.sh`). Copy, do
+   not trust, `/tmp` leftovers.
+2. **Quiet-box short gates on clean HEAD** (this reboot, `rustc==0`, runner
+   offlined): replace m15 JSON; claim-1 `--scrub-latency-gate 200`; cold-start ×5
+   JSON. Commit evidence. **Do not wait for soak.**
+3. **Relaunch 24 h soak** — Fri `-ckpt` current + Mon–Thu priors, `--cycle-secs 0`
+   `--max-hours 24` `--speed 64`, `--out perf-runner/results/<date>-m7-soak.jsonl`,
+   under `systemd-inhibit --what=idle:sleep:shutdown`. Freeze the binary: no
+   `cargo`, no `perf.yml`, runner stays offline. ETA = launch + 24 h.
+4. **On soak PASS:** `FFT_SOAK_JSONL=<that jsonl> perf-runner/after-soak-gates.sh
+   <pid>` on the quiet box (dead PID is fine if the JSONL has a terminal PASS
+   summary). That writes the 6.5 h claim-2 JSON; skip cold-start if step 2 already
+   committed it. Commit.
+5. **René desk:** GUI scrub-drag at DP-2 60 Hz; `--sim-live` join → LIVE → scrub →
+   `l`. Commands in OPERATOR.md §3.
+6. **Ask René (do not guess):** accept claim 3 as synthetic-v1, or require a
+   real-day queue census? Rec: accept synthetic; a week-long oracle replay is a
+   new gate, not a silent re-scope of the existing one.
+7. **Acceptance writeup** (orchestrator, never pasted) then **tag v1**.
+8. **M6 stays parked** until the Databento key; first action then is the deferred
+   M1.5 headless spike, before any `fft-feed` work.
 
 ---
 
