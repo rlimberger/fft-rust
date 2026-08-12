@@ -109,22 +109,29 @@ fn five_sessions_place_fixed_dividers_and_scaled_blocks() {
 }
 
 #[test]
-fn zoom_and_pan_clamps_cover_horizontal_navigation_bounds() {
+fn zoom_clamp_and_rest_pan_helpers() {
     assert_eq!(clamp_zoom(0.1), ZOOM_MIN);
     assert_eq!(clamp_zoom(1.25), 1.25);
     assert_eq!(clamp_zoom(9.0), ZOOM_MAX);
     assert_eq!(current_session_max_pan(300.0, 400.0), 0.0);
+    // Soft clamp helper retained; live navigation is free-canvas (unclamped).
     assert_eq!(clamp_pan(-25.0, 540.0, 420.0), 0.0);
     assert_eq!(clamp_pan(40.0, 540.0, 420.0), 40.0);
     assert_eq!(clamp_pan(999.0, 540.0, 420.0), 120.0);
+}
 
-    let start = 70.0;
-    let drag_right_dx = 20.0;
-    let after_drag_right = clamp_pan(start - drag_right_dx, 540.0, 420.0);
-    assert_eq!(after_drag_right, 50.0, "drag right reveals older/left");
-    let drag_left_dx = -20.0;
-    let after_drag_left = clamp_pan(start - drag_left_dx, 540.0, 420.0);
-    assert_eq!(after_drag_left, 90.0, "drag left reveals current/right");
+#[test]
+fn session_layout_accepts_canvas_pan_beyond_content() {
+    let layout = session_layout(0.0, 420.0, 3, -80.0, 1.0, 1.0);
+    assert_eq!(layout.pan_px, -80.0);
+    // Content origin is to the right of the strip when pan is negative.
+    assert!(layout.blocks[0].x > layout.strip_viewport.x);
+
+    let past = session_layout(0.0, 420.0, 3, layout.content_width + 50.0, 1.0, 1.0);
+    assert_eq!(past.pan_px, layout.content_width + 50.0);
+    // Entire strip content is left of the viewport.
+    let last = past.blocks.last().expect("sessions");
+    assert!(last.x + last.w < past.strip_viewport.x);
 }
 
 fn assert_cursor_anchor(cursor: f32, pan: f32, notch: f32) {

@@ -81,13 +81,13 @@ pub(crate) fn mp_pane(
                         && let Some(center) =
                             panes.navigation_center(&drag_snapshot.profile, &drag_snapshot.dom)
                     {
+                        // Free canvas: center is not clamped to available price range.
                         panes.center = Some(pan_center(
                             center,
                             drag_snapshot.dom.tick_size,
                             panes.mp_scale,
                             delta,
                         ));
-                        panes.clamp_center(&drag_snapshot.profile, &drag_snapshot.dom);
                         drop(panes);
                         window.refresh();
                     }
@@ -343,15 +343,12 @@ fn pan_dom(panes: &Rc<RefCell<PaneState>>, snapshot: &RenderSnapshot, delta: i64
     let Some(center) = panes.navigation_center(&snapshot.profile, &snapshot.dom) else {
         return false;
     };
-    let target = pan_center(center, snapshot.dom.tick_size, panes.dom_scale, delta);
-    let next = crate::pane_state::clamp_center(
-        Some(target),
-        crate::pane_state::navigation_range(&snapshot.profile, &snapshot.dom),
-    );
-    if panes.center == next {
+    // Free canvas: wheel pan is not clamped to available price range.
+    let next = pan_center(center, snapshot.dom.tick_size, panes.dom_scale, delta);
+    if panes.center == Some(next) {
         return false;
     }
-    panes.center = next;
+    panes.center = Some(next);
     true
 }
 

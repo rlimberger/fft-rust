@@ -40,14 +40,27 @@ cargo run --release -p fft-ingest -- write /tmp/esu6-wed.fftlog \
 cargo run --release -p fft-engine --bin fft-checkpoint -- \
   /tmp/esu6-wed.fftlog /tmp/esu6-wed-ckpt.fftlog
 
+# Replay (seek anchor; priors are replay-only):
 ./target/release/fft --replay /tmp/esu6-wed-ckpt.fftlog \
   --replay-at 2026-07-29T13:50:00Z \
   --prior /tmp/esu6-mon.fftlog --prior /tmp/esu6-tue.fftlog
+
+# Sim-live (join open → wall-pin at head; exclusive with --replay / --replay-at):
+./target/release/fft --sim-live /tmp/esu6-wed-ckpt.fftlog \
+  --head 2026-07-29T13:50:00Z \
+  --live-out /tmp/esu6-wed-live.fftlog
 ```
 
 `--replay-at` anchors playback at any UTC instant (seeks need the checkpointed copy — a
 checkpoint-less seek fails loudly by design). `--prior` (repeatable, oldest first) loads
-earlier sessions asynchronously into the profile without ever blocking playback.
+earlier sessions asynchronously into the profile without ever blocking playback — replay
+only.
+
+`--sim-live` joins at session open and wall-pins at `--head` (requires `--live-out`,
+exclusive with `--replay` / `--replay-at`). Wall-clock `--head` snaps to the last in-log
+event ≤ head (engine needs an exact event ts). `--live-out` is the LIVE-flagged append
+destination and must differ from the source. Transport is armed at spawn; `l` = GoLive
+(needs sim-live; else loud hint). Headless gate: `cargo run --release -p fft-engine --bin m15-gate -- --help`.
 
 Theme and font follow the OS (Omarchy) live: colors from the active theme, size from
 `[font] base-size`, family from fontconfig. No Omarchy → built-in Catppuccin Mocha with a
@@ -57,10 +70,11 @@ loud warning.
 
 MP is full-width by default; DOM is hidden every launch (`d` toggles it, MP nav preserved).
 `1/2/4` tick scale of the pane under the cursor · `t` sync scales · `c` price-only recenter
-· `r` arms transport · with `r` on: `space` play/pause · `[`/`]` speed (0.25×–64×) ·
-`←/→` step ±1 s (silent no-op when strip off) · MP left-drag: vertical price / horizontal
-strips · MP plain or Ctrl+wheel zoom (never pan) · DOM drag/wheel pan when shown · hover a
-DOM row for orders/size/hidden/reload per side. `e` unbound.
+· `r` arms transport (already on for `--sim-live`) · with transport on: `space` play/pause
+· `[`/`]` speed (0.25×–64×) · `←/→` step ±1 s · `l` = GoLive · MP left-drag:
+vertical price / horizontal strips · MP plain or Ctrl+wheel zoom (never pan) · DOM
+drag/wheel pan when shown · hover a DOM row for orders/size/hidden/reload per side. `e`
+unbound.
 
 See `docs/OPERATOR.md` for the full runbook, `PRD.md` for the product contract, and
 `docs/` for the frozen wire/engine specifications. Performance claims are numbers with

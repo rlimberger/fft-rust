@@ -5,7 +5,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use fft_engine::{EngineCmd, EngineHandle, RenderSnapshot};
+use fft_engine::{EngineCmd, EngineHandle, LiveTransportPhase, RenderSnapshot};
 use gpui::{MouseMoveEvent, Window};
 
 use crate::dom_input::DomInput;
@@ -26,6 +26,7 @@ pub(crate) fn dispatch_transport(engine: &Option<EngineHandle>, commands: &[Tran
                 ts: *ts,
                 generation: *generation,
             },
+            TransportCommand::GoLive => EngineCmd::GoLive,
         };
         handle
             .send(engine_cmd)
@@ -41,6 +42,7 @@ pub(crate) struct KeyCtx<'a> {
     pub applied_ts: u64,
     pub first_ts: u64,
     pub last_ts: u64,
+    pub live_phase: LiveTransportPhase,
 }
 
 /// Handle an unmodified keystroke. Returns `Some(refresh)` when the event was consumed.
@@ -75,7 +77,7 @@ pub(crate) fn handle_key(key: &str, ctx: &KeyCtx<'_>) -> Option<bool> {
             "[" => t.speed_down(),
             "left" => t.step(ctx.applied_ts, ctx.first_ts, ctx.last_ts, false),
             "right" => t.step(ctx.applied_ts, ctx.first_ts, ctx.last_ts, true),
-            "l" => t.go_live_placeholder(),
+            "l" => t.go_live(ctx.live_phase),
             _ => return None,
         }
     };

@@ -5,6 +5,7 @@
 
 use std::sync::atomic::AtomicBool;
 
+use fft_engine::LiveTransportPhase;
 use jiff::civil::Date;
 
 use crate::prefs::Prefs;
@@ -29,16 +30,17 @@ pub const STEP_NS: u64 = 1_000_000_000;
 /// Strip height in logical pixels at OS scale 1.0.
 pub const TRANSPORT_H: f32 = 28.0;
 
-/// `l` placeholder until M6 GoLive.
-pub const GO_LIVE_HINT: &str = "go-live: M6";
+/// `l` when transport mode is on but the engine is not in sim-live.
+pub const GO_LIVE_NEEDS_SIM_LIVE: &str = "go-live: needs sim-live";
 
-/// Engine-facing commands produced by transport input (no `GoLive`).
+/// Engine-facing commands produced by transport input.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TransportCommand {
     Play,
     Pause,
     SetSpeed(f64),
     Seek { ts: u64, generation: u64 },
+    GoLive,
 }
 
 /// Result of a pure input mapping.
@@ -48,7 +50,7 @@ pub struct TransportAction {
     pub commands: Vec<TransportCommand>,
     /// Whether the shell should refresh (mode/strip/labels changed).
     pub refresh: bool,
-    /// Operator-visible status line (e.g. go-live placeholder).
+    /// Operator-visible status line (e.g. go-live needs sim-live).
     pub status_hint: Option<&'static str>,
 }
 
@@ -231,16 +233,24 @@ impl TransportState {
         }
     }
 
-    /// `l`: no-op until M6; surface a status hint.
-    pub fn go_live_placeholder(&mut self) -> TransportAction {
+    /// `l`: emit GoLive when sim-live is active; otherwise a status hint.
+    pub fn go_live(&mut self, live_phase: LiveTransportPhase) -> TransportAction {
         if !self.mode_on {
             return TransportAction::default();
         }
-        self.status_hint = Some(GO_LIVE_HINT);
+        if live_phase == LiveTransportPhase::Inactive {
+            self.status_hint = Some(GO_LIVE_NEEDS_SIM_LIVE);
+            return TransportAction {
+                commands: Vec::new(),
+                refresh: true,
+                status_hint: Some(GO_LIVE_NEEDS_SIM_LIVE),
+            };
+        }
+        self.status_hint = None;
         TransportAction {
-            commands: Vec::new(),
+            commands: vec![TransportCommand::GoLive],
             refresh: true,
-            status_hint: Some(GO_LIVE_HINT),
+            status_hint: None,
         }
     }
 

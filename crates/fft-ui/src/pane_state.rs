@@ -3,7 +3,7 @@
 use fft_core::Price;
 use fft_engine::{DomRenderState, ProfileRenderState};
 
-use crate::mp_layout::{clamp_pan, current_session_rest_pan};
+use crate::mp_layout::current_session_rest_pan;
 use crate::prefs::Prefs;
 
 pub const SPLITTER_WIDTH: f32 = 6.0;
@@ -23,10 +23,11 @@ pub struct PaneState {
     pub mp_scale: u8,
     pub dom_scale: u8,
     /// Horizontal strip pan in px (content-space; positive reveals older sessions).
+    /// Free canvas: not clamped to content extent — empty space is allowed.
     pub mp_pan_px: f32,
     /// Horizontal strip zoom factor (0.5..=3.0); 1.0 matches today's widths.
     pub mp_zoom: f32,
-    /// Unclamped user-selected pan, retained while narrower geometry clamps the display.
+    /// User pan while off rest (canvas; any finite offset).
     mp_desired_pan_px: f32,
     /// Logical current-session rest survives geometry changes without persisting raw pan.
     mp_at_rest: bool,
@@ -98,12 +99,14 @@ impl PaneState {
         self.center.or_else(|| raw_follow_center(dom))
     }
 
+    /// Linked center for paint/input. Free canvas: never clamped to available
+    /// profile/DOM price range (DOM zero-fills outside engine depth).
     pub fn navigation_center(
         &self,
-        profile: &ProfileRenderState,
+        _profile: &ProfileRenderState,
         dom: &DomRenderState,
     ) -> Option<Price> {
-        clamp_center(self.effective_center(dom), navigation_range(profile, dom))
+        self.effective_center(dom)
     }
 
     pub fn dom_visible(&self) -> bool {
@@ -142,13 +145,16 @@ impl PaneState {
     }
 
     /// Reconcile horizontal navigation with current geometry before constructing the MP.
+    ///
+    /// At rest, track the current-session rest origin under geometry changes. Off rest,
+    /// the canvas pan is kept as-is (not clamped to content extent).
     pub fn reconcile_mp_pan(&mut self, content_width: f32, viewport_width: f32) -> bool {
         let next = if self.mp_at_rest {
             let rest = current_session_rest_pan(content_width, viewport_width);
             self.mp_desired_pan_px = rest;
             rest
         } else {
-            clamp_pan(self.mp_desired_pan_px, content_width, viewport_width)
+            self.mp_desired_pan_px
         };
         if (next - self.mp_pan_px).abs() <= MP_REST_EPSILON_PX {
             return false;
@@ -157,7 +163,7 @@ impl PaneState {
         true
     }
 
-    /// Apply a horizontal drag to the logical pan, then clamp only the displayed pan.
+    /// Apply a horizontal drag on the free canvas (no content-extent clamp).
     pub fn navigate_mp_pan(
         &mut self,
         delta_px: f32,
@@ -171,8 +177,8 @@ impl PaneState {
         } else {
             self.mp_desired_pan_px
         };
-        self.mp_desired_pan_px = (base + delta_px).max(0.0);
-        let next = clamp_pan(self.mp_desired_pan_px, content_width, viewport_width);
+        self.mp_desired_pan_px = base + delta_px;
+        let next = self.mp_desired_pan_px;
         let changed = (next - self.mp_pan_px).abs() > MP_REST_EPSILON_PX;
         self.mp_pan_px = next;
         self.mp_at_rest = (self.mp_desired_pan_px - rest).abs() <= MP_REST_EPSILON_PX;
@@ -182,7 +188,7 @@ impl PaneState {
         changed
     }
 
-    /// Wheel zoom is navigation; a result at the new rest bound re-arms logical rest.
+    /// Wheel zoom is navigation; landing on rest re-arms automatic rest tracking.
     pub fn navigate_mp_zoom(
         &mut self,
         zoom: f32,
@@ -192,18 +198,13 @@ impl PaneState {
     ) -> bool {
         assert!(zoom.is_finite() && zoom > 0.0, "MP zoom must be finite > 0");
         assert!(pan_px.is_finite(), "MP zoom pan must be finite");
-        let next_pan = clamp_pan(pan_px, content_width, viewport_width);
         let rest = current_session_rest_pan(content_width, viewport_width);
         let changed = (zoom - self.mp_zoom).abs() > f32::EPSILON
-            || (next_pan - self.mp_pan_px).abs() > MP_REST_EPSILON_PX;
+            || (pan_px - self.mp_pan_px).abs() > MP_REST_EPSILON_PX;
         self.mp_zoom = zoom;
-        self.mp_pan_px = next_pan;
-        self.mp_at_rest = (next_pan - rest).abs() <= MP_REST_EPSILON_PX;
-        self.mp_desired_pan_px = if self.mp_at_rest {
-            rest
-        } else {
-            pan_px.max(0.0)
-        };
+        self.mp_pan_px = pan_px;
+        self.mp_at_rest = (pan_px - rest).abs() <= MP_REST_EPSILON_PX;
+        self.mp_desired_pan_px = if self.mp_at_rest { rest } else { pan_px };
         changed
     }
 
@@ -246,10 +247,6 @@ impl PaneState {
 
     pub fn recenter(&mut self) -> bool {
         self.center.take().is_some()
-    }
-
-    pub fn clamp_center(&mut self, profile: &ProfileRenderState, dom: &DomRenderState) {
-        self.center = clamp_center(self.center, navigation_range(profile, dom));
     }
 }
 

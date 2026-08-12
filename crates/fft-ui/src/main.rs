@@ -1,8 +1,9 @@
 //! `fft` binary: GPUI window + frame-time harness, optionally driven by an fft-engine
-//! replay into linked WindoTrader profile + Daytradr DOM custom elements.
+//! replay or sim-live source into linked WindoTrader profile + Daytradr DOM custom elements.
 //!
 //! ```text
 //! fft [--gate <seconds>] [--trace <path>] [--replay <fftlog>] [--replay-at <ts>]
+//!     [--sim-live <fftlog>] [--head <ts>] [--live-out <path>]
 //!     [--prior <fftlog>]... [--no-prior-discovery] [--no-auto-ingest] [--dbn-dir <path>]
 //!     [--gate-out <path>] [--manifest <path>] [--conditions <text>] [--startup-trace]
 //! ```
@@ -11,7 +12,7 @@
 //! first non-empty `RenderSnapshot` (generation > 0), then quits. Used for the M5 cold-
 //! start boring gate (PRD §4); normal runs are unchanged.
 //!
-//! Without `--replay`, the M0 blank/dark window + frame harness is unchanged. With
+//! Without a feed source, the M0 blank/dark window + frame harness is unchanged. With
 //! `--replay`, the dedicated engine thread is spawned, `SetSource(Replay)` + `Play` are
 //! sent, and each animation frame loads exactly one `Arc<RenderSnapshot>` from the
 //! latest-value slot (zero `entity.update` calls on the snapshot path); after the run the
@@ -23,6 +24,11 @@
 //! Accepted forms: all-digits nanoseconds UTC, or `YYYY-MM-DDTHH:MM:SSZ` (UTC, second
 //! resolution). Requires `--replay`.
 //!
+//! `--sim-live <fftlog>` joins at session open and wall-pins at `--head` (ENGINE.md §5).
+//! Requires `--head` and `--live-out`; mutually exclusive with `--replay` / `--replay-at`.
+//! Prior discovery stays replay-only. The wall-clock head snaps to the last in-log event
+//! ts ≤ head before `SetSource` (exact event timestamp required by the engine).
+//!
 //! `--prior <fftlog>` (repeatable) loads earlier trade-date logs as profile-only prior
 //! sessions after Play. Order on the CLI is preserved and is the UI contract: **oldest
 //! first**. Existing matching priors are also discovered beside the replay log and under
@@ -31,9 +37,9 @@
 //! path is existence-validated at startup (same rationale as `--manifest`).
 //!
 //! `--gate-out` writes the run's self-identifying JSON evidence (git SHA + dirty, pinned
-//! `gpui` rev, replay path, frame-time distribution, coverage) — on `FAIL` as well as
-//! `PASS`. `--manifest` / `--conditions` are runner-supplied provenance; absent ⇒ JSON
-//! `null`. `--manifest` is validated before the window opens.
+//! `gpui` rev, replay/sim-live source path, frame-time distribution, coverage) — on `FAIL`
+//! as well as `PASS`. `--manifest` / `--conditions` are runner-supplied provenance; absent
+//! ⇒ JSON `null`. `--manifest` is validated before the window opens.
 //!
 //! Redraw uses GPUI's `request_animation_frame` pattern. Keep the gate window
 //! keyboard-focused: GPUI caps unfocused animation-driven redraw to ~30 fps.
@@ -50,18 +56,17 @@ use fft_ui::gate_report::{CoverageReport, GateOut, GateReport, GitInfo, RunMeta}
 use fft_ui::harness::Harness;
 use fft_ui::prefs::ShellPrefsHandles;
 use fft_ui::prior_discovery::PriorOptions;
-use fft_ui::shell::Shell;
+use fft_ui::shell::{Shell, StartupSource};
 use gpui::{App, AppContext, Bounds, WindowBounds, WindowOptions, px, size};
 
 struct Args {
     gate: Option<Duration>,
     trace: Option<PathBuf>,
-    replay: Option<PathBuf>,
-    /// Seek target in nanoseconds UTC; requires `--replay`.
-    replay_at: Option<u64>,
-    /// Original `--replay-at` argument text for gate provenance.
-    replay_at_arg: Option<String>,
-    /// Prior-day fftlogs, oldest-first (CLI order preserved).
+    /// Replay / sim-live / blank — mutually exclusive feed sources.
+    startup: StartupSource,
+    /// Original `--replay-at` / `--head` argument text for gate provenance.
+    anchor_arg: Option<String>,
+    /// Prior-day fftlogs, oldest-first (CLI order preserved). Replay-only.
     prior: Vec<PathBuf>,
     /// Disable sibling/cache prior discovery and auto-ingest.
     no_prior_discovery: bool,
@@ -85,6 +90,10 @@ fn parse_args() -> Args {
     let mut replay = None;
     let mut replay_at = None;
     let mut replay_at_arg = None;
+    let mut sim_live = None;
+    let mut head = None;
+    let mut head_arg = None;
+    let mut live_out = None;
     let mut prior = Vec::new();
     let mut no_prior_discovery = false;
     let mut no_auto_ingest = false;
@@ -126,6 +135,26 @@ fn parse_args() -> Args {
                 let ts = parse_replay_at(&value).unwrap_or_else(|err| usage(&err));
                 replay_at = Some(ts);
                 replay_at_arg = Some(value);
+            }
+            "--sim-live" => {
+                let path = args
+                    .next()
+                    .unwrap_or_else(|| usage("--sim-live requires <fftlog>"));
+                sim_live = Some(PathBuf::from(path));
+            }
+            "--head" => {
+                let value = args.next().unwrap_or_else(|| usage("--head requires <ts>"));
+                // Same parser family as `--replay-at` (ns digits or YYYY-MM-DDTHH:MM:SSZ).
+                let ts = parse_replay_at(&value)
+                    .unwrap_or_else(|err| usage(&err.replace("--replay-at", "--head")));
+                head = Some(ts);
+                head_arg = Some(value);
+            }
+            "--live-out" => {
+                let path = args
+                    .next()
+                    .unwrap_or_else(|| usage("--live-out requires <path>"));
+                live_out = Some(PathBuf::from(path));
             }
             "--prior" => {
                 let path = args
@@ -187,21 +216,66 @@ fn parse_args() -> Args {
             other => usage(&format!("unknown argument: {other}")),
         }
     }
-    if replay_at.is_some() && replay.is_none() {
-        usage("--replay-at requires --replay");
-    }
-    if !prior.is_empty() && replay.is_none() {
+
+    let startup = match (replay, sim_live, replay_at, head, live_out) {
+        (Some(_), Some(_), ..) => {
+            usage("--sim-live is mutually exclusive with --replay / --replay-at")
+        }
+        (Some(_), None, Some(_), _, Some(_)) | (Some(_), None, None, Some(_), _) => {
+            usage("--head / --live-out require --sim-live")
+        }
+        (Some(_), None, Some(_), Some(_), None) => usage("--head / --live-out require --sim-live"),
+        (Some(_), None, None, None, Some(_)) => usage("--live-out requires --sim-live"),
+        (None, Some(_), Some(_), ..) => {
+            usage("--sim-live is mutually exclusive with --replay / --replay-at")
+        }
+        (None, Some(path), None, Some(head_ts), Some(live_out)) => {
+            if path == live_out {
+                usage("--live-out must be distinct from the --sim-live source");
+            }
+            StartupSource::SimLive {
+                path,
+                head_ts,
+                live_out,
+            }
+        }
+        (None, Some(_), None, None, _) => usage("--sim-live requires --head and --live-out"),
+        (None, Some(_), None, Some(_), None) => usage("--sim-live requires --head and --live-out"),
+        (Some(path), None, replay_at, None, None) => StartupSource::Replay { path, replay_at },
+        (None, None, Some(_), ..) => usage("--replay-at requires --replay"),
+        (None, None, None, Some(_), _) | (None, None, None, None, Some(_)) => {
+            usage("--head / --live-out require --sim-live")
+        }
+        (None, None, None, None, None) => StartupSource::None,
+    };
+
+    if !prior.is_empty() && !matches!(startup, StartupSource::Replay { .. }) {
         usage("--prior requires --replay");
     }
-    if startup_trace && replay.is_none() {
-        usage("--startup-trace requires --replay (interactive mark needs a snapshot)");
+    if matches!(startup, StartupSource::SimLive { .. })
+        && (no_prior_discovery || no_auto_ingest || dbn_dir.is_some())
+    {
+        usage(
+            "--no-prior-discovery / --no-auto-ingest / --dbn-dir are replay-only (not with --sim-live)",
+        );
     }
+    if startup_trace && !startup.starts_engine() {
+        usage(
+            "--startup-trace requires --replay or --sim-live (interactive mark needs a snapshot)",
+        );
+    }
+
+    let anchor_arg = match &startup {
+        StartupSource::Replay { .. } => replay_at_arg,
+        StartupSource::SimLive { .. } => head_arg,
+        StartupSource::None => None,
+    };
+
     Args {
         gate,
         trace,
-        replay,
-        replay_at,
-        replay_at_arg,
+        startup,
+        anchor_arg,
         prior,
         no_prior_discovery,
         no_auto_ingest,
@@ -216,9 +290,13 @@ fn parse_args() -> Args {
 fn usage(msg: &str) -> ! {
     eprintln!(
         "fft: {msg}\nusage: fft [--gate <seconds>] [--trace <path>] [--replay <fftlog>] \
-         [--replay-at <ts>] [--prior <fftlog>]... [--no-prior-discovery] \
+         [--replay-at <ts>] [--sim-live <fftlog>] [--head <ts>] [--live-out <path>] \
+         [--prior <fftlog>]... [--no-prior-discovery] \
          [--no-auto-ingest] [--dbn-dir <path>] [--gate-out <path>] [--manifest <path>] \
          [--conditions <text>] [--startup-trace]\n\
+         --sim-live: join + wall-pin (requires --head and --live-out; exclusive with --replay)\n\
+         --head: wall-clock head (ns digits or YYYY-MM-DDTHH:MM:SSZ); snapped to last event ≤ head\n\
+         --live-out: LIVE-flagged append destination (must differ from the source)\n\
          --prior: earlier trade-date fftlog (repeatable, oldest first; requires --replay)\n\
          --no-prior-discovery: disable existing-log discovery and DBN auto-ingest\n\
          --no-auto-ingest: discover existing prior logs but do not ingest missing days\n\
@@ -234,10 +312,28 @@ fn gate_description(args: &Args) -> String {
         Some(gate) => format!("fft frame gate — {:.3} s", gate.as_secs_f64()),
         None => "fft frame harness (ungated)".to_string(),
     };
-    let base = match (&args.replay, &args.replay_at_arg) {
-        (Some(path), Some(at)) => format!("{window}, replay {} @ {at}", path.display()),
-        (Some(path), None) => format!("{window}, replay {}", path.display()),
-        (None, _) => format!("{window}, blank window"),
+    let base = match (&args.startup, &args.anchor_arg) {
+        (StartupSource::Replay { path, .. }, Some(at)) => {
+            format!("{window}, replay {} @ {at}", path.display())
+        }
+        (StartupSource::Replay { path, .. }, None) => {
+            format!("{window}, replay {}", path.display())
+        }
+        (StartupSource::SimLive { path, live_out, .. }, Some(head)) => {
+            format!(
+                "{window}, sim-live {} head {head} live-out {}",
+                path.display(),
+                live_out.display()
+            )
+        }
+        (StartupSource::SimLive { path, live_out, .. }, None) => {
+            format!(
+                "{window}, sim-live {} live-out {}",
+                path.display(),
+                live_out.display()
+            )
+        }
+        (StartupSource::None, _) => format!("{window}, blank window"),
     };
     let n = args.prior.len();
     if n > 0 {
@@ -268,7 +364,8 @@ fn main() -> ExitCode {
         gate: gate_description(&args),
         binary: fft_ui::gate_report::command_line(std::env::args()),
         git: GitInfo::capture(),
-        replay: args.replay.clone(),
+        // Sim-live records the source log path in the existing `replay` field.
+        replay: args.startup.meta_path(),
         trace: args.trace.clone(),
         manifest: args
             .manifest
@@ -285,9 +382,8 @@ fn main() -> ExitCode {
     // Quit-hook: Shell installs handles at construction; main writes prefs after app.run.
     let prefs_slot: Rc<RefCell<Option<ShellPrefsHandles>>> = Rc::new(RefCell::new(None));
     let prefs_for_app = prefs_slot.clone();
-    let replaying = args.replay.is_some();
-    let replay = args.replay;
-    let replay_at = args.replay_at;
+    let engine_expected = args.startup.starts_engine();
+    let startup = args.startup;
     let prior = args.prior;
     let prior_options = PriorOptions {
         discover: !args.no_prior_discovery,
@@ -307,8 +403,7 @@ fn main() -> ExitCode {
                 cx.new(|cx| {
                     let shell = Shell::new(
                         app_harness.clone(),
-                        replay,
-                        replay_at,
+                        startup,
                         prior,
                         prior_options,
                         engine_for_app,
@@ -349,8 +444,8 @@ fn main() -> ExitCode {
     });
     match &coverage {
         Some(coverage) => println!("fft: {coverage}"),
-        None if replaying => {
-            eprintln!("fft: WARNING replay requested but the engine never started — no coverage");
+        None if engine_expected => {
+            eprintln!("fft: WARNING feed requested but the engine never started — no coverage");
         }
         None => {}
     }

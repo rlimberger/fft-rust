@@ -11,6 +11,8 @@ fft-engine = { path = "../fft-engine" }
 fft-ingest = { path = "../fft-ingest" }
 # m5-scrub-burst: event-time bounds from the log index (not on the GUI path).
 fft-log = { path = "../fft-log" }
+# Sim-live CLI head snap (ENGINE.md §5): wall-clock --head → last in-log event ≤ head.
+fft-replay = { path = "../fft-replay" }
 gpui.workspace = true
 gpui_platform.workspace = true
 # America/Chicago session bounds + CT clock for the transport strip (same pin as ingest).

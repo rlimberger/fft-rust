@@ -240,7 +240,7 @@ fn first_layout_and_geometry_changes_follow_current_session_rest() {
 }
 
 #[test]
-fn horizontal_drag_leaves_rest_and_future_geometry_only_clamps() {
+fn horizontal_drag_leaves_rest_and_geometry_keeps_canvas_pan() {
     let mut state = PaneState::default();
     state.reconcile_mp_pan(700.0, 400.0);
     assert!(state.navigate_mp_pan(-160.0, 700.0, 400.0));
@@ -248,11 +248,9 @@ fn horizontal_drag_leaves_rest_and_future_geometry_only_clamps() {
 
     assert!(!state.reconcile_mp_pan(900.0, 450.0));
     assert_eq!(state.mp_pan_px, 140.0, "growth must not snap to new rest");
-    assert!(state.reconcile_mp_pan(500.0, 450.0));
-    assert_eq!(
-        state.mp_pan_px, 50.0,
-        "chosen pan clamps to a smaller range"
-    );
+    // Free canvas: narrow geometry does not clamp the chosen pan.
+    assert!(!state.reconcile_mp_pan(500.0, 450.0));
+    assert_eq!(state.mp_pan_px, 140.0, "canvas pan survives narrow geometry");
     assert!(!state.mp_at_rest());
 }
 
@@ -268,25 +266,30 @@ fn drag_at_rest_bound_stays_logically_at_rest() {
 }
 
 #[test]
-fn user_pan_survives_temporary_narrow_geometry_and_restores() {
+fn user_pan_is_free_canvas_across_geometry_changes() {
     let mut state = PaneState::default();
     state.reconcile_mp_pan(900.0, 400.0);
     state.navigate_mp_pan(-180.0, 900.0, 400.0);
     assert_eq!(state.mp_pan_px, 320.0);
     assert!(!state.mp_at_rest());
 
-    assert!(state.reconcile_mp_pan(600.0, 400.0));
-    assert_eq!(state.mp_pan_px, 200.0, "display clamps in narrow geometry");
-    assert!(state.reconcile_mp_pan(900.0, 400.0));
-    assert_eq!(
-        state.mp_pan_px, 320.0,
-        "logical pan restores when width returns"
-    );
+    assert!(!state.reconcile_mp_pan(600.0, 400.0));
+    assert_eq!(state.mp_pan_px, 320.0, "canvas pan is not content-clamped");
     assert!(!state.reconcile_mp_pan(900.0, 400.0));
-    assert_eq!(
-        state.mp_pan_px, 320.0,
-        "consecutive renders do not oscillate"
-    );
+    assert_eq!(state.mp_pan_px, 320.0, "consecutive renders do not oscillate");
+}
+
+#[test]
+fn horizontal_drag_beyond_content_extent_is_allowed() {
+    let mut state = PaneState::default();
+    state.reconcile_mp_pan(700.0, 400.0);
+    // Rest is 300; drag past 0 into negative and past max into empty canvas.
+    assert!(state.navigate_mp_pan(-500.0, 700.0, 400.0));
+    assert_eq!(state.mp_pan_px, -200.0);
+    assert!(!state.mp_at_rest());
+    assert!(state.navigate_mp_pan(1_000.0, 700.0, 400.0));
+    assert_eq!(state.mp_pan_px, 800.0);
+    assert!(!state.mp_at_rest());
 }
 
 #[test]
@@ -386,7 +389,7 @@ fn cursor_zoom_rearms_at_new_rest() {
 }
 
 #[test]
-fn automatic_center_stays_inside_navigation_range() {
+fn automatic_center_follows_market_without_range_clamp() {
     let state = PaneState::default();
     let mut dom = dom(&[100, 120]);
     dom.best_bid = Some(Price(90));
@@ -396,13 +399,31 @@ fn automatic_center_stays_inside_navigation_range() {
         Some(Price(91))
     );
 
+    // Free canvas: follow midpoint even when it exits profile/DOM row extent.
     dom.best_bid = Some(Price(60));
     dom.best_ask = Some(Price(62));
     assert_eq!(
         state.navigation_center(&profile(&[80, 140]), &dom),
-        Some(Price(80))
+        Some(Price(61))
     );
     assert_eq!(state.center, None);
+}
+
+#[test]
+fn user_center_is_not_clamped_to_navigation_range() {
+    let state = PaneState {
+        center: Some(Price(500)),
+        ..Default::default()
+    };
+    assert_eq!(
+        state.navigation_center(&profile(&[80, 140]), &dom(&[100, 120])),
+        Some(Price(500))
+    );
+    // pure clamp helper still exists for any bounded mode; navigation does not apply it
+    assert_eq!(
+        clamp_center(Some(Price(500)), Some((Price(80), Price(140)))),
+        Some(Price(140))
+    );
 }
 
 #[test]

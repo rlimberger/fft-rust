@@ -8,21 +8,26 @@ gate law live in `PRD.md` / `IMPLEMENTATION-PLAN.md` / `docs/PERF-RUNNER.md`.
 
 ```
 fft [--gate <seconds>] [--trace <path>] [--replay <fftlog>] [--replay-at <ts>]
-    [--prior <fftlog>]... [--gate-out <path>] [--manifest <path>]
-    [--conditions <text>] [--startup-trace]
+    [--sim-live <fftlog>] [--head <ts>] [--live-out <path>]
+    [--prior <fftlog>]... [--no-prior-discovery] [--no-auto-ingest] [--dbn-dir <path>]
+    [--gate-out <path>] [--manifest <path>] [--conditions <text>] [--startup-trace]
 ```
 
 | Flag | Meaning | Rules |
 |---|---|---|
 | `--gate <secs>` | Measured frame-gate window; process fails on a missed deadline or dropped event | positive finite number |
 | `--trace <path>` | Per-frame gap trace (ns per line), written after the window closes | |
-| `--replay <fftlog>` | Spawn the engine, play the log | |
-| `--replay-at <ts>` | Start anchored at a UTC instant | needs `--replay`; digits = ns UTC or `YYYY-MM-DDTHH:MM:SSZ`; needs a checkpointed log |
-| `--prior <fftlog>` | Async prior-session load into the MP; repeatable, **oldest first** | needs `--replay`; file must exist; wrong dates are loud counted skips |
+| `--replay <fftlog>` | Spawn the engine, play the log | exclusive with `--sim-live` |
+| `--replay-at <ts>` | Start anchored at a UTC instant (Seek before Play) | needs `--replay`; digits = ns UTC or `YYYY-MM-DDTHH:MM:SSZ`; needs a checkpointed log |
+| `--sim-live <fftlog>` | Join at session open; wall-pin at `--head` | requires `--head` + `--live-out`; exclusive with `--replay` / `--replay-at` |
+| `--head <ts>` | Wall-clock sim-live head | needs `--sim-live`; same forms as `--replay-at`; **snapped** to last in-log event ≤ head (engine needs an exact event ts) |
+| `--live-out <path>` | LIVE-flagged append destination for sim-live | needs `--sim-live`; must differ from the source path |
+| `--prior <fftlog>` | Async prior-session load into the MP; repeatable, **oldest first** | **replay-only**; file must exist; wrong dates are loud counted skips |
+| `--no-prior-discovery` / `--no-auto-ingest` / `--dbn-dir` | Prior discovery / DBN ingest controls | **replay-only** (rejected with `--sim-live`) |
 | `--gate-out <path>` | Self-identifying JSON evidence (written on FAIL too) | unwritable path fails before the run, not after |
 | `--manifest <path>` | Perf-runner manifest recorded in evidence | must exist |
 | `--conditions <text>` | Free-form run conditions recorded verbatim | |
-| `--startup-trace` | Print first-paint / first-interactive ms, then exit | needs `--replay` |
+| `--startup-trace` | Print first-paint / first-interactive ms, then exit | needs `--replay` or `--sim-live` |
 
 Bad flags/values → usage on stderr, exit 2. Evidence always carries git SHA+dirty and the
 pinned gpui rev (baked at build time from Cargo.lock).
@@ -38,11 +43,11 @@ navigation (pan/zoom/center). When hidden: no splitter, no DOM hit targets.
 | `t` | Copy hovered pane's scale to the other pane |
 | `c` | Price-only recenter (clear locked center; MP pan/zoom untouched) |
 | `d` | Toggle DOM surface (launch-local; MP nav preserved) |
-| `r` | Toggle the transport strip (chrome only; playback state untouched). Arms transport keys below. |
-| `space` | Play / pause — requires `r` on; silent no-op otherwise |
-| `]` / `[` | Speed up / down the ladder 0.25×…64× — requires `r` on; silent no-op otherwise |
-| `←` / `→` | Step ±1 s (Seek, clamped to session) — requires `r` on; silent no-op otherwise |
-| `l` | Go-live placeholder — requires `r` on (hint only); silent no-op otherwise; M6 |
+| `r` | Toggle the transport strip (chrome only; playback state untouched). Arms transport keys below. **On at spawn for `--sim-live`.** |
+| `space` | Play / pause — requires transport on; silent no-op otherwise |
+| `]` / `[` | Speed up / down the ladder 0.25×…64× — requires transport on; silent no-op otherwise |
+| `←` / `→` | Step ±1 s (Seek, clamped to session) — requires transport on; silent no-op otherwise |
+| `l` | GoLive — requires transport on + active sim-live; else loud hint (`go-live: needs sim-live`); silent no-op if transport off |
 | MP left-drag | Vertical → price pan; horizontal → strip pan |
 | MP wheel | Plain or Ctrl+wheel: horizontal zoom 0.5×–3× at cursor (never pan) |
 | DOM drag / wheel | Vertical price pan (only when DOM shown) |
@@ -73,12 +78,28 @@ cargo run --release -p fft-engine --bin fft-checkpoint -- \
 Other trade dates: same command with `--trade-date 2026-07-27 … 2026-07-31` →
 `/tmp/esu6-<date>.fftlog` (per-day counts in the m1 evidence JSON).
 
-**Canonical anchored session** (the standing default — PRD §6 sim-live head):
+**Canonical anchored replay** (Seek at the PRD §6 head; priors replay-only):
 
 ```bash
 ./target/release/fft --replay /tmp/esu6-wed-v3-ckpt.fftlog \
   --replay-at 2026-07-29T13:50:00Z \
   --prior /tmp/esu6-2026-07-27.fftlog --prior /tmp/esu6-2026-07-28.fftlog
+```
+
+**Canonical sim-live** (join open → wall-pin; LIVE append to a distinct path):
+
+```bash
+./target/release/fft --sim-live /tmp/esu6-wed-v3-ckpt.fftlog \
+  --head 2026-07-29T13:50:00Z \
+  --live-out /tmp/esu6-wed-live.fftlog
+```
+
+`--head` is wall-clock; the CLI snaps it to the last in-log event ≤ head before
+`SetSource` (exact event timestamp required by the engine). Transport strip/keys are
+armed at spawn. Headless M1.5 gate:
+
+```bash
+cargo run --release -p fft-engine --bin m15-gate -- --help
 ```
 
 **Prefs** persist at `$XDG_CONFIG_HOME/fft/prefs.toml` (else `~/.config/fft/prefs.toml`):
@@ -103,6 +124,7 @@ otherwise-idle machine — concurrent builds measurably inject ~33 ms two-vsync 
 |---|---|
 | Frame (M3/M4) | `fft --gate 60 --replay <ckpt> --replay-at 2026-07-29T13:50:00Z --gate-out perf-runner/results/<date>-<gate>.json` |
 | M1 data plane | `m1-gate --out <json> --legacy-dir data/sessions --diff-trials 7 <day.fftlog>...` |
+| M1.5 sim-live | `m15-gate --replay <ckpt> --head 2026-07-29T13:50:00Z --live-out <path> --gate-secs <n> --out <json>` (`cargo run --release -p fft-engine --bin m15-gate -- --help`) |
 | M2 seek | `m2-gate --log <ckpt> --seeks 1000 --verify 25 --out <json>` |
 | M4 agreement | `m4-agreement --replay <ckpt> --out <json>` |
 | M5 scrub | `m5-scrub-burst --replay <ckpt> --out <json>` |
@@ -116,11 +138,12 @@ history is append-only.
 
 | Symptom | Cause | Remedy |
 |---|---|---|
-| `usage:` + exit 2 | Bad flag/value, `--replay-at`/`--prior`/`--startup-trace` without `--replay`, missing `--prior`/`--manifest` file | Fix the invocation |
+| `usage:` + exit 2 | Bad flag/value; `--sim-live` with `--replay`/`--replay-at`; missing `--head`/`--live-out`; `--live-out` == source; `--prior` without `--replay`; prior-discovery flags with `--sim-live`; missing `--prior`/`--manifest` file | Fix the invocation |
 | `fft-engine Seek against a log with zero checkpoints: <path>...` | `--replay-at`/scrub on an un-checkpointed log | Run `fft-checkpoint <src> <dst>`, replay the copy |
+| Engine panic on `SetSource(SimLive)` | Head not an in-log event ts, empty source, before open, or past EOF | CLI snaps wall-clock heads; if you bypass the snap, pass an exact event ts |
 | `fft: cannot open gate result file` (before the window) | Unwritable `--gate-out` | By design: never spend a 60 s run to discover the result can't be recorded |
 | `fft: ENGINE THREAD PANICKED ...` + FAIL exit | Engine died (e.g. missing log file mid-open, corrupt log) | Evidence JSON is still written first with the panic in `notes`; read it |
-| `LoadPriorSession skipped <path>: ...` | Missing prior file, wrong/duplicate trade date | Loud counted skip; playback continues |
+| `LoadPriorSession skipped <path>: ...` | Missing prior file, wrong/duplicate trade date | Loud counted skip; playback continues (replay path only) |
 | Window at ~30 fps | Only possible on non-fft GPUI builds — `fft` sets `GPUI_DISABLE_INACTIVE_THROTTLE=1` unconditionally on the pinned fork | Verify you run the workspace binary |
 
 ## 6. Environment pins

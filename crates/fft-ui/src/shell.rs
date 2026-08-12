@@ -24,7 +24,7 @@ use crate::prefs::{Prefs, ShellPrefsHandles};
 use crate::prior_discovery::PriorOptions;
 use crate::shell_input;
 use crate::shell_panes;
-use crate::shell_replay::spawn_replay_engine;
+use crate::shell_replay::{spawn_replay_engine, spawn_sim_live_engine};
 use crate::theme::Palette;
 use crate::theme_warmup::{
     PendingTheme, ThemeWarmAction, collect_visible_glyph_jobs, drive_theme_warmup,
@@ -32,6 +32,9 @@ use crate::theme_warmup::{
 };
 use crate::transport::TransportState;
 use crate::transport_paint::{ScrubTrackGeom, TransportStripArgs, transport_strip};
+
+/// Re-export for the `fft` binary CLI / shell constructor.
+pub use crate::shell_replay::StartupSource;
 
 struct ReplayResources {
     snapshots: SnapshotSlot,
@@ -42,8 +45,7 @@ pub struct Shell {
     harness: Rc<RefCell<Harness>>,
     snapshots: Option<SnapshotSlot>,
     replay_ready: Rc<RefCell<Option<ReplayResources>>>,
-    pending_replay: Option<PathBuf>,
-    replay_at: Option<u64>,
+    startup: Option<StartupSource>,
     prior_sessions: Vec<PathBuf>,
     prior_options: PriorOptions,
     engine_slot: Rc<RefCell<Option<EngineHandle>>>,
@@ -69,8 +71,7 @@ pub struct Shell {
 impl Shell {
     pub fn new(
         harness: Rc<RefCell<Harness>>,
-        pending_replay: Option<PathBuf>,
-        replay_at: Option<u64>,
+        startup: StartupSource,
         prior_sessions: Vec<PathBuf>,
         prior_options: PriorOptions,
         engine_slot: Rc<RefCell<Option<EngineHandle>>>,
@@ -84,13 +85,20 @@ impl Shell {
         let scale = snap.scale;
         let prefs = Prefs::load();
         let panes = Rc::new(RefCell::new(PaneState::from_prefs(&prefs)));
-        let transport = Rc::new(RefCell::new(TransportState::from_prefs(&prefs)));
+        let mut transport = TransportState::from_prefs(&prefs);
+        // Sim-live: arm transport keys/strip at spawn (scrub/speed over the joined range).
+        if matches!(startup, StartupSource::SimLive { .. }) {
+            transport.mode_on = true;
+        }
+        let startup = match startup {
+            StartupSource::None => None,
+            other => Some(other),
+        };
         Self {
             harness,
             snapshots: None,
             replay_ready: Rc::new(RefCell::new(None)),
-            pending_replay,
-            replay_at,
+            startup,
             prior_sessions,
             prior_options,
             engine_slot,
@@ -109,7 +117,7 @@ impl Shell {
             focus: cx.focus_handle().tab_stop(true),
             focus_once: true,
             frame_cadence: FrameCadence::default(),
-            transport,
+            transport: Rc::new(RefCell::new(transport)),
             scrub_track: Rc::new(RefCell::new(ScrubTrackGeom::default())),
         }
     }
@@ -201,18 +209,28 @@ impl Shell {
     }
 
     fn start_replay_after_first_paint(&mut self, window: &mut Window) {
-        let Some(path) = self.pending_replay.take() else {
+        let Some(startup) = self.startup.take() else {
             return;
         };
-        let replay_at = self.replay_at.take();
         let priors = std::mem::take(&mut self.prior_sessions);
         let prior_options = self.prior_options.clone();
         let replay_ready = Rc::clone(&self.replay_ready);
         let engine_slot = Rc::clone(&self.engine_slot);
         let speed = self.transport.borrow().speed();
+        // Window paints before engine spawn. Sim-live head snap runs on a worker
+        // thread (not here) so the UI never blocks on log I/O.
         window.on_next_frame(move |window, _| {
-            let (handle, snapshots, wake_dirty) =
-                spawn_replay_engine(path, replay_at, &priors, prior_options, speed);
+            let (handle, snapshots, wake_dirty) = match startup {
+                StartupSource::None => unreachable!("None stripped before pending startup"),
+                StartupSource::Replay { path, replay_at } => {
+                    spawn_replay_engine(path, replay_at, &priors, prior_options, speed)
+                }
+                StartupSource::SimLive {
+                    path,
+                    head_ts,
+                    live_out,
+                } => spawn_sim_live_engine(path, head_ts, live_out, speed),
+            };
             *engine_slot.borrow_mut() = Some(handle);
             *replay_ready.borrow_mut() = Some(ReplayResources {
                 snapshots,
@@ -252,6 +270,7 @@ impl Render for Shell {
                 contract: contract_context(&self.frame_snapshot),
                 applied_ts: self.frame_snapshot.applied_ts,
                 fps,
+                live_phase: self.frame_snapshot.live_phase,
             });
             return div()
                 .id("fft-empty-shell")
@@ -286,9 +305,7 @@ impl Render for Shell {
         if self.panes.borrow().dom_visible() {
             self.panes.borrow_mut().splitter.consume(viewport_width);
         }
-        self.panes
-            .borrow_mut()
-            .clamp_center(&self.frame_snapshot.profile, &self.frame_snapshot.dom);
+        // Free canvas: user pan is not re-clamped to available price range each frame.
         let center = self
             .panes
             .borrow()
@@ -349,6 +366,7 @@ impl Render for Shell {
         let key_transport = Rc::clone(&self.transport);
         let key_engine = Rc::clone(&self.engine_slot);
         let key_applied_ts = self.frame_snapshot.applied_ts;
+        let key_live_phase = self.frame_snapshot.live_phase;
         let (scrub_first, scrub_last) =
             shell_input::scrub_range_from_snapshot(&self.frame_snapshot);
         let key_first = scrub_first;
@@ -363,6 +381,7 @@ impl Render for Shell {
             contract: contract_context(&self.frame_snapshot),
             applied_ts: self.frame_snapshot.applied_ts,
             fps,
+            live_phase: key_live_phase,
         });
         let transport_on = self.transport.borrow().mode_on;
         let strip = if transport_on {
@@ -412,6 +431,7 @@ impl Render for Shell {
                         applied_ts: key_applied_ts,
                         first_ts: key_first,
                         last_ts: key_last,
+                        live_phase: key_live_phase,
                     },
                 ) else {
                     return;

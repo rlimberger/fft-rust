@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use fft_engine::RenderSnapshot;
+use fft_engine::{LiveTransportPhase, RenderSnapshot};
 use gpui::{AnyElement, div, prelude::*, px};
 
 use crate::datetime::civil_from_days;
@@ -73,12 +73,24 @@ pub fn contract_context(snapshot: &RenderSnapshot) -> String {
     format!("{symbol} {year:04}-{month:02}-{day:02}")
 }
 
+/// Short LIVE chrome label; `None` when sim-live is inactive.
+pub fn live_phase_label(phase: LiveTransportPhase) -> Option<&'static str> {
+    match phase {
+        LiveTransportPhase::Inactive => None,
+        LiveTransportPhase::CatchingUp => Some("CATCHING-UP"),
+        LiveTransportPhase::Live => Some("LIVE"),
+        LiveTransportPhase::Scrubbed => Some("SCRUBBED"),
+        LiveTransportPhase::CatchingToWall => Some("GO-LIVE"),
+    }
+}
+
 pub struct HeaderArgs {
     pub palette: Rc<Palette>,
     pub scale: f32,
     pub contract: String,
     pub applied_ts: u64,
     pub fps: usize,
+    pub live_phase: LiveTransportPhase,
 }
 
 /// Build the top header strip. The root font supplies the configured mono family.
@@ -87,6 +99,7 @@ pub fn header_strip(args: HeaderArgs) -> AnyElement {
     let text_size = px(11.0 * args.scale);
     let clock = format_ny_clock(args.applied_ts);
     let fps = format!("{} FPS", args.fps);
+    let live = live_phase_label(args.live_phase);
 
     div()
         .id("header-strip")
@@ -116,9 +129,23 @@ pub fn header_strip(args: HeaderArgs) -> AnyElement {
         )
         .child(
             div()
-                .id("header-fps")
-                .text_color(args.palette.subtext)
-                .child(fps),
+                .id("header-right")
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_x(px(PAD_X * args.scale))
+                .children(live.map(|label| {
+                    div()
+                        .id("header-live")
+                        .text_color(args.palette.iceberg)
+                        .child(label)
+                }))
+                .child(
+                    div()
+                        .id("header-fps")
+                        .text_color(args.palette.subtext)
+                        .child(fps),
+                ),
         )
         .into_any_element()
 }
@@ -211,5 +238,23 @@ mod tests {
             ..RenderSnapshot::default()
         };
         assert_eq!(contract_context(&snapshot), "ESU6 2026-07-29");
+    }
+
+    #[test]
+    fn live_phase_labels() {
+        assert_eq!(live_phase_label(LiveTransportPhase::Inactive), None);
+        assert_eq!(
+            live_phase_label(LiveTransportPhase::CatchingUp),
+            Some("CATCHING-UP")
+        );
+        assert_eq!(live_phase_label(LiveTransportPhase::Live), Some("LIVE"));
+        assert_eq!(
+            live_phase_label(LiveTransportPhase::Scrubbed),
+            Some("SCRUBBED")
+        );
+        assert_eq!(
+            live_phase_label(LiveTransportPhase::CatchingToWall),
+            Some("GO-LIVE")
+        );
     }
 }

@@ -1,5 +1,7 @@
 //! Unit tests for `transport` (kept separate so the module stays under ~500 lines).
 
+use fft_engine::LiveTransportPhase;
+
 use super::*;
 
 #[test]
@@ -130,14 +132,35 @@ fn step_arithmetic_clamps_to_range() {
 }
 
 #[test]
-fn go_live_is_hint_only() {
+fn go_live_inactive_is_hint_only() {
     let mut t = TransportState::default();
-    assert!(t.go_live_placeholder().status_hint.is_none());
+    assert!(t
+        .go_live(LiveTransportPhase::Inactive)
+        .status_hint
+        .is_none());
     t.toggle_mode();
-    let a = t.go_live_placeholder();
+    let a = t.go_live(LiveTransportPhase::Inactive);
     assert!(a.commands.is_empty());
-    assert_eq!(a.status_hint, Some(GO_LIVE_HINT));
-    assert_eq!(t.status_hint, Some(GO_LIVE_HINT));
+    assert_eq!(a.status_hint, Some(GO_LIVE_NEEDS_SIM_LIVE));
+    assert_eq!(t.status_hint, Some(GO_LIVE_NEEDS_SIM_LIVE));
+}
+
+#[test]
+fn go_live_emits_command_when_sim_live_active() {
+    let mut t = TransportState::default();
+    t.toggle_mode();
+    for phase in [
+        LiveTransportPhase::CatchingUp,
+        LiveTransportPhase::Live,
+        LiveTransportPhase::Scrubbed,
+        LiveTransportPhase::CatchingToWall,
+    ] {
+        let a = t.go_live(phase);
+        assert_eq!(a.commands, vec![TransportCommand::GoLive]);
+        assert!(a.refresh);
+        assert!(a.status_hint.is_none());
+        assert!(t.status_hint.is_none());
+    }
 }
 
 #[test]

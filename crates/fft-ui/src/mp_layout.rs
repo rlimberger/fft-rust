@@ -213,7 +213,8 @@ pub fn session_layout(
     let current_body_w = strip_w * zoom;
     let prior_count = session_count - 1;
     let content_width = prior_count as f32 * (prior_w + divider_w) + current_body_w;
-    let pan_px = clamp_pan(pan_px, content_width, strip_w);
+    // Free canvas: pan is not clamped to content extent (empty strip space is allowed).
+    assert!(pan_px.is_finite(), "MP pan must be finite");
 
     let mut blocks = Vec::with_capacity(session_count);
     let mut dividers = Vec::with_capacity(prior_count);
@@ -261,8 +262,8 @@ pub fn clamp_zoom(zoom: f32) -> f32 {
     zoom.clamp(ZOOM_MIN, ZOOM_MAX)
 }
 
-/// Furthest valid horizontal pan. At this position the current session's right edge is
-/// aligned with the strip viewport's right edge.
+/// Rest/origin pan: current session right-aligned in the strip viewport.
+/// Canvas pan may exceed this; rest tracking and default launch use this value.
 pub fn current_session_max_pan(content_width: f32, viewport_width: f32) -> f32 {
     assert!(
         content_width.is_finite() && content_width >= 0.0,
@@ -280,6 +281,8 @@ pub fn current_session_rest_pan(content_width: f32, viewport_width: f32) -> f32 
     current_session_max_pan(content_width, viewport_width)
 }
 
+/// Soft content-extent clamp retained for tests and any future bounded mode.
+/// Live navigation uses free-canvas pan (no clamp).
 pub fn clamp_pan(pan_px: f32, content_width: f32, viewport_width: f32) -> f32 {
     assert!(pan_px.is_finite(), "MP pan must be finite");
     pan_px.clamp(0.0, current_session_max_pan(content_width, viewport_width))
@@ -347,8 +350,8 @@ fn anchored_content_x(anchor: ZoomAnchor, layout: &SessionLayout, ui_scale: f32)
 }
 
 /// Apply a multiplicative zoom step anchored at cursor-x inside the strip viewport.
-/// Fixed-width dividers retain their width; the block-local point under `cursor_x` stays fixed
-/// unless the resulting pan reaches a navigation bound.
+/// Fixed-width dividers retain their width; the block-local point under `cursor_x` stays fixed.
+/// Free canvas: resulting pan is not clamped to content extent.
 #[allow(clippy::too_many_arguments)]
 pub fn zoom_at_cursor(
     origin_x: f32,
@@ -374,11 +377,8 @@ pub fn zoom_at_cursor(
     }
     let (anchor, viewport_local) = zoom_anchor(&before, cursor_x, ui_scale);
     let after = session_layout(origin_x, pane_width, session_count, 0.0, new_zoom, ui_scale);
-    let new_pan = clamp_pan(
-        anchored_content_x(anchor, &after, ui_scale) - viewport_local,
-        after.content_width,
-        after.strip_viewport.w,
-    );
+    let new_pan = anchored_content_x(anchor, &after, ui_scale) - viewport_local;
+    assert!(new_pan.is_finite(), "MP zoom pan must be finite");
     (after.zoom, new_pan)
 }
 
